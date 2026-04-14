@@ -53,5 +53,5 @@ object Constants {
     // Point this at a JSON file containing {"versionCode": 2, "apkUrl": "https://..."}
     // Host it anywhere reachable: GitHub raw, your own server, a Tailscale URL, etc.
     // Leave empty to disable update checks.
-    const val UPDATE_CHECK_URL = ""   // e.g. "https://raw.githubusercontent.com/you/repo/main/version.json"
+    const val UPDATE_CHECK_URL = "https://raw.githubusercontent.com/ngalogivn-ship-it/photosync/main/version.json"
 }
