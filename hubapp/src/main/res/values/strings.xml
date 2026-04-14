@@ -1,0 +1,5 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="app_name">PhotoSync Hub</string>
+    <string name="accessibility_service_description">Keeps PhotoSync running in the background to automatically receive photos from your phone</string>
+</resources>

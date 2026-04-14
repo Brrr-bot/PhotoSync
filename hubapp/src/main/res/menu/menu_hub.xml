@@ -1,0 +1,7 @@
+<?xml version="1.0" encoding="utf-8"?>
+<menu xmlns:android="http://schemas.android.com/apk/res/android">
+    <item android:id="@+id/action_start"          android:title="Start Hub" />
+    <item android:id="@+id/action_usb"            android:title="Select USB Drive" />
+    <item android:id="@+id/action_battery"        android:title="Battery Optimization" />
+    <item android:id="@+id/action_repair_orient"  android:title="Repair orientation (re-compress all)" />
+</menu>

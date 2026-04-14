@@ -1,0 +1,302 @@
+<?xml version="1.0" encoding="utf-8"?>
+<FrameLayout
+    xmlns:android="http://schemas.android.com/apk/res/android"
+    android:layout_width="match_parent"
+    android:layout_height="match_parent">
+
+    <!-- Animated starfield background -->
+    <com.photosync.client.ui.StarfieldView
+        android:layout_width="match_parent"
+        android:layout_height="match_parent"/>
+
+    <!-- Main content column -->
+    <LinearLayout
+        android:layout_width="match_parent"
+        android:layout_height="match_parent"
+        android:orientation="vertical">
+
+        <!-- ── Top banner ─────────────────────────────────────────────── -->
+        <LinearLayout
+            android:layout_width="match_parent"
+            android:layout_height="56dp"
+            android:orientation="horizontal"
+            android:gravity="center_vertical"
+            android:paddingStart="16dp"
+            android:paddingEnd="8dp"
+            android:background="@color/banner_bg"
+            android:elevation="4dp">
+
+            <TextView
+                android:layout_width="0dp"
+                android:layout_height="wrap_content"
+                android:layout_weight="1"
+                android:text="◈  PHOTOSYNC CLIENT"
+                android:textColor="@color/neon_green"
+                android:textSize="17sp"
+                android:letterSpacing="0.12"
+                android:textStyle="bold"
+                android:fontFamily="monospace"/>
+
+            <ImageButton
+                android:id="@+id/btn_menu"
+                android:layout_width="48dp"
+                android:layout_height="48dp"
+                android:background="?attr/selectableItemBackgroundBorderless"
+                android:src="@drawable/ic_more_vert"
+                android:tint="@color/neon_green"
+                android:contentDescription="Menu"/>
+        </LinearLayout>
+
+        <!-- ── Scrollable card area ───────────────────────────────────── -->
+        <ScrollView
+            android:layout_width="match_parent"
+            android:layout_height="0dp"
+            android:layout_weight="1"
+            android:fillViewport="true"
+            android:scrollbars="none">
+
+            <LinearLayout
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:orientation="vertical"
+                android:padding="12dp">
+
+                <!-- Card 1: STATUS (cyan) -->
+                <FrameLayout
+                    android:layout_width="match_parent"
+                    android:layout_height="wrap_content"
+                    android:layout_marginBottom="12dp"
+                    android:background="@drawable/neon_card_cyan"
+                    android:padding="20dp">
+
+                    <LinearLayout
+                        android:layout_width="match_parent"
+                        android:layout_height="wrap_content"
+                        android:orientation="vertical">
+
+                        <TextView
+                            android:layout_width="wrap_content"
+                            android:layout_height="wrap_content"
+                            android:text="STATUS"
+                            android:textColor="@color/neon_cyan"
+                            android:textSize="11sp"
+                            android:letterSpacing="0.2"
+                            android:textStyle="bold"
+                            android:fontFamily="monospace"
+                            android:layout_marginBottom="10dp"/>
+
+                        <TextView android:id="@+id/tv_permission_status"
+                            android:layout_width="match_parent"
+                            android:layout_height="wrap_content"
+                            android:textColor="@color/text_primary"
+                            android:textSize="13sp"
+                            android:layout_marginBottom="4dp"/>
+
+                        <TextView android:id="@+id/tv_battery_status"
+                            android:layout_width="match_parent"
+                            android:layout_height="wrap_content"
+                            android:textColor="@color/text_primary"
+                            android:textSize="13sp"
+                            android:layout_marginBottom="10dp"/>
+
+                        <TextView android:id="@+id/tv_hub_status"
+                            android:layout_width="match_parent"
+                            android:layout_height="wrap_content"
+                            android:textColor="@color/text_primary"
+                            android:textSize="13sp"
+                            android:text="◎  Listening for hub…"/>
+
+                        <TextView android:id="@+id/tv_accessibility_status"
+                            android:layout_width="match_parent"
+                            android:layout_height="wrap_content"
+                            android:textColor="@color/text_primary"
+                            android:textSize="13sp"
+                            android:layout_marginTop="4dp"/>
+                    </LinearLayout>
+                </FrameLayout>
+
+                <!-- Card 2: TRANSFER PROGRESS (purple) -->
+                <FrameLayout
+                    android:layout_width="match_parent"
+                    android:layout_height="wrap_content"
+                    android:layout_marginBottom="12dp"
+                    android:background="@drawable/neon_card_purple"
+                    android:padding="20dp">
+
+                    <LinearLayout
+                        android:layout_width="match_parent"
+                        android:layout_height="wrap_content"
+                        android:orientation="vertical">
+
+                        <TextView
+                            android:layout_width="wrap_content"
+                            android:layout_height="wrap_content"
+                            android:text="UPLOAD"
+                            android:textColor="@color/neon_purple"
+                            android:textSize="11sp"
+                            android:letterSpacing="0.2"
+                            android:textStyle="bold"
+                            android:fontFamily="monospace"
+                            android:layout_marginBottom="10dp"/>
+
+                        <!-- Session progress (file count) -->
+                        <TextView android:id="@+id/tv_progress_label"
+                            android:layout_width="match_parent"
+                            android:layout_height="wrap_content"
+                            android:textColor="@color/text_secondary"
+                            android:textSize="12sp"
+                            android:fontFamily="monospace"
+                            android:text="Idle"
+                            android:layout_marginBottom="6dp"/>
+
+                        <ProgressBar
+                            android:id="@+id/pb_sync"
+                            style="?android:attr/progressBarStyleHorizontal"
+                            android:layout_width="match_parent"
+                            android:layout_height="8dp"
+                            android:max="100"
+                            android:progress="0"
+                            android:progressTint="@color/neon_purple"
+                            android:progressBackgroundTint="#33BF00FF"
+                            android:layout_marginBottom="14dp"/>
+
+                        <!-- Current file progress -->
+                        <TextView
+                            android:layout_width="wrap_content"
+                            android:layout_height="wrap_content"
+                            android:text="CURRENT FILE"
+                            android:textColor="@color/neon_purple"
+                            android:alpha="0.7"
+                            android:textSize="9sp"
+                            android:letterSpacing="0.2"
+                            android:textStyle="bold"
+                            android:fontFamily="monospace"
+                            android:layout_marginBottom="4dp"/>
+
+                        <TextView android:id="@+id/tv_current_file"
+                            android:layout_width="match_parent"
+                            android:layout_height="wrap_content"
+                            android:textColor="@color/text_secondary"
+                            android:textSize="12sp"
+                            android:fontFamily="monospace"
+                            android:text="—"
+                            android:layout_marginBottom="6dp"/>
+
+                        <ProgressBar
+                            android:id="@+id/pb_file"
+                            style="?android:attr/progressBarStyleHorizontal"
+                            android:layout_width="match_parent"
+                            android:layout_height="5dp"
+                            android:indeterminate="false"
+                            android:max="10000"
+                            android:progress="0"
+                            android:progressTint="@color/neon_cyan"
+                            android:progressBackgroundTint="#2200FFFF"
+                            android:visibility="invisible"
+                            android:layout_marginBottom="10dp"/>
+
+                        <TextView android:id="@+id/tv_mb_remaining"
+                            android:layout_width="match_parent"
+                            android:layout_height="wrap_content"
+                            android:textColor="@color/neon_purple"
+                            android:textSize="11sp"
+                            android:fontFamily="monospace"
+                            android:text=""/>
+                    </LinearLayout>
+                </FrameLayout>
+
+                <!-- Card 3: COMPRESSION (green) -->
+                <FrameLayout
+                    android:layout_width="match_parent"
+                    android:layout_height="wrap_content"
+                    android:layout_marginBottom="12dp"
+                    android:background="@drawable/neon_card_green"
+                    android:padding="20dp">
+
+                    <LinearLayout
+                        android:layout_width="match_parent"
+                        android:layout_height="wrap_content"
+                        android:orientation="vertical">
+
+                        <TextView
+                            android:layout_width="wrap_content"
+                            android:layout_height="wrap_content"
+                            android:text="COMPRESSION"
+                            android:textColor="@color/neon_green"
+                            android:textSize="11sp"
+                            android:letterSpacing="0.2"
+                            android:textStyle="bold"
+                            android:fontFamily="monospace"
+                            android:layout_marginBottom="10dp"/>
+
+                        <TextView android:id="@+id/tv_compression_label"
+                            android:layout_width="match_parent"
+                            android:layout_height="wrap_content"
+                            android:textColor="@color/text_secondary"
+                            android:textSize="12sp"
+                            android:fontFamily="monospace"
+                            android:text="Idle"
+                            android:layout_marginBottom="8dp"/>
+
+                        <ProgressBar
+                            android:id="@+id/pb_compression"
+                            style="?android:attr/progressBarStyleHorizontal"
+                            android:layout_width="match_parent"
+                            android:layout_height="8dp"
+                            android:indeterminate="false"
+                            android:max="100"
+                            android:progress="0"
+                            android:progressTint="@color/neon_green"
+                            android:progressBackgroundTint="#2200FF88"
+                            android:visibility="invisible"/>
+
+                    </LinearLayout>
+                </FrameLayout>
+
+                <!-- Card 4: LIVE LOG (amber) -->
+                <FrameLayout
+                    android:layout_width="match_parent"
+                    android:layout_height="wrap_content"
+                    android:background="@drawable/neon_card_amber"
+                    android:padding="20dp">
+
+                    <LinearLayout
+                        android:layout_width="match_parent"
+                        android:layout_height="wrap_content"
+                        android:orientation="vertical">
+
+                        <TextView
+                            android:layout_width="wrap_content"
+                            android:layout_height="wrap_content"
+                            android:text="LIVE LOG"
+                            android:textColor="@color/neon_amber"
+                            android:textSize="11sp"
+                            android:letterSpacing="0.2"
+                            android:textStyle="bold"
+                            android:fontFamily="monospace"
+                            android:layout_marginBottom="10dp"/>
+
+                        <ScrollView
+                            android:id="@+id/scroll_log"
+                            android:layout_width="match_parent"
+                            android:layout_height="300dp"
+                            android:scrollbars="none">
+
+                            <TextView
+                                android:id="@+id/tv_log"
+                                android:layout_width="match_parent"
+                                android:layout_height="wrap_content"
+                                android:fontFamily="monospace"
+                                android:textSize="11sp"
+                                android:textColor="@color/text_secondary"
+                                android:lineSpacingMultiplier="1.3"
+                                android:text="Waiting for service…"/>
+                        </ScrollView>
+                    </LinearLayout>
+                </FrameLayout>
+
+            </LinearLayout>
+        </ScrollView>
+    </LinearLayout>
+
+</FrameLayout>
