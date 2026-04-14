@@ -22,3 +22,6 @@ google-services.json
 # OS
 .DS_Store
 Thumbs.db
+
+# Local watcher scripts (machine-specific)
+watch-and-push.bat
