@@ -27,6 +27,7 @@ import androidx.core.content.ContextCompat
 import com.photosync.client.R
 import com.photosync.client.media.MediaStoreHelper
 import com.photosync.client.service.ClientForegroundService
+import com.photosync.client.update.UpdateChecker
 import java.text.SimpleDateFormat
 import java.util.Date
 import java.util.Locale
@@ -236,6 +237,10 @@ class MainActivity : AppCompatActivity() {
                     ))
                     true
                 }
+                R.id.action_check_update -> {
+                    checkForUpdate()
+                    true
+                }
                 else -> false
             }
         }
@@ -391,6 +396,21 @@ class MainActivity : AppCompatActivity() {
                 }
             }
         }
+    }
+
+    // ── Update check ─────────────────────────────────────────────────────────
+
+    private fun checkForUpdate() {
+        Toast.makeText(this, "Checking for updates…", Toast.LENGTH_SHORT).show()
+        Thread {
+            val checker = UpdateChecker(this)
+            checker.checkAndNotify()
+            runOnUiThread {
+                Toast.makeText(this,
+                    "Update check complete — you'll get a notification if a new version is available",
+                    Toast.LENGTH_LONG).show()
+            }
+        }.start()
     }
 
     // ── Accessibility service check ───────────────────────────────────────────

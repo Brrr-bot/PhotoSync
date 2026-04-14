@@ -39,5 +39,6 @@ dependencies {
     implementation(libs.kotlinx.coroutines.android)
     implementation(libs.nanohttpd)
     implementation(libs.gson)
+    implementation(libs.okhttp)
     implementation(libs.androidx.lifecycle.service)
 }

@@ -19,6 +19,7 @@ import com.photosync.hub.R
 import com.photosync.hub.service.HubForegroundService
 import com.photosync.hub.storage.SyncStateRepository
 import com.photosync.hub.storage.UsbStorageManager
+import com.photosync.hub.update.UpdateChecker
 import java.text.SimpleDateFormat
 import java.util.Date
 import java.util.Locale
@@ -215,10 +216,29 @@ class MainActivity : AppCompatActivity() {
                     repairOrientation()
                     true
                 }
+                R.id.action_check_update -> {
+                    checkForUpdate()
+                    true
+                }
                 else -> false
             }
         }
         popup.show()
+    }
+
+    // ── Update check ─────────────────────────────────────────────────────────
+
+    private fun checkForUpdate() {
+        android.widget.Toast.makeText(this, "Checking for updates…", android.widget.Toast.LENGTH_SHORT).show()
+        Thread {
+            val checker = UpdateChecker(this)
+            checker.checkAndNotify()
+            runOnUiThread {
+                android.widget.Toast.makeText(this,
+                    "Update check complete — you'll get a notification if a new version is available",
+                    android.widget.Toast.LENGTH_LONG).show()
+            }
+        }.start()
     }
 
     // ── Repair orientation ────────────────────────────────────────────────────
