@@ -74,6 +74,22 @@ try {
 
                     if ($LASTEXITCODE -eq 0) {
                         Write-Host "✅  Pushed to GitHub at $timestamp" -ForegroundColor Green
+
+                        # Increment build number and trigger APK build + upload
+                        $bnFile = Join-Path $projectRoot "build_number.txt"
+                        $bn = [int](Get-Content $bnFile -Raw).Trim() + 1
+                        Set-Content $bnFile $bn
+                        git add build_number.txt 2>&1 | Out-Null
+                        git commit -m "Build $bn" 2>&1 | Out-Null
+                        git push 2>&1 | Out-Null
+
+                        Write-Host "[BUILD]  Building APKs (build $bn)..." -ForegroundColor Yellow
+                        & .\gradlew.bat assembleDebug 2>&1 | Out-Null
+                        if ($LASTEXITCODE -eq 0) {
+                            Write-Host "[OK]  Build $bn complete - APKs uploaded to GitHub" -ForegroundColor Green
+                        } else {
+                            Write-Host "[FAIL]  Build $bn failed" -ForegroundColor Red
+                        }
                     } else {
                         Write-Host "❌  Push failed: $pushResult" -ForegroundColor Red
                         # Re-queue so it tries again next cycle

@@ -21,7 +21,10 @@ import java.util.concurrent.TimeUnit
 data class VersionManifest(
     @SerializedName("versionCode") val versionCode: Int = 0,
     @SerializedName("versionName") val versionName: String = "",
-    @SerializedName("apkUrl")      val apkUrl: String = ""
+    @SerializedName("apkUrl")      val apkUrl: String = "",
+    @SerializedName("clientVersionCode") val clientVersionCode: Int = 0,
+    @SerializedName("clientVersionName") val clientVersionName: String = "",
+    @SerializedName("clientApkUrl")      val clientApkUrl: String = ""
 )
 
 class UpdateChecker(private val context: Context) {
@@ -37,7 +40,9 @@ class UpdateChecker(private val context: Context) {
         if (url.isEmpty()) return
 
         val manifest = fetchManifest(url) ?: return
-        if (manifest.versionCode <= BuildConfig.VERSION_CODE) return
+        // Use client-specific version fields; fall back to hub fields for backwards compat
+        val remoteCode = if (manifest.clientVersionCode > 0) manifest.clientVersionCode else manifest.versionCode
+        if (remoteCode <= BuildConfig.VERSION_CODE) return
 
         val apkFile = downloadApk(manifest) ?: return
         postInstallNotification(manifest, apkFile)
@@ -55,13 +60,15 @@ class UpdateChecker(private val context: Context) {
     }
 
     private fun downloadApk(manifest: VersionManifest): File? {
-        if (manifest.apkUrl.isBlank()) return null
+        val apkUrl = manifest.clientApkUrl.ifBlank { manifest.apkUrl }
+        if (apkUrl.isBlank()) return null
         return try {
-            val request = Request.Builder().url(manifest.apkUrl).build()
+            val request = Request.Builder().url(apkUrl).build()
             client.newCall(request).execute().use { response ->
                 if (!response.isSuccessful) return null
                 val bytes = response.body?.bytes() ?: return null
-                val outFile = File(context.cacheDir, "update-${manifest.versionCode}.apk")
+                val remoteCode = if (manifest.clientVersionCode > 0) manifest.clientVersionCode else manifest.versionCode
+                val outFile = File(context.cacheDir, "update-${remoteCode}.apk")
                 outFile.writeBytes(bytes)
                 outFile
             }

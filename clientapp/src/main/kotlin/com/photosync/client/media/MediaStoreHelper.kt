@@ -25,22 +25,49 @@ class MediaStoreHelper(private val context: Context) {
         context.getSharedPreferences("pending_deletes", Context.MODE_PRIVATE)
     }
 
+    private val compressionPrefs: SharedPreferences by lazy {
+        context.getSharedPreferences("compression_state", Context.MODE_PRIVATE)
+    }
+
     companion object {
         private const val KEY_IDS = "ids"
+        private const val KEY_REPLACED_ORIGINAL_IDS = "replaced_original_ids"
+        private const val KEY_COMPRESSED_NEW_IDS = "compressed_new_ids"
+    }
+
+    // ── Compression loop prevention ──────────────────────────────────────────
+    // Tracks which original IDs have been replaced and which new IDs were created,
+    // so we never re-replace an already-compressed file or serve it back to the hub.
+
+    fun isAlreadyReplaced(originalId: Long): Boolean =
+        compressionPrefs.getStringSet(KEY_REPLACED_ORIGINAL_IDS, emptySet())!!
+            .contains(originalId.toString())
+
+    private fun markReplaced(originalId: Long, newId: Long) {
+        val origSet = compressionPrefs.getStringSet(KEY_REPLACED_ORIGINAL_IDS, emptySet())!!.toMutableSet()
+        origSet.add(originalId.toString())
+        val newSet = compressionPrefs.getStringSet(KEY_COMPRESSED_NEW_IDS, emptySet())!!.toMutableSet()
+        newSet.add(newId.toString())
+        compressionPrefs.edit()
+            .putStringSet(KEY_REPLACED_ORIGINAL_IDS, origSet)
+            .putStringSet(KEY_COMPRESSED_NEW_IDS, newSet)
+            .apply()
     }
 
     // ── Pending-deletion queue ────────────────────────────────────────────────
-    // Each entry: "<i|v>:<originalId>:<newId>"
-    //   i/v      = image or video collection
-    //   originalId = MediaStore ID of the camera original to delete
-    //   newId      = MediaStore ID of the compressed replacement (kept IS_PENDING=1 until delete)
+    // Each entry: "<i|v>:<originalId>:<newId>:<dateAdded>:<dateModified>"
+    //   i/v          = image or video collection
+    //   originalId   = MediaStore ID of the camera original to delete
+    //   newId        = MediaStore ID of the compressed replacement (kept IS_PENDING=1 until delete)
+    //   dateAdded    = original DATE_ADDED (seconds) to restore after publish
+    //   dateModified = original DATE_MODIFIED (seconds) to restore after publish
     //
     // The new file stays hidden (IS_PENDING=1) until the user approves deletion of the original,
     // preventing duplicate images from appearing in the gallery during the approval window.
 
-    private fun enqueuePendingDelete(originalId: Long, newId: Long, isVideo: Boolean) {
+    private fun enqueuePendingDelete(originalId: Long, newId: Long, isVideo: Boolean, dateAdded: Long = 0L, dateModified: Long = 0L) {
         val set = prefs.getStringSet(KEY_IDS, emptySet())!!.toMutableSet()
-        set.add("${if (isVideo) "v" else "i"}:$originalId:$newId")
+        set.add("${if (isVideo) "v" else "i"}:$originalId:$newId:$dateAdded:$dateModified")
         prefs.edit().putStringSet(KEY_IDS, set).apply()
     }
 
@@ -60,12 +87,21 @@ class MediaStoreHelper(private val context: Context) {
         for (entry in entries) {
             val parts = entry.split(":")
             val newId = parts.getOrNull(2)?.toLongOrNull() ?: continue
+            val dateAdded = parts.getOrNull(3)?.toLongOrNull() ?: 0L
+            val dateModified = parts.getOrNull(4)?.toLongOrNull() ?: 0L
             val newUri = ContentUris.withAppendedId(
                 MediaStore.Images.Media.EXTERNAL_CONTENT_URI, newId)
             runCatching {
                 context.contentResolver.update(newUri, ContentValues().apply {
                     put(MediaStore.MediaColumns.IS_PENDING, 0)
                 }, null, null)
+                // Restore original timestamps so gallery position is preserved
+                if (dateAdded > 0 || dateModified > 0) {
+                    context.contentResolver.update(newUri, ContentValues().apply {
+                        if (dateAdded > 0) put(MediaStore.MediaColumns.DATE_ADDED, dateAdded)
+                        if (dateModified > 0) put(MediaStore.MediaColumns.DATE_MODIFIED, dateModified)
+                    }, null, null)
+                }
             }
         }
     }
@@ -97,8 +133,13 @@ class MediaStoreHelper(private val context: Context) {
         val results = mutableListOf<MediaFileInfo>()
         results += queryUri(MediaStore.Images.Media.EXTERNAL_CONTENT_URI, sinceSeconds)
         results += queryUri(MediaStore.Video.Media.EXTERNAL_CONTENT_URI, sinceSeconds)
+        // Filter out files created by replaceFile() — they are compressed replacements
+        // and must never be sent back to the hub (prevents download/compress/replace loop)
+        val compressedNewIds = compressionPrefs.getStringSet(KEY_COMPRESSED_NEW_IDS, emptySet())!!
         // Sort oldest-first so hub can advance timestamp incrementally
-        return results.sortedBy { it.dateAdded }
+        return results
+            .filter { it.id.toString() !in compressedNewIds }
+            .sortedBy { it.dateAdded }
     }
 
     /** Opens an InputStream for a media file by its MediaStore ID. */
@@ -172,6 +213,8 @@ class MediaStoreHelper(private val context: Context) {
      * Android versions regardless of declared permissions.
      */
     fun replaceFile(originalId: Long, mimeType: String, compressedBytes: ByteArray, providedDateTaken: Long = 0L): ReplaceResult {
+        if (isAlreadyReplaced(originalId)) return ReplaceResult.REPLACED
+
         val origUri = findOriginalUri(originalId)
             ?: throw IllegalStateException("Cannot find original file $originalId")
         val isVideo = origUri.toString().contains("video", ignoreCase = true)
@@ -181,13 +224,15 @@ class MediaStoreHelper(private val context: Context) {
         var relativePath = "DCIM/"
         var dateTaken    = 0L   // milliseconds
         var dateAdded    = 0L   // seconds
+        var dateModified = 0L   // seconds
         context.contentResolver.query(
             origUri,
             arrayOf(
                 MediaStore.MediaColumns.DISPLAY_NAME,
                 MediaStore.MediaColumns.RELATIVE_PATH,
                 MediaStore.MediaColumns.DATE_TAKEN,
-                MediaStore.MediaColumns.DATE_ADDED
+                MediaStore.MediaColumns.DATE_ADDED,
+                MediaStore.MediaColumns.DATE_MODIFIED
             ),
             null, null, null
         )?.use { c ->
@@ -196,6 +241,7 @@ class MediaStoreHelper(private val context: Context) {
                 relativePath = c.getString(1) ?: relativePath
                 dateTaken    = c.getLong(2)
                 dateAdded    = c.getLong(3)
+                dateModified = c.getLong(4)
             }
         }
 
@@ -258,7 +304,16 @@ class MediaStoreHelper(private val context: Context) {
                         put(MediaStore.MediaColumns.DATE_TAKEN, effectiveDateTaken)
                         if (dateAdded > 0) put(MediaStore.MediaColumns.DATE_ADDED, dateAdded)
                     }, null, null)
+                    // Separate update to force original timestamps — Android may reset them
+                    // during IS_PENDING transition, so this must come after
+                    if (dateAdded > 0 || dateModified > 0) {
+                        context.contentResolver.update(newUri, ContentValues().apply {
+                            if (dateAdded > 0) put(MediaStore.MediaColumns.DATE_ADDED, dateAdded)
+                            if (dateModified > 0) put(MediaStore.MediaColumns.DATE_MODIFIED, dateModified)
+                        }, null, null)
+                    }
                 }
+                markReplaced(originalId, newId)
                 return ReplaceResult.REPLACED
             } catch (sec: SecurityException) {
                 // Delete needs user approval.  Keep the new file as IS_PENDING=1 so it stays
@@ -272,7 +327,8 @@ class MediaStoreHelper(private val context: Context) {
                         if (dateAdded > 0) put(MediaStore.MediaColumns.DATE_ADDED, dateAdded)
                     }, null, null)
                 }
-                enqueuePendingDelete(originalId, newId, isVideo)
+                enqueuePendingDelete(originalId, newId, isVideo, dateAdded, dateModified)
+                markReplaced(originalId, newId)
                 return ReplaceResult.COMPRESSED_PENDING_DELETE
             }
 

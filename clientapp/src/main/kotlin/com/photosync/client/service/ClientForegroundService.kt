@@ -15,10 +15,12 @@ import androidx.lifecycle.lifecycleScope
 import com.photosync.client.ClientApplication
 import com.photosync.client.media.MediaStoreHelper
 import com.photosync.client.ui.MainActivity
+import com.photosync.client.update.UpdateChecker
 import com.photosync.shared.Constants
 import com.photosync.shared.crypto.HmacAuth
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 import java.net.HttpURLConnection
 import java.net.URL
@@ -28,6 +30,7 @@ class ClientForegroundService : LifecycleService() {
     private var server: MediaHttpServer? = null
     private var announceJob: Job? = null
     private var hubDiscoveryJob: Job? = null
+    private var updateJob: Job? = null
     private var hubDiscovery: HubDiscovery? = null
     private var deleteNotificationShown = false
 
@@ -112,6 +115,15 @@ class ClientForegroundService : LifecycleService() {
 
         // Start periodic heartbeat — triggers hub sync every 5 min automatically
         syncHandler.postDelayed(syncRunnable, SYNC_INTERVAL_MS)
+
+        // Check for app updates every 5 minutes
+        updateJob = lifecycleScope.launch(Dispatchers.IO) {
+            val checker = UpdateChecker(this@ClientForegroundService)
+            while (true) {
+                checker.checkAndNotify()
+                delay(5 * 60 * 1000L)
+            }
+        }
 
         updateNotification("Ready — announcing on network")
     }

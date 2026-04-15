@@ -191,6 +191,12 @@ class MediaHttpServer(
             .replace("%2F", "/")
         val dateTaken = session.parameters[Constants.PARAM_DATE_TAKEN]?.firstOrNull()?.toLongOrNull() ?: 0L
 
+        // Skip if this file was already replaced — avoids re-reading the full POST body
+        if (mediaStore.isAlreadyReplaced(id)) {
+            onLog?.invoke("Skipped replace for $id — already compressed")
+            return newFixedLengthResponse(Response.Status.OK, MIME_PLAINTEXT, "REPLACED")
+        }
+
         val contentLength = session.headers["content-length"]?.toLongOrNull() ?: 0L
         if (contentLength <= 0L)           return badRequest("Missing or zero Content-Length")
         if (contentLength > 50 * 1024 * 1024L) return badRequest("Body too large (max 50 MB)")

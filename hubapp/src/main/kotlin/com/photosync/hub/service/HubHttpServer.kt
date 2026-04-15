@@ -1,25 +1,24 @@
 package com.photosync.hub.service
 
+import com.google.gson.Gson
 import com.photosync.shared.Constants
 import com.photosync.shared.crypto.HmacAuth
+import com.photosync.shared.model.DashboardStatusResponse
 import fi.iki.elonen.NanoHTTPD
 
-/**
- * Lightweight HTTP server running on the hub ([Constants.HUB_HTTP_PORT]).
- * The phone calls POST /sync to ask the hub to pull its files immediately,
- * rather than waiting for the periodic UDP discovery cycle.
- *
- * @param onSyncRequest Called with the requester's IP when a valid /sync request arrives.
- */
 class HubHttpServer(
     private val onSyncRequest: (clientIp: String) -> Unit,
+    private val onDashboardRequest: () -> DashboardStatusResponse,
     private val onLog: ((String) -> Unit)? = null
 ) : NanoHTTPD(Constants.HUB_HTTP_PORT) {
+
+    private val gson = Gson()
 
     override fun serve(session: IHTTPSession): Response {
         return try {
             when (session.uri) {
                 Constants.PATH_SYNC -> handleSync(session)
+                Constants.PATH_DASHBOARD -> handleDashboard(session)
                 else -> newFixedLengthResponse(Response.Status.NOT_FOUND, MIME_PLAINTEXT, "Not found")
             }
         } catch (t: Throwable) {
@@ -45,9 +44,20 @@ class HubHttpServer(
         return newFixedLengthResponse(Response.Status.OK, MIME_PLAINTEXT, "OK")
     }
 
+    private fun handleDashboard(session: IHTTPSession): Response {
+        if (session.method != Method.GET) {
+            return newFixedLengthResponse(Response.Status.METHOD_NOT_ALLOWED, MIME_PLAINTEXT, "GET required")
+        }
+        if (!verifyHmacFromHeaders(session)) {
+            return newFixedLengthResponse(Response.Status.UNAUTHORIZED, MIME_PLAINTEXT, "Unauthorized")
+        }
+        val json = gson.toJson(onDashboardRequest())
+        return newFixedLengthResponse(Response.Status.OK, "application/json", json)
+    }
+
     private fun verifyHmacFromHeaders(session: IHTTPSession): Boolean {
-        val hmac   = session.headers[Constants.HEADER_HMAC.lowercase()] ?: return false
-        val tsStr  = session.headers[Constants.HEADER_TIMESTAMP.lowercase()] ?: return false
+        val hmac = session.headers[Constants.HEADER_HMAC.lowercase()] ?: return false
+        val tsStr = session.headers[Constants.HEADER_TIMESTAMP.lowercase()] ?: return false
         val device = session.headers[Constants.HEADER_DEVICE.lowercase()] ?: return false
         val ts = tsStr.toLongOrNull() ?: return false
         return HmacAuth.verify(HmacAuth.buildPayload(ts, device), hmac, timestampMs = ts)

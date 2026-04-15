@@ -126,7 +126,7 @@ class FileSyncer(
                                 onTransferProgress?.invoke(
                                     index + 1, toProcess.size, file.displayName, 0L, 0L
                                 )
-                                val ok = postReplace(clientInfo.ip, file.id, "image/jpeg", compressed, file.dateTaken)
+                                val ok = postReplace(clientInfo.ip, file.id, "image/jpeg", compressed, dateTakenMs)
                                 if (ok) {
                                     syncState.markCompressed(clientInfo.deviceName, file.displayName)
                                     alreadyCompressed += file.displayName
@@ -216,7 +216,7 @@ class FileSyncer(
                             syncState.markCompressed(clientInfo.deviceName, file.displayName)
                             continue
                         }
-                        val ok = postReplace(clientInfo.ip, file.id, "image/jpeg", compressedBytes, file.dateTaken)
+                        val ok = postReplace(clientInfo.ip, file.id, "image/jpeg", compressedBytes, legacyDateMs)
                         if (ok) {
                             compressed++
                             syncState.markCompressed(clientInfo.deviceName, file.displayName)

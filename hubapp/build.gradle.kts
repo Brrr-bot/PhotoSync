@@ -1,5 +1,6 @@
 import java.net.HttpURLConnection
 import java.net.URL
+import java.util.Base64
 import java.util.Properties
 
 plugins {
@@ -15,6 +16,11 @@ val localProps = Properties().also { props ->
 val githubToken: String = localProps.getProperty("github.token", "")
 val githubRepo:  String = localProps.getProperty("github.repo",  "ngalogivn-ship-it/photosync")
 
+// Read build number from shared file so both apps always have the same version
+val buildNumberFile = rootProject.file("build_number.txt")
+val appVersionCode = buildNumberFile.readText().trim().toInt()
+val appVersionName = "1.0.$appVersionCode"
+
 android {
     namespace = "com.photosync.hub"
     compileSdk = 34
@@ -23,8 +29,8 @@ android {
         applicationId = "com.photosync.hub"
         minSdk = 26
         targetSdk = 34
-        versionCode = 1
-        versionName = "1.0"
+        versionCode = appVersionCode
+        versionName = appVersionName
     }
 
     buildTypes {
@@ -54,6 +60,7 @@ dependencies {
     implementation(libs.androidx.documentfile)
     implementation(libs.androidx.exifinterface)
     implementation(libs.androidx.lifecycle.service)
+    implementation(libs.nanohttpd)
 }
 
 // ── GitHub release + APK upload ───────────────────────────────────────────────
@@ -78,8 +85,8 @@ tasks.register("uploadApkToGitHub") {
             return@doLast
         }
 
-        val vCode = android.defaultConfig.versionCode ?: 1
-        val vName = android.defaultConfig.versionName ?: "1.0"
+        val vCode = appVersionCode
+        val vName = appVersionName
         val tagName = "v$vName"
         val apkFile = file("build/outputs/apk/debug/hubapp-debug.apk")
 
@@ -160,8 +167,8 @@ tasks.register("uploadApkToGitHub") {
         println("✅  APK uploaded successfully")
 
         // ── 4. Update version.json via Contents API (base64) ─────────────────
-        val versionJson = """{"versionCode":$vCode,"versionName":"$vName","apkUrl":"https://github.com/$githubRepo/releases/download/$tagName/photosync-hub.apk"}"""
-        val encoded = java.util.Base64.getEncoder().encodeToString(versionJson.toByteArray())
+        val versionJson = """{"versionCode":$vCode,"versionName":"$vName","apkUrl":"https://github.com/$githubRepo/releases/download/$tagName/photosync-hub.apk","clientVersionCode":$vCode,"clientVersionName":"$vName","clientApkUrl":"https://github.com/$githubRepo/releases/download/$tagName/photosync-client.apk"}"""
+        val encoded = Base64.getEncoder().encodeToString(versionJson.toByteArray())
 
         // Get current SHA of version.json (needed for update)
         val (shaCode, shaResp) = githubApi("GET", "/contents/version.json")

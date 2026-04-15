@@ -24,6 +24,7 @@ import android.widget.Toast
 import androidx.appcompat.app.AppCompatActivity
 import androidx.core.app.ActivityCompat
 import androidx.core.content.ContextCompat
+import com.photosync.client.BuildConfig
 import com.photosync.client.R
 import com.photosync.client.media.MediaStoreHelper
 import com.photosync.client.service.ClientForegroundService
@@ -177,6 +178,10 @@ class MainActivity : AppCompatActivity() {
         tvAccessibilityStatus = findViewById(R.id.tv_accessibility_status)
 
         btnMenu.setOnClickListener { showDropdown(it) }
+
+        // Show build number in banner so we can verify OTA updates
+        findViewById<TextView>(R.id.tv_banner_title).text =
+            "${getString(R.string.app_name)}  v${BuildConfig.VERSION_NAME}"
     }
 
     override fun onResume() {

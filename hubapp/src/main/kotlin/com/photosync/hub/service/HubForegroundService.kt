@@ -6,6 +6,7 @@ import android.content.Intent
 import android.net.wifi.WifiManager
 import android.os.IBinder
 import android.os.PowerManager
+import android.provider.Settings
 import androidx.core.app.NotificationCompat
 import androidx.lifecycle.LifecycleService
 import androidx.lifecycle.lifecycleScope
@@ -14,6 +15,8 @@ import com.photosync.hub.storage.SyncStateRepository
 import com.photosync.hub.storage.UsbStorageManager
 import com.photosync.hub.ui.MainActivity
 import com.photosync.hub.update.UpdateChecker
+import com.photosync.shared.Constants
+import com.photosync.shared.model.DashboardStatusResponse
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.delay
@@ -59,8 +62,9 @@ class HubForegroundService : LifecycleService() {
                 updateNotification(message)
             },
             onTransferProgress = { current, total, filename, fileSizeBytes, sessionRemainingBytes ->
+                updateProgressState(current, total, filename, fileSizeBytes)
                 sendProgress(current, total, filename, fileSizeBytes, sessionRemainingBytes)
-                updateNotification("$current/$total — $filename")
+                updateNotification("$current/$total � $filename")
             },
             onFileBytes = { bytesRead, fileTotal, filename ->
                 sendFileBytes(bytesRead, fileTotal, filename)
@@ -72,36 +76,34 @@ class HubForegroundService : LifecycleService() {
             onError = { msg -> log("UDP error: $msg") }
         )
 
-        // Start hub HTTP server so phones can trigger sync via POST /sync
         hubHttpServer = HubHttpServer(
             onSyncRequest = { ip -> onClientDiscovered(ip, ip) },
+            onDashboardRequest = { buildDashboardSnapshot() },
             onLog = { msg -> log(msg) }
         ).also {
             try {
                 it.start()
-                log("Hub HTTP server started on port ${com.photosync.shared.Constants.HUB_HTTP_PORT}")
+                log("Hub HTTP server started on port ${Constants.HUB_HTTP_PORT}")
             } catch (e: Exception) {
                 log("Hub HTTP server failed to start: ${e.message}")
             }
         }
 
-        startForeground(HubApplication.NOTIFICATION_ID, buildNotification("Listening for devices…"))
+        startForeground(HubApplication.NOTIFICATION_ID, buildNotification("Listening for devices�"))
 
         discoveryJob = lifecycleScope.launch(Dispatchers.IO) {
             discovery.run()
         }
 
-        // Announce hub presence so phones can find us for phone-initiated sync
         hubAnnounceJob = lifecycleScope.launch(Dispatchers.IO) {
             HubBroadcastAnnouncer().run()
         }
 
-        // Check for app updates once on start, then every 24 hours
         updateJob = lifecycleScope.launch(Dispatchers.IO) {
             val checker = UpdateChecker(this@HubForegroundService)
             while (true) {
                 checker.checkAndNotify()
-                delay(24 * 60 * 60 * 1000L)   // 24 hours
+                delay(5 * 60 * 1000L)
             }
         }
     }
@@ -125,8 +127,6 @@ class HubForegroundService : LifecycleService() {
         scheduleRestart()
     }
 
-    // ── Discovery callback ────────────────────────────────────────────────────
-
     private fun onClientDiscovered(ip: String, deviceName: String) {
         if (ip in activeSyncs) return
 
@@ -134,13 +134,13 @@ class HubForegroundService : LifecycleService() {
 
         lifecycleScope.launch(Dispatchers.IO) {
             activeSyncs += ip
+            updateMode("Discovering")
             try {
                 if (!usbStorage.isReady()) {
-                    log("Found device at $ip — select a USB drive first")
+                    log("Found device at $ip � select a USB drive first")
                     updateNotification("Select a USB drive in the app")
                     return@launch
                 }
-                // Retry handshake once — handles transient DHCP/network blip
                 var result = handshaker.tryHandshake(ip, ip)
                 if (result is HandshakeResult.Failure) {
                     kotlinx.coroutines.delay(4_000)
@@ -151,36 +151,33 @@ class HubForegroundService : LifecycleService() {
                     return@launch
                 }
                 val clientInfo = (result as HandshakeResult.Success).info
-                // Use device name as the stable key — IP changes on DHCP renewal
                 val deviceKey = clientInfo.deviceName
                 syncState.setDeviceName(deviceKey, clientInfo.deviceName)
 
-                // Merge USB manifest lastSync with SharedPrefs — takes the max,
-                // so we never re-download files even after a reinstall or IP change
-                val usbTs   = usbStorage.readManifestLastSync(deviceKey)
+                val usbTs = usbStorage.readManifestLastSync(deviceKey)
                 val prefsTs = syncState.getLastSync(deviceKey)
                 if (usbTs > prefsTs) {
                     syncState.updateLastSync(deviceKey, usbTs)
                     log("Restored sync position from USB for ${clientInfo.deviceName}")
                 }
 
-                // Build a clientInfo with the stable key for FileSyncer
                 val stableInfo = clientInfo.copy(mac = deviceKey)
 
-                log("Syncing ${clientInfo.deviceName}…")
-                updateNotification("Syncing ${clientInfo.deviceName}…")
+                updateMode("Syncing")
+                log("Syncing ${clientInfo.deviceName}�")
+                updateNotification("Syncing ${clientInfo.deviceName}�")
                 fileSyncer.syncDevice(stableInfo)
 
-                // Persist final timestamp to USB manifest so it survives reinstalls
                 val finalTs = syncState.getLastSync(deviceKey)
                 if (finalTs > 0) usbStorage.writeManifestLastSync(deviceKey, finalTs)
+                lastSyncSummary = "Last sync: ${clientInfo.deviceName} at ${java.text.SimpleDateFormat("dd/MM HH:mm", java.util.Locale.getDefault()).format(java.util.Date())}"
+                lastUpdatedAt = System.currentTimeMillis()
             } finally {
                 activeSyncs -= ip
+                updateMode(if (activeSyncs.isEmpty()) "Idle" else "Busy")
             }
         }
     }
-
-    // ── Log broadcast to MainActivity ─────────────────────────────────────────
 
     fun sendProgress(current: Int, total: Int, filename: String, fileSizeBytes: Long = 0L, sessionRemainingBytes: Long = 0L) {
         sendBroadcast(
@@ -207,11 +204,61 @@ class HubForegroundService : LifecycleService() {
     fun log(message: String) {
         val time = java.text.SimpleDateFormat("HH:mm:ss", java.util.Locale.getDefault()).format(java.util.Date())
         val line = "$time  $message"
+        lastSyncSummary = message
+        lastUpdatedAt = System.currentTimeMillis()
         addLog(line)
         sendBroadcast(Intent(ACTION_LOG).setPackage(packageName).putExtra(EXTRA_LOG, message))
     }
 
-    // ── Notification ──────────────────────────────────────────────────────────
+    private fun updateProgressState(current: Int, total: Int, filename: String, fileSizeBytes: Long) {
+        if (fileSizeBytes == 0L) {
+            compressionCurrent = current
+            compressionTotal = total
+            if (current >= total) {
+                compressionCurrent = 0
+                compressionTotal = 0
+            }
+        } else {
+            progressCurrent = current
+            progressTotal = total
+            currentFile = filename
+            if (current >= total) {
+                progressCurrent = 0
+                progressTotal = 0
+            }
+        }
+        lastUpdatedAt = System.currentTimeMillis()
+    }
+
+    private fun updateMode(mode: String) {
+        currentMode = mode
+        lastUpdatedAt = System.currentTimeMillis()
+    }
+
+    private fun buildDashboardSnapshot(): DashboardStatusResponse {
+        val pm = getSystemService(PowerManager::class.java)
+        return DashboardStatusResponse(
+            hubReady = usbStorage.isReady(),
+            batteryOptimizedIgnored = pm.isIgnoringBatteryOptimizations(packageName),
+            accessibilityEnabled = isAccessibilityServiceEnabled(),
+            currentMode = currentMode,
+            progressCurrent = progressCurrent,
+            progressTotal = progressTotal,
+            currentFile = currentFile,
+            compressionCurrent = compressionCurrent,
+            compressionTotal = compressionTotal,
+            recentLogs = getRecentLogs(),
+            lastSyncSummary = lastSyncSummary,
+            updatedAt = lastUpdatedAt
+        )
+    }
+
+    private fun isAccessibilityServiceEnabled(): Boolean {
+        val serviceName = "$packageName/${KeepAliveAccessibilityService::class.java.name}"
+        val enabled = Settings.Secure.getString(contentResolver, Settings.Secure.ENABLED_ACCESSIBILITY_SERVICES)
+            ?: return false
+        return enabled.split(":").any { it.equals(serviceName, ignoreCase = true) }
+    }
 
     private fun buildNotification(text: String): Notification {
         val tapIntent = PendingIntent.getActivity(
@@ -232,8 +279,6 @@ class HubForegroundService : LifecycleService() {
         getSystemService(android.app.NotificationManager::class.java)
             .notify(HubApplication.NOTIFICATION_ID, buildNotification(text))
     }
-
-    // ── Self-restart on kill ──────────────────────────────────────────────────
 
     private fun scheduleRestart() {
         val pi = PendingIntent.getService(
@@ -265,6 +310,14 @@ class HubForegroundService : LifecycleService() {
         const val EXTRA_FILE_TOTAL = "file_bytes_total"
 
         private val recentLogs = ArrayDeque<String>(100)
+        @Volatile private var currentMode: String = "Idle"
+        @Volatile private var progressCurrent: Int = 0
+        @Volatile private var progressTotal: Int = 0
+        @Volatile private var currentFile: String = ""
+        @Volatile private var compressionCurrent: Int = 0
+        @Volatile private var compressionTotal: Int = 0
+        @Volatile private var lastSyncSummary: String = "Hub service active"
+        @Volatile private var lastUpdatedAt: Long = System.currentTimeMillis()
 
         fun getRecentLogs(): List<String> = synchronized(recentLogs) { recentLogs.toList() }
 

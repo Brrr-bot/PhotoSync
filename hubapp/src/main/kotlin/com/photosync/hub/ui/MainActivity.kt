@@ -15,6 +15,7 @@ import android.widget.ProgressBar
 import android.widget.ScrollView
 import android.widget.TextView
 import androidx.appcompat.app.AppCompatActivity
+import com.photosync.hub.BuildConfig
 import com.photosync.hub.R
 import com.photosync.hub.service.HubForegroundService
 import com.photosync.hub.storage.SyncStateRepository
@@ -160,6 +161,10 @@ class MainActivity : AppCompatActivity() {
         btnMenu          = findViewById(R.id.btn_menu)
 
         btnMenu.setOnClickListener { showDropdown(it) }
+
+        // Show build number in banner so we can verify OTA updates
+        findViewById<TextView>(R.id.tv_banner_title).text =
+            "${getString(R.string.app_name)}  v${BuildConfig.VERSION_NAME}"
     }
 
     override fun onResume() {
