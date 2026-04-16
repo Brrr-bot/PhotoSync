@@ -26,6 +26,7 @@ import androidx.core.app.ActivityCompat
 import androidx.core.content.ContextCompat
 import com.photosync.client.BuildConfig
 import com.photosync.client.R
+import com.photosync.client.media.LocalImageProcessor
 import com.photosync.client.media.MediaStoreHelper
 import com.photosync.client.service.ClientForegroundService
 import com.photosync.client.update.UpdateChecker
@@ -239,6 +240,10 @@ class MainActivity : AppCompatActivity() {
                     cleanupDuplicateOriginals()
                     true
                 }
+                R.id.action_fix_orientation -> {
+                    fixOrientationNow()
+                    true
+                }
                 R.id.action_battery -> {
                     startActivity(Intent(
                         Settings.ACTION_REQUEST_IGNORE_BATTERY_OPTIMIZATIONS,
@@ -450,6 +455,27 @@ class MainActivity : AppCompatActivity() {
         }.start()
     }
 
+    // ── Fix orientation / dates ───────────────────────────────────────────────
+
+    private fun fixOrientationNow() {
+        Toast.makeText(this, "Scanning images for orientation/date issues…", Toast.LENGTH_SHORT).show()
+        Thread {
+            val processor = LocalImageProcessor(this)
+            processor.clearCheckedIds()  // force full rescan when triggered manually
+            val fixed = processor.processUnfixed { done, total, msg ->
+                if (done % 20 == 0 || done == total) {
+                    runOnUiThread { Toast.makeText(this, "$done/$total: $msg", Toast.LENGTH_SHORT).show() }
+                }
+            }
+            runOnUiThread {
+                Toast.makeText(this,
+                    if (fixed > 0) "Fixed $fixed image(s) — orientation and dates corrected"
+                    else "All images already correct",
+                    Toast.LENGTH_LONG).show()
+            }
+        }.start()
+    }
+
     // ── Update check ─────────────────────────────────────────────────────────
 
     private fun checkForUpdate() {
@@ -479,6 +505,7 @@ class MainActivity : AppCompatActivity() {
         private const val REQ_WRITE_ACCESS       = 1001
         private const val REQ_DELETE_ORIGINALS   = 1002
         private const val REQ_CLEANUP_DUPLICATES = 1003
+        private const val REQ_FIX_ORIENTATION    = 1004
     }
 
     override fun onRequestPermissionsResult(requestCode: Int, permissions: Array<String>, grantResults: IntArray) {

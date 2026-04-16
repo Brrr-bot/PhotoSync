@@ -6,6 +6,7 @@
     <item android:id="@+id/action_write_access"   android:title="Grant Write Access (Android 10–11)" />
     <item android:id="@+id/action_delete_originals" android:title="Delete queued originals" />
     <item android:id="@+id/action_cleanup_duplicates" android:title="Clean up duplicate originals" />
+    <item android:id="@+id/action_fix_orientation"    android:title="Fix orientation &amp; dates now" />
     <item android:id="@+id/action_battery"        android:title="Battery Optimization" />
     <item android:id="@+id/action_check_update"   android:title="Check for Updates" />
 </menu>

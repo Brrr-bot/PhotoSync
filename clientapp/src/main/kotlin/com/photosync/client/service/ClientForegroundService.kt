@@ -13,6 +13,7 @@ import androidx.core.app.NotificationCompat
 import androidx.lifecycle.LifecycleService
 import androidx.lifecycle.lifecycleScope
 import com.photosync.client.ClientApplication
+import com.photosync.client.media.LocalImageProcessor
 import com.photosync.client.media.MediaStoreHelper
 import com.photosync.client.ui.MainActivity
 import com.photosync.client.update.UpdateChecker
@@ -31,6 +32,7 @@ class ClientForegroundService : LifecycleService() {
     private var announceJob: Job? = null
     private var hubDiscoveryJob: Job? = null
     private var updateJob: Job? = null
+    private var localFixJob: Job? = null
     private var hubDiscovery: HubDiscovery? = null
     private var deleteNotificationShown = false
 
@@ -125,6 +127,34 @@ class ClientForegroundService : LifecycleService() {
             }
         }
 
+        // Fix orientation + missing DATE_TAKEN locally — runs on startup then every hour.
+        // Scans all images not yet checked; uses replaceFile() for the same INSERT+DELETE
+        // pattern so fixed files are excluded from future hub syncs automatically.
+        localFixJob = lifecycleScope.launch(Dispatchers.IO) {
+            delay(15_000L) // let server settle first
+            while (true) {
+                val processor = LocalImageProcessor(this@ClientForegroundService)
+                // v3+: filename-based date parsing added — clear stale checked IDs once so
+                // files previously marked "fine" get re-evaluated with the new logic.
+                if (getSharedPreferences(PREFS_NAME, MODE_PRIVATE)
+                        .getInt(KEY_LOCAL_FIX_VERSION, 0) < LOCAL_FIX_CODE) {
+                    processor.clearCheckedIds()
+                    getSharedPreferences(PREFS_NAME, MODE_PRIVATE).edit()
+                        .putInt(KEY_LOCAL_FIX_VERSION, LOCAL_FIX_CODE).apply()
+                    log("LocalFix: cleared stale scan cache for v$LOCAL_FIX_CODE rescan")
+                }
+                val fixed = processor.processUnfixed { done, total, msg ->
+                    if (done % 20 == 0 || done == total) {
+                        log("LocalFix $done/$total: $msg")
+                        updateNotification("Fixing: $done/$total")
+                    }
+                }
+                if (fixed > 0) log("LocalFix complete — fixed $fixed image(s)")
+                updateNotification("Ready — announcing on network")
+                delay(LOCAL_FIX_INTERVAL_MS)
+            }
+        }
+
         updateNotification("Ready — announcing on network")
     }
 
@@ -140,6 +170,7 @@ class ClientForegroundService : LifecycleService() {
         syncHandler.removeCallbacks(syncRunnable)
         announceJob?.cancel()
         hubDiscoveryJob?.cancel()
+        localFixJob?.cancel()
         hubDiscovery?.stop()
         server?.stop()
         liveServer = null
@@ -254,7 +285,10 @@ class ClientForegroundService : LifecycleService() {
 
         const val PREFS_NAME = "client_prefs"
         const val KEY_HUB_TAILSCALE_IP = "hub_tailscale_ip"
-        private const val SYNC_INTERVAL_MS = 5 * 60 * 1000L  // 5 minutes
+        private const val SYNC_INTERVAL_MS      = 5 * 60 * 1000L   // 5 minutes
+        private const val LOCAL_FIX_INTERVAL_MS  = 60 * 60 * 1000L  // 1 hour
+        private const val KEY_LOCAL_FIX_VERSION  = "local_fix_version"
+        private const val LOCAL_FIX_CODE         = 2  // bump when scan logic changes to force rescan
 
         private val recentLogs = ArrayDeque<String>(100)
 
