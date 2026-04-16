@@ -235,6 +235,10 @@ class MainActivity : AppCompatActivity() {
                     deleteQueuedOriginals()
                     true
                 }
+                R.id.action_cleanup_duplicates -> {
+                    cleanupDuplicateOriginals()
+                    true
+                }
                 R.id.action_battery -> {
                     startActivity(Intent(
                         Settings.ACTION_REQUEST_IGNORE_BATTERY_OPTIMIZATIONS,
@@ -400,7 +404,50 @@ class MainActivity : AppCompatActivity() {
                     Toast.makeText(this, "Deletion cancelled — originals kept", Toast.LENGTH_SHORT).show()
                 }
             }
+            REQ_CLEANUP_DUPLICATES -> {
+                if (resultCode == Activity.RESULT_OK) {
+                    Toast.makeText(this,
+                        "Duplicate originals deleted — gallery cleaned up",
+                        Toast.LENGTH_LONG).show()
+                } else {
+                    Toast.makeText(this, "Cleanup cancelled", Toast.LENGTH_SHORT).show()
+                }
+            }
         }
+    }
+
+    /**
+     * Finds all `filename (1).jpg` files that have a larger uncompressed `filename.jpg` original
+     * and deletes the originals, keeping only the compressed copy.
+     * On Android 12+ with MANAGE_MEDIA this runs silently. On 10-11 it shows a system dialog.
+     */
+    private fun cleanupDuplicateOriginals() {
+        Toast.makeText(this, "Scanning for duplicate originals…", Toast.LENGTH_SHORT).show()
+        Thread {
+            val helper = MediaStoreHelper(this)
+            val deleted = helper.cleanupOrphanedOriginals()
+            runOnUiThread {
+                if (deleted > 0) {
+                    Toast.makeText(this,
+                        "Deleted $deleted original(s) — compressed copies kept",
+                        Toast.LENGTH_LONG).show()
+                } else if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
+                    // Try batch request for any that couldn't be auto-deleted
+                    val pending = helper.buildOrphanCleanupRequest()
+                    if (pending != null) {
+                        try {
+                            startIntentSenderForResult(pending.intentSender, REQ_CLEANUP_DUPLICATES, null, 0, 0, 0)
+                        } catch (e: Exception) {
+                            Toast.makeText(this, "Failed to launch cleanup: ${e.message}", Toast.LENGTH_LONG).show()
+                        }
+                    } else {
+                        Toast.makeText(this, "No duplicate originals found", Toast.LENGTH_SHORT).show()
+                    }
+                } else {
+                    Toast.makeText(this, "No duplicate originals found", Toast.LENGTH_SHORT).show()
+                }
+            }
+        }.start()
     }
 
     // ── Update check ─────────────────────────────────────────────────────────
@@ -429,8 +476,9 @@ class MainActivity : AppCompatActivity() {
     }
 
     companion object {
-        private const val REQ_WRITE_ACCESS    = 1001
-        private const val REQ_DELETE_ORIGINALS = 1002
+        private const val REQ_WRITE_ACCESS       = 1001
+        private const val REQ_DELETE_ORIGINALS   = 1002
+        private const val REQ_CLEANUP_DUPLICATES = 1003
     }
 
     override fun onRequestPermissionsResult(requestCode: Int, permissions: Array<String>, grantResults: IntArray) {

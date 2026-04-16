@@ -418,7 +418,12 @@ class MediaStoreHelper(private val context: Context) {
             MediaStore.MediaColumns.DATE_ADDED,
             MediaStore.MediaColumns.DATE_TAKEN
         )
-        val selection = "${MediaStore.MediaColumns.DATE_ADDED} > ?"
+        // Exclude IS_PENDING files — these are compressed replacements mid-flight.
+        // Belt-and-suspenders alongside the compressed_new_ids filter in getMediaSince().
+        val selection = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q)
+            "${MediaStore.MediaColumns.DATE_ADDED} > ? AND ${MediaStore.MediaColumns.IS_PENDING} = 0"
+        else
+            "${MediaStore.MediaColumns.DATE_ADDED} > ?"
         val selectionArgs = arrayOf(sinceSeconds.toString())
         val sortOrder = "${MediaStore.MediaColumns.DATE_ADDED} ASC"
 
@@ -447,5 +452,118 @@ class MediaStoreHelper(private val context: Context) {
             }
         }
         return list
+    }
+
+    /**
+     * One-time cleanup: finds original files that have a compressed `(1)` twin and deletes
+     * the originals so the gallery no longer shows duplicates.
+     *
+     * Background: the old compression loop created `filename (1).jpg` replacements while the
+     * originals still existed (MediaStore auto-renamed to avoid conflicts). Both files ended up
+     * visible in the gallery. This function finds every `filename (1).jpg` that has a matching
+     * `filename.jpg` original and removes the original, keeping only the compressed copy.
+     *
+     * Returns count of originals deleted.
+     */
+    fun cleanupOrphanedOriginals(): Int {
+        var deleted = 0
+        val projection = arrayOf(
+            MediaStore.MediaColumns._ID,
+            MediaStore.MediaColumns.DISPLAY_NAME,
+            MediaStore.MediaColumns.RELATIVE_PATH,
+            MediaStore.MediaColumns.SIZE
+        )
+        // Build a map of displayName -> (id, size) for all visible images
+        val allImages = mutableMapOf<String, Pair<Long, Long>>() // name -> (id, size)
+        for (base in listOf(
+            MediaStore.Images.Media.EXTERNAL_CONTENT_URI,
+            MediaStore.Video.Media.EXTERNAL_CONTENT_URI
+        )) {
+            val sel = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q)
+                "${MediaStore.MediaColumns.IS_PENDING} = 0" else null
+            context.contentResolver.query(base, projection, sel, null, null)
+                ?.use { c ->
+                    val idCol   = c.getColumnIndexOrThrow(MediaStore.MediaColumns._ID)
+                    val nameCol = c.getColumnIndexOrThrow(MediaStore.MediaColumns.DISPLAY_NAME)
+                    val sizeCol = c.getColumnIndexOrThrow(MediaStore.MediaColumns.SIZE)
+                    while (c.moveToNext()) {
+                        val name = c.getString(nameCol) ?: continue
+                        val id   = c.getLong(idCol)
+                        val size = c.getLong(sizeCol)
+                        allImages[name] = Pair(id, size)
+                    }
+                }
+        }
+
+        // For each file whose name ends with " (1).ext", check if the plain original exists
+        // and is LARGER (meaning it's the uncompressed original, not another compressed copy).
+        // Pattern: "photo (1).jpg" → look for "photo.jpg"
+        val suffixRegex = Regex("""^(.+) \(1\)(\.[^.]+)$""")
+        for ((compressedName, compressedEntry) in allImages) {
+            val match = suffixRegex.matchEntire(compressedName) ?: continue
+            val stem = match.groupValues[1]
+            val ext  = match.groupValues[2]
+            val originalName = "$stem$ext"
+
+            val originalEntry = allImages[originalName] ?: continue
+            val (originalId, originalSize) = originalEntry
+            val (_, compressedSize) = compressedEntry
+
+            // Only delete original if compressed version is actually smaller
+            // (guards against deleting originals when the "(1)" file is unrelated)
+            if (compressedSize < originalSize) {
+                val origUri = findOriginalUri(originalId) ?: continue
+                try {
+                    val rows = context.contentResolver.delete(origUri, null, null)
+                    if (rows > 0) deleted++
+                } catch (_: SecurityException) {
+                    // MANAGE_MEDIA not granted — skip; user will need to approve via batch request
+                }
+            }
+        }
+        return deleted
+    }
+
+    /**
+     * Builds a batch delete request for all orphaned originals that could not be deleted
+     * automatically (Android 10-11 without MANAGE_MEDIA). Returns null if nothing to approve.
+     */
+    @androidx.annotation.RequiresApi(Build.VERSION_CODES.Q)
+    fun buildOrphanCleanupRequest(): android.app.PendingIntent? {
+        val projection = arrayOf(
+            MediaStore.MediaColumns._ID,
+            MediaStore.MediaColumns.DISPLAY_NAME,
+            MediaStore.MediaColumns.SIZE
+        )
+        val allImages = mutableMapOf<String, Pair<Long, Long>>()
+        for (base in listOf(
+            MediaStore.Images.Media.EXTERNAL_CONTENT_URI,
+            MediaStore.Video.Media.EXTERNAL_CONTENT_URI
+        )) {
+            val sel = "${MediaStore.MediaColumns.IS_PENDING} = 0"
+            context.contentResolver.query(base, projection, sel, null, null)
+                ?.use { c ->
+                    val idCol   = c.getColumnIndexOrThrow(MediaStore.MediaColumns._ID)
+                    val nameCol = c.getColumnIndexOrThrow(MediaStore.MediaColumns.DISPLAY_NAME)
+                    val sizeCol = c.getColumnIndexOrThrow(MediaStore.MediaColumns.SIZE)
+                    while (c.moveToNext()) {
+                        allImages[c.getString(nameCol) ?: continue] = Pair(c.getLong(idCol), c.getLong(sizeCol))
+                    }
+                }
+        }
+
+        val toDelete = mutableListOf<android.net.Uri>()
+        val suffixRegex = Regex("""^(.+) \(1\)(\.[^.]+)$""")
+        for ((compressedName, compressedEntry) in allImages) {
+            val match = suffixRegex.matchEntire(compressedName) ?: continue
+            val originalName = "${match.groupValues[1]}${match.groupValues[2]}"
+            val originalEntry = allImages[originalName] ?: continue
+            if (compressedEntry.second < originalEntry.second) {
+                findOriginalUri(originalEntry.first)?.let { toDelete += it }
+            }
+        }
+
+        if (toDelete.isEmpty()) return null
+        return runCatching { MediaStore.createDeleteRequest(context.contentResolver, toDelete) }.getOrNull()
     }
 }
