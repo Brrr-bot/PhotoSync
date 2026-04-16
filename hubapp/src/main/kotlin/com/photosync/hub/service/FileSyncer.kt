@@ -85,10 +85,16 @@ class FileSyncer(
         val alreadyCompressed = syncState.getCompressedFiles(clientInfo.deviceName).toMutableSet()
 
         // Triple dedup guard (see UsbStorageManager for SAF extension-mangling details)
+        // Also strip MediaStore auto-rename suffixes like " (1)", " (2)" etc. so a file
+        // that was already compressed and replaced doesn't get re-downloaded under its
+        // renamed displayName and trigger the compression loop again.
         val toProcess = allFiles.filter { file ->
+            val strippedName = stripReplacementSuffixes(file.displayName)
             file.id !in downloadedIds &&
             file.displayName !in existing &&
-            file.displayName.substringBeforeLast('.') !in existing
+            file.displayName.substringBeforeLast('.') !in existing &&
+            strippedName !in existing &&
+            strippedName !in alreadyCompressed
         }
 
         var synced = 0
@@ -116,7 +122,8 @@ class FileSyncer(
                         usbStorage.writeFile(clientInfo.deviceName, file, ByteArrayInputStream(bytes))
                         onFileBytes?.invoke(bytes.size.toLong(), bytes.size.toLong(), file.displayName)
 
-                        if (file.displayName !in alreadyCompressed) {
+                        if (file.displayName !in alreadyCompressed &&
+                            stripReplacementSuffixes(file.displayName) !in alreadyCompressed) {
                             val dateTakenMs = if (file.dateTaken > 0) file.dateTaken
                                              else if (file.dateAdded > 0) file.dateAdded * 1000L
                                              else 0L
@@ -380,6 +387,18 @@ class FileSyncer(
             onProgress("Replace error id=$id: ${e.javaClass.simpleName}: ${e.message}")
             false
         }
+    }
+
+    /**
+     * Strips MediaStore auto-rename suffixes like " (1)", " (2)" from a filename so that
+     * `photo (1).jpg` is treated as equivalent to `photo.jpg` in dedup checks.
+     * e.g. "photo (1).jpg" → "photo.jpg", "IMG_20250101 (3).jpg" → "IMG_20250101.jpg"
+     */
+    private fun stripReplacementSuffixes(name: String): String {
+        val ext  = if ('.' in name) ".${name.substringAfterLast('.')}" else ""
+        val stem = if (ext.isNotEmpty()) name.dropLast(ext.length) else name
+        val stripped = stem.replace(Regex("""\s*\(\d+\)\s*$"""), "").trimEnd()
+        return if (ext.isNotEmpty()) "$stripped$ext" else stripped
     }
 
     /** POSTs date corrections to /fix_dates on the client. Returns count of updated files. */

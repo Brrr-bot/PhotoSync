@@ -33,6 +33,9 @@ class MediaStoreHelper(private val context: Context) {
         private const val KEY_IDS = "ids"
         private const val KEY_REPLACED_ORIGINAL_IDS = "replaced_original_ids"
         private const val KEY_COMPRESSED_NEW_IDS = "compressed_new_ids"
+        // Display names of replacement files — survives SharedPrefs clear of compressed_new_ids
+        // so getMediaSince() can still filter them out if IDs are no longer present
+        private const val KEY_COMPRESSED_NAMES = "compressed_display_names"
     }
 
     // ── Compression loop prevention ──────────────────────────────────────────
@@ -43,14 +46,17 @@ class MediaStoreHelper(private val context: Context) {
         compressionPrefs.getStringSet(KEY_REPLACED_ORIGINAL_IDS, emptySet())!!
             .contains(originalId.toString())
 
-    private fun markReplaced(originalId: Long, newId: Long) {
+    private fun markReplaced(originalId: Long, newId: Long, newDisplayName: String = "") {
         val origSet = compressionPrefs.getStringSet(KEY_REPLACED_ORIGINAL_IDS, emptySet())!!.toMutableSet()
         origSet.add(originalId.toString())
         val newSet = compressionPrefs.getStringSet(KEY_COMPRESSED_NEW_IDS, emptySet())!!.toMutableSet()
         newSet.add(newId.toString())
+        val nameSet = compressionPrefs.getStringSet(KEY_COMPRESSED_NAMES, emptySet())!!.toMutableSet()
+        if (newDisplayName.isNotEmpty()) nameSet.add(newDisplayName)
         compressionPrefs.edit()
             .putStringSet(KEY_REPLACED_ORIGINAL_IDS, origSet)
             .putStringSet(KEY_COMPRESSED_NEW_IDS, newSet)
+            .putStringSet(KEY_COMPRESSED_NAMES, nameSet)
             .apply()
     }
 
@@ -134,11 +140,14 @@ class MediaStoreHelper(private val context: Context) {
         results += queryUri(MediaStore.Images.Media.EXTERNAL_CONTENT_URI, sinceSeconds)
         results += queryUri(MediaStore.Video.Media.EXTERNAL_CONTENT_URI, sinceSeconds)
         // Filter out files created by replaceFile() — they are compressed replacements
-        // and must never be sent back to the hub (prevents download/compress/replace loop)
-        val compressedNewIds = compressionPrefs.getStringSet(KEY_COMPRESSED_NEW_IDS, emptySet())!!
+        // and must never be sent back to the hub (prevents download/compress/replace loop).
+        // We check both IDs and display names: IDs survive normal operation, names survive
+        // a SharedPrefs wipe (e.g. app reinstall) so the filter remains robust either way.
+        val compressedNewIds   = compressionPrefs.getStringSet(KEY_COMPRESSED_NEW_IDS, emptySet())!!
+        val compressedNames    = compressionPrefs.getStringSet(KEY_COMPRESSED_NAMES,   emptySet())!!
         // Sort oldest-first so hub can advance timestamp incrementally
         return results
-            .filter { it.id.toString() !in compressedNewIds }
+            .filter { it.id.toString() !in compressedNewIds && it.displayName !in compressedNames }
             .sortedBy { it.dateAdded }
     }
 
@@ -313,7 +322,7 @@ class MediaStoreHelper(private val context: Context) {
                         }, null, null)
                     }
                 }
-                markReplaced(originalId, newId)
+                markReplaced(originalId, newId, displayName)
                 return ReplaceResult.REPLACED
             } catch (sec: SecurityException) {
                 // Delete needs user approval.  Keep the new file as IS_PENDING=1 so it stays
@@ -328,7 +337,7 @@ class MediaStoreHelper(private val context: Context) {
                     }, null, null)
                 }
                 enqueuePendingDelete(originalId, newId, isVideo, dateAdded, dateModified)
-                markReplaced(originalId, newId)
+                markReplaced(originalId, newId, displayName)
                 return ReplaceResult.COMPRESSED_PENDING_DELETE
             }
 
