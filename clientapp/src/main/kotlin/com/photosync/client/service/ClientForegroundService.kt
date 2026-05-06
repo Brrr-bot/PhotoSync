@@ -59,7 +59,12 @@ class ClientForegroundService : LifecycleService() {
         // Restore persisted Tailscale IP so remote sync works immediately after restart
         liveHubTailscaleIp = getSharedPreferences(PREFS_NAME, MODE_PRIVATE)
             .getString(KEY_HUB_TAILSCALE_IP, null)
-        startForeground(ClientApplication.NOTIFICATION_ID, buildNotification("Starting…"))
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
+            startForeground(ClientApplication.NOTIFICATION_ID, buildNotification("Starting…"),
+                android.content.pm.ServiceInfo.FOREGROUND_SERVICE_TYPE_DATA_SYNC)
+        } else {
+            startForeground(ClientApplication.NOTIFICATION_ID, buildNotification("Starting…"))
+        }
 
         // Acquire locks before starting the server
         wakeLock = (getSystemService(POWER_SERVICE) as PowerManager)
