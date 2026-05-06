@@ -515,7 +515,7 @@ class MainActivity : AppCompatActivity() {
         Thread {
             val processor = LocalImageProcessor(this)
             processor.clearCheckedIds()  // force full rescan when triggered manually
-            val fixed = processor.processUnfixed(fixOrientation = true) { done, total, msg ->
+            val fixed = processor.processUnfixed { done, total, msg ->
                 if (done % 20 == 0 || done == total) {
                     runOnUiThread { Toast.makeText(this, "$done/$total: $msg", Toast.LENGTH_SHORT).show() }
                 }

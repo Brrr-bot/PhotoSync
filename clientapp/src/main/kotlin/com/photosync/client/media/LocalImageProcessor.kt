@@ -8,6 +8,7 @@ import android.graphics.BitmapFactory
 import android.graphics.Matrix
 import android.media.ExifInterface
 import android.provider.MediaStore
+import com.photosync.client.util.RemoteLogger
 import com.photosync.shared.model.MediaFileInfo
 import java.io.ByteArrayInputStream
 import java.io.ByteArrayOutputStream
@@ -42,7 +43,7 @@ class LocalImageProcessor(private val context: Context) {
 
     // ── Public API ────────────────────────────────────────────────────────────
 
-    fun processUnfixed(fixOrientation: Boolean = false, onProgress: ((done: Int, total: Int, msg: String) -> Unit)? = null): Int {
+    fun processUnfixed(onProgress: ((done: Int, total: Int, msg: String) -> Unit)? = null): Int {
         val checkedIds  = prefs.getStringSet(KEY_CHECKED, emptySet())!!
         val replacedIds = compressionPrefs.getStringSet("replaced_original_ids", emptySet())!!
         val newIds      = compressionPrefs.getStringSet("compressed_new_ids", emptySet())!!
@@ -80,17 +81,45 @@ class LocalImageProcessor(private val context: Context) {
             val orientation = exif.getAttributeInt(
                 ExifInterface.TAG_ORIENTATION, ExifInterface.ORIENTATION_NORMAL)
 
+            val exifDateRaw  = exif.getAttribute(ExifInterface.TAG_DATETIME_ORIGINAL)
+            val exifDateMs   = exifDateRaw?.let { parseExifDate(it) }
+            val filenameDateMs = parseDateFromFilename(image.displayName)
+
             // Best date: MediaStore → EXIF → filename
             val effectiveDateTaken = when {
                 image.dateTaken > 0 -> image.dateTaken
-                else -> exif.getAttribute(ExifInterface.TAG_DATETIME_ORIGINAL)
-                    ?.let { parseExifDate(it) }
-                    ?: parseDateFromFilename(image.displayName)
-                    ?: 0L
+                exifDateMs != null  -> exifDateMs
+                else                -> filenameDateMs ?: 0L
             }
 
-            val needsRotation = fixOrientation &&
-                                orientation != ExifInterface.ORIENTATION_NORMAL &&
+            // Pixel dimensions without full decode
+            val opts = BitmapFactory.Options().also { it.inJustDecodeBounds = true }
+            BitmapFactory.decodeByteArray(bytes, 0, bytes.size, opts)
+            val pw = opts.outWidth
+            val ph = opts.outHeight
+
+            val orientName = when (orientation) {
+                ExifInterface.ORIENTATION_NORMAL       -> "NORMAL(1)"
+                ExifInterface.ORIENTATION_FLIP_HORIZONTAL -> "FLIP_H(2)"
+                ExifInterface.ORIENTATION_ROTATE_180   -> "ROTATE_180(3)"
+                ExifInterface.ORIENTATION_FLIP_VERTICAL   -> "FLIP_V(4)"
+                ExifInterface.ORIENTATION_TRANSPOSE    -> "TRANSPOSE(5)"
+                ExifInterface.ORIENTATION_ROTATE_90    -> "ROTATE_90(6)"
+                ExifInterface.ORIENTATION_TRANSVERSE   -> "TRANSVERSE(7)"
+                ExifInterface.ORIENTATION_ROTATE_270   -> "ROTATE_270(8)"
+                ExifInterface.ORIENTATION_UNDEFINED    -> "UNDEFINED(0)"
+                else -> "UNKNOWN($orientation)"
+            }
+            val dateFmt = SimpleDateFormat("yyyy-MM-dd HH:mm:ss", Locale.US)
+            val msDateStr = if (image.dateTaken > 0) dateFmt.format(Date(image.dateTaken)) else "null"
+            val exifDateStr = exifDateRaw ?: "null"
+            val fnDateStr = if (filenameDateMs != null) dateFmt.format(Date(filenameDateMs)) else "null"
+            RemoteLogger.i("[SCAN] id=${image.id} name=${image.displayName} " +
+                "size=${image.size}B ${pw}x${ph}px " +
+                "orient=$orientName ms_date=$msDateStr exif_date=$exifDateStr fn_date=$fnDateStr " +
+                "mime=${image.mimeType} path=${image.relativePath}")
+
+            val needsRotation = orientation != ExifInterface.ORIENTATION_NORMAL &&
                                 orientation != ExifInterface.ORIENTATION_UNDEFINED &&
                                 orientation != 0
             val needsDateFix  = effectiveDateTaken > 0 && image.dateTaken == 0L
