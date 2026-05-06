@@ -22,14 +22,17 @@ import android.widget.ScrollView
 import android.widget.TextView
 import android.widget.Toast
 import androidx.appcompat.app.AppCompatActivity
+import androidx.appcompat.widget.SwitchCompat
 import androidx.core.app.ActivityCompat
 import androidx.core.content.ContextCompat
 import com.photosync.client.BuildConfig
 import com.photosync.client.R
 import com.photosync.client.media.LocalImageProcessor
 import com.photosync.client.media.MediaStoreHelper
+import com.photosync.client.network.TailscaleIpDetector
 import com.photosync.client.service.ClientForegroundService
 import com.photosync.client.update.UpdateChecker
+import com.photosync.shared.Constants
 import java.text.SimpleDateFormat
 import java.util.Date
 import java.util.Locale
@@ -50,6 +53,8 @@ class MainActivity : AppCompatActivity() {
     private lateinit var tvCompressionLabel: TextView
     private lateinit var tvHubStatus: TextView
     private lateinit var tvAccessibilityStatus: TextView
+    private lateinit var tvTailscaleStatus: TextView
+    private lateinit var swMobileData: SwitchCompat
 
     private val logLines = ArrayDeque<String>(100)
 
@@ -116,21 +121,21 @@ class MainActivity : AppCompatActivity() {
         // Pending deletes are handled automatically by AutoDeleteActivity (launched by the service)
 
         // ── Compression bar ───────────────────────────────────────────────────
-        val compTotal = srv.stateCompressionTotal
-        val compDone  = srv.stateCompressionDone
-        val compFile  = srv.stateCompressionFile
-        if (compTotal > 0) {
+        // Stays visible once any compression has happened. Shows lifetime total +
+        // current batch progress. No auto-hide (was causing visible flash on every
+        // single-file batch as the timer toggled between "1/1" and "Idle").
+        val compTotal     = srv.stateCompressionTotal
+        val compDone      = srv.stateCompressionDone
+        val compFile      = srv.stateCompressionFile
+        val compLifetime  = srv.stateCompressionLifetime
+        if (compTotal > 0 || compLifetime > 0) {
             pbCompression.visibility = View.VISIBLE
-            pbCompression.max = compTotal
+            pbCompression.max = if (compTotal > 0) compTotal else 1
             pbCompression.progress = compDone
-            tvCompressionLabel.text = "$compDone / $compTotal  ·  $compFile"
-            if (compDone >= compTotal) {
-                pbCompression.postDelayed({
-                    pbCompression.progress = 0
-                    tvCompressionLabel.text = "Idle"
-                    pbCompression.visibility = View.INVISIBLE
-                }, 3000)
-            }
+            tvCompressionLabel.text = if (compTotal > 0)
+                "$compLifetime compressed total  ·  current $compDone / $compTotal  ·  $compFile"
+            else
+                "$compLifetime compressed total  ·  idle"
         }
     }
 
@@ -177,6 +182,14 @@ class MainActivity : AppCompatActivity() {
         tvCompressionLabel = findViewById(R.id.tv_compression_label)
         tvHubStatus           = findViewById(R.id.tv_hub_status)
         tvAccessibilityStatus = findViewById(R.id.tv_accessibility_status)
+        tvTailscaleStatus     = findViewById(R.id.tv_tailscale_status)
+        swMobileData          = findViewById(R.id.sw_mobile_data)
+
+        val prefs = getSharedPreferences(ClientForegroundService.PREFS_NAME, MODE_PRIVATE)
+        swMobileData.isChecked = prefs.getBoolean(ClientForegroundService.KEY_ALLOW_MOBILE_DATA, false)
+        swMobileData.setOnCheckedChangeListener { _, checked ->
+            prefs.edit().putBoolean(ClientForegroundService.KEY_ALLOW_MOBILE_DATA, checked).apply()
+        }
 
         btnMenu.setOnClickListener { showDropdown(it) }
 
@@ -228,6 +241,10 @@ class MainActivity : AppCompatActivity() {
                     requestManageMedia()
                     true
                 }
+                R.id.action_all_files -> {
+                    requestAllFilesAccess()
+                    true
+                }
                 R.id.action_write_access -> {
                     requestWriteAccess()
                     true
@@ -251,6 +268,10 @@ class MainActivity : AppCompatActivity() {
                     ))
                     true
                 }
+                R.id.action_accessibility -> {
+                    startActivity(Intent(Settings.ACTION_ACCESSIBILITY_SETTINGS))
+                    true
+                }
                 R.id.action_check_update -> {
                     checkForUpdate()
                     true
@@ -269,12 +290,15 @@ class MainActivity : AppCompatActivity() {
             else append("✗  Media read missing — use menu")
             append("\n")
             if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
-                // Android 12+: MANAGE_MEDIA route
-                if (hasManageMediaPermission()) append("✓  Media manage granted (compression ready)")
+                if (hasManageMediaPermission()) append("✓  Media manage granted")
                 else append("✗  Media manage not granted — menu → Grant Media Manage")
+                append("\n")
+            }
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
+                if (hasAllFilesAccess()) append("✓  All-files access granted (silent in-place compress)")
+                else append("✗  All-files access missing — menu → Grant All-Files Access")
             } else if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
-                // Android 10–11: createWriteRequest route
-                append("◎  Android 10–11: use menu → Grant Write Access before compression")
+                append("◎  Android 10: use menu → Grant Write Access before compression")
             }
         }
 
@@ -283,6 +307,12 @@ class MainActivity : AppCompatActivity() {
             "✓  Battery optimization exempt"
         else
             "✗  Not battery exempt — use menu"
+
+        val tsIp = TailscaleIpDetector.getIp()
+        tvTailscaleStatus.text = if (tsIp != null)
+            "◉  http://$tsIp:${Constants.CLIENT_PORT}/"
+        else
+            "○  Tailscale not connected — install for remote status"
     }
 
     // ── Permissions ───────────────────────────────────────────────────────────
@@ -326,6 +356,29 @@ class MainActivity : AppCompatActivity() {
     private fun requestManageMedia() {
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
             startActivity(Intent(Settings.ACTION_REQUEST_MANAGE_MEDIA, Uri.parse("package:$packageName")))
+        }
+    }
+
+    /** True if MANAGE_EXTERNAL_STORAGE has been granted (silent in-place overwrite ready). */
+    private fun hasAllFilesAccess(): Boolean {
+        return if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R)
+            android.os.Environment.isExternalStorageManager()
+        else true   // pre-Android 11: not applicable
+    }
+
+    /** Sends the user to system Settings → All-Files Access for this app. */
+    private fun requestAllFilesAccess() {
+        if (Build.VERSION.SDK_INT < Build.VERSION_CODES.R) {
+            Toast.makeText(this, "Not needed on Android 10 and below", Toast.LENGTH_SHORT).show()
+            return
+        }
+        try {
+            startActivity(Intent(
+                Settings.ACTION_MANAGE_APP_ALL_FILES_ACCESS_PERMISSION,
+                Uri.parse("package:$packageName")
+            ))
+        } catch (e: Exception) {
+            startActivity(Intent(Settings.ACTION_MANAGE_ALL_FILES_ACCESS_PERMISSION))
         }
     }
 
@@ -462,7 +515,7 @@ class MainActivity : AppCompatActivity() {
         Thread {
             val processor = LocalImageProcessor(this)
             processor.clearCheckedIds()  // force full rescan when triggered manually
-            val fixed = processor.processUnfixed { done, total, msg ->
+            val fixed = processor.processUnfixed(fixOrientation = true) { done, total, msg ->
                 if (done % 20 == 0 || done == total) {
                     runOnUiThread { Toast.makeText(this, "$done/$total: $msg", Toast.LENGTH_SHORT).show() }
                 }

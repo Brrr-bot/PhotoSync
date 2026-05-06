@@ -17,12 +17,15 @@ import com.photosync.client.media.LocalImageProcessor
 import com.photosync.client.media.MediaStoreHelper
 import com.photosync.client.ui.MainActivity
 import com.photosync.client.update.UpdateChecker
+import com.photosync.client.util.RemoteLogger
 import com.photosync.shared.Constants
 import com.photosync.shared.crypto.HmacAuth
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
+import android.net.ConnectivityManager
+import android.net.NetworkCapabilities
 import java.net.HttpURLConnection
 import java.net.URL
 
@@ -33,6 +36,7 @@ class ClientForegroundService : LifecycleService() {
     private var hubDiscoveryJob: Job? = null
     private var updateJob: Job? = null
     private var localFixJob: Job? = null
+    private var locationJob: Job? = null
     private var hubDiscovery: HubDiscovery? = null
     private var deleteNotificationShown = false
 
@@ -87,6 +91,12 @@ class ClientForegroundService : LifecycleService() {
                     .putString(KEY_HUB_TAILSCALE_IP, ip).apply()
                 liveHubTailscaleIp = ip
                 log("Hub Tailscale IP: $ip (stored for remote sync)")
+            },
+            onNudge = {
+                lifecycleScope.launch(Dispatchers.IO) {
+                    com.photosync.client.update.UpdateChecker(this@ClientForegroundService)
+                        .checkAndNotify()
+                }
             }
         ).also {
             try {
@@ -98,17 +108,38 @@ class ClientForegroundService : LifecycleService() {
             }
         }
 
+        // Auto-cleanup orphaned originals on startup. Old compression runs (v37 and
+        // earlier) created "(1)" duplicates while leaving the originals in place; this
+        // sweep deletes any original whose smaller compressed twin already exists, then
+        // renames stranded "(1)" files back to the clean name. Runs once per startup.
+        lifecycleScope.launch(Dispatchers.IO) {
+            try {
+                val helper = MediaStoreHelper(this@ClientForegroundService)
+                val n = helper.cleanupOrphanedOriginals()
+                if (n > 0) log("Auto-cleanup deleted $n orphaned original(s)")
+            } catch (e: Exception) {
+                log("Auto-cleanup failed: ${e.message}")
+            }
+        }
+
         // Broadcast presence every 15s so the hub can find us
+        // Pass hub's Tailscale IP so we can unicast when off the same WiFi
         announceJob = lifecycleScope.launch(Dispatchers.IO) {
             log("Starting UDP announcer on port ${Constants.DISCOVERY_PORT}")
-            BroadcastAnnouncer().run()
+            BroadcastAnnouncer(hubTailscaleIpProvider = { liveHubTailscaleIp }).run()
         }
 
         // Listen for hub announcements so we know hub's IP for phone-initiated sync
-        hubDiscovery = HubDiscovery { ip, port, deviceName ->
+        hubDiscovery = HubDiscovery { ip, port, deviceName, tailscaleIp ->
             liveHubIp = ip
             liveHubPort = port
             liveHubName = deviceName
+            if (tailscaleIp != null) {
+                // Persist hub's Tailscale IP so remote sync works after leaving local network
+                getSharedPreferences(PREFS_NAME, MODE_PRIVATE).edit()
+                    .putString(KEY_HUB_TAILSCALE_IP, tailscaleIp).apply()
+                liveHubTailscaleIp = tailscaleIp
+            }
         }.also { discovery ->
             hubDiscoveryJob = lifecycleScope.launch(Dispatchers.IO) {
                 discovery.run()
@@ -123,7 +154,7 @@ class ClientForegroundService : LifecycleService() {
             val checker = UpdateChecker(this@ClientForegroundService)
             while (true) {
                 checker.checkAndNotify()
-                delay(5 * 60 * 1000L)
+                delay(30_000L)
             }
         }
 
@@ -155,6 +186,18 @@ class ClientForegroundService : LifecycleService() {
             }
         }
 
+        // Send location to hub every 5 minutes
+        locationJob = lifecycleScope.launch(Dispatchers.IO) {
+            val tracker = LocationTracker(this@ClientForegroundService)
+            while (true) {
+                val ip = liveHubIp ?: liveHubTailscaleIp
+                if (ip != null) {
+                    try { tracker.getAndSend(ip, liveHubPort) } catch (_: Exception) {}
+                }
+                delay(LOCATION_INTERVAL_MS)
+            }
+        }
+
         updateNotification("Ready — announcing on network")
     }
 
@@ -171,6 +214,7 @@ class ClientForegroundService : LifecycleService() {
         announceJob?.cancel()
         hubDiscoveryJob?.cancel()
         localFixJob?.cancel()
+        locationJob?.cancel()
         hubDiscovery?.stop()
         server?.stop()
         liveServer = null
@@ -213,6 +257,7 @@ class ClientForegroundService : LifecycleService() {
         val line = "$time  $message"
         addLog(line)
         sendBroadcast(Intent(ACTION_LOG).setPackage(packageName).putExtra(EXTRA_LOG, message))
+        RemoteLogger.i(message)
     }
 
     private fun updateNotification(text: String) {
@@ -243,7 +288,16 @@ class ClientForegroundService : LifecycleService() {
      * this heartbeat ensures sync still happens remotely or after missed packets.
      * The hub's activeSyncs guard prevents double-syncing if already in progress.
      */
+    private fun isMobileData(): Boolean {
+        val cm = getSystemService(ConnectivityManager::class.java)
+        val net = cm.activeNetwork ?: return false
+        val caps = cm.getNetworkCapabilities(net) ?: return false
+        return caps.hasTransport(NetworkCapabilities.TRANSPORT_CELLULAR)
+    }
+
     private fun autoTriggerHubSync() {
+        if (isMobileData() && !getSharedPreferences(PREFS_NAME, MODE_PRIVATE)
+                .getBoolean(KEY_ALLOW_MOBILE_DATA, false)) return
         val ip   = liveHubIp ?: liveHubTailscaleIp ?: return
         val port = liveHubPort
         Thread {
@@ -285,10 +339,12 @@ class ClientForegroundService : LifecycleService() {
 
         const val PREFS_NAME = "client_prefs"
         const val KEY_HUB_TAILSCALE_IP = "hub_tailscale_ip"
+        const val KEY_ALLOW_MOBILE_DATA = "allow_mobile_data"
         private const val SYNC_INTERVAL_MS      = 5 * 60 * 1000L   // 5 minutes
+        private const val LOCATION_INTERVAL_MS   = 5 * 60 * 1000L   // 5 minutes
         private const val LOCAL_FIX_INTERVAL_MS  = 60 * 60 * 1000L  // 1 hour
         private const val KEY_LOCAL_FIX_VERSION  = "local_fix_version"
-        private const val LOCAL_FIX_CODE         = 2  // bump when scan logic changes to force rescan
+        private const val LOCAL_FIX_CODE         = 7  // bump when scan logic changes to force rescan
 
         private val recentLogs = ArrayDeque<String>(100)
 
