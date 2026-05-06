@@ -119,9 +119,11 @@ class LocalImageProcessor(private val context: Context) {
                 "orient=$orientName ms_date=$msDateStr exif_date=$exifDateStr fn_date=$fnDateStr " +
                 "mime=${image.mimeType} path=${image.relativePath}")
 
-            val needsRotation = orientation != ExifInterface.ORIENTATION_NORMAL &&
-                                orientation != ExifInterface.ORIENTATION_UNDEFINED &&
-                                orientation != 0
+            // Auto-rotation disabled: Samsung Gallery (and all modern viewers) handle
+            // EXIF orientation correctly. Baking rotation into pixels causes corruption
+            // on devices where the camera sets ROTATE_90 for portrait but pixels are correct.
+            // Rotation is still available via the manual Fix Orientation menu action.
+            val needsRotation = false
             val needsDateFix  = effectiveDateTaken > 0 && image.dateTaken == 0L
 
             when {

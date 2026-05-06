@@ -349,7 +349,7 @@ class ClientForegroundService : LifecycleService() {
         private const val LOCATION_INTERVAL_MS   = 5 * 60 * 1000L   // 5 minutes
         private const val LOCAL_FIX_INTERVAL_MS  = 60 * 60 * 1000L  // 1 hour
         private const val KEY_LOCAL_FIX_VERSION  = "local_fix_version"
-        private const val LOCAL_FIX_CODE         = 8  // bump when scan logic changes to force rescan
+        private const val LOCAL_FIX_CODE         = 9  // bump when scan logic changes to force rescan
 
         private val recentLogs = ArrayDeque<String>(100)
 
