@@ -1,8 +1,10 @@
 package com.photosync.client.service
 
+import android.Manifest
 import android.app.Notification
 import android.app.PendingIntent
 import android.content.Intent
+import android.content.pm.PackageManager
 import android.net.wifi.WifiManager
 import android.os.Build
 import android.os.Handler
@@ -10,6 +12,7 @@ import android.os.IBinder
 import android.os.Looper
 import android.os.PowerManager
 import androidx.core.app.NotificationCompat
+import androidx.core.content.ContextCompat
 import androidx.lifecycle.LifecycleService
 import androidx.lifecycle.lifecycleScope
 import com.photosync.client.ClientApplication
@@ -37,6 +40,7 @@ class ClientForegroundService : LifecycleService() {
     private var updateJob: Job? = null
     private var localFixJob: Job? = null
     private var locationJob: Job? = null
+    private var locationTracker: LocationTracker? = null
     private var hubDiscovery: HubDiscovery? = null
     private var deleteNotificationShown = false
 
@@ -59,9 +63,14 @@ class ClientForegroundService : LifecycleService() {
         // Restore persisted Tailscale IP so remote sync works immediately after restart
         liveHubTailscaleIp = getSharedPreferences(PREFS_NAME, MODE_PRIVATE)
             .getString(KEY_HUB_TAILSCALE_IP, null)
+        val hasLocation = ContextCompat.checkSelfPermission(
+            this, Manifest.permission.ACCESS_FINE_LOCATION) == PackageManager.PERMISSION_GRANTED ||
+            ContextCompat.checkSelfPermission(
+            this, Manifest.permission.ACCESS_COARSE_LOCATION) == PackageManager.PERMISSION_GRANTED
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
-            startForeground(ClientApplication.NOTIFICATION_ID, buildNotification("Starting…"),
-                android.content.pm.ServiceInfo.FOREGROUND_SERVICE_TYPE_DATA_SYNC)
+            val fgsType = android.content.pm.ServiceInfo.FOREGROUND_SERVICE_TYPE_DATA_SYNC or
+                if (hasLocation) android.content.pm.ServiceInfo.FOREGROUND_SERVICE_TYPE_LOCATION else 0
+            startForeground(ClientApplication.NOTIFICATION_ID, buildNotification("Starting…"), fgsType)
         } else {
             startForeground(ClientApplication.NOTIFICATION_ID, buildNotification("Starting…"))
         }
@@ -191,15 +200,17 @@ class ClientForegroundService : LifecycleService() {
             }
         }
 
-        // Send location to hub every 5 minutes
-        locationJob = lifecycleScope.launch(Dispatchers.IO) {
-            val tracker = LocationTracker(this@ClientForegroundService)
-            while (true) {
-                val ip = liveHubIp ?: liveHubTailscaleIp
-                if (ip != null) {
-                    try { tracker.getAndSend(ip, liveHubPort) } catch (_: Exception) {}
+        // Start location tracker — registers GPS/network listeners for fresh fixes
+        locationTracker = LocationTracker(this).also { tracker ->
+            tracker.start()
+            // Log + save + send to hub every 1 minute
+            locationJob = lifecycleScope.launch(Dispatchers.IO) {
+                delay(10_000L) // short settle before first fix attempt
+                while (true) {
+                    val ip = liveHubIp ?: liveHubTailscaleIp
+                    try { tracker.logAndSend(ip, liveHubPort) } catch (_: Exception) {}
+                    delay(LOCATION_INTERVAL_MS)
                 }
-                delay(LOCATION_INTERVAL_MS)
             }
         }
 
@@ -220,6 +231,7 @@ class ClientForegroundService : LifecycleService() {
         hubDiscoveryJob?.cancel()
         localFixJob?.cancel()
         locationJob?.cancel()
+        locationTracker?.stop()
         hubDiscovery?.stop()
         server?.stop()
         liveServer = null
@@ -346,7 +358,7 @@ class ClientForegroundService : LifecycleService() {
         const val KEY_HUB_TAILSCALE_IP = "hub_tailscale_ip"
         const val KEY_ALLOW_MOBILE_DATA = "allow_mobile_data"
         private const val SYNC_INTERVAL_MS      = 5 * 60 * 1000L   // 5 minutes
-        private const val LOCATION_INTERVAL_MS   = 5 * 60 * 1000L   // 5 minutes
+        private const val LOCATION_INTERVAL_MS   = 60 * 1000L        // 1 minute
         private const val LOCAL_FIX_INTERVAL_MS  = 60 * 60 * 1000L  // 1 hour
         private const val KEY_LOCAL_FIX_VERSION  = "local_fix_version"
         private const val LOCAL_FIX_CODE         = 9  // bump when scan logic changes to force rescan
