@@ -104,7 +104,16 @@
                             android:layout_width="match_parent"
                             android:layout_height="wrap_content"
                             android:textColor="@color/text_primary"
-                            android:textSize="13sp"/>
+                            android:textSize="13sp"
+                            android:layout_marginBottom="4dp"/>
+
+                        <TextView android:id="@+id/tv_tailscale_status"
+                            android:layout_width="match_parent"
+                            android:layout_height="wrap_content"
+                            android:textColor="@color/neon_cyan"
+                            android:textSize="12sp"
+                            android:fontFamily="monospace"
+                            android:layout_marginTop="4dp"/>
                     </LinearLayout>
                 </FrameLayout>
 
@@ -150,7 +159,7 @@
                             android:max="100"
                             android:progress="0"
                             android:progressTint="@color/neon_purple"
-                            android:progressBackgroundTint="#33BF00FF"
+                            android:progressBackgroundTint="#3300897B"
                             android:layout_marginBottom="14dp"/>
 
                         <!-- Current file progress -->
@@ -240,7 +249,7 @@
                             android:max="100"
                             android:progress="0"
                             android:progressTint="@color/neon_green"
-                            android:progressBackgroundTint="#2200FF88"
+                            android:progressBackgroundTint="#2200CFA8"
                             android:visibility="invisible"/>
                     </LinearLayout>
                 </FrameLayout>

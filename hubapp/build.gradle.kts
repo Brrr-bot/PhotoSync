@@ -191,9 +191,4 @@ tasks.register("uploadApkToGitHub") {
     }
 }
 
-// Hook: run upload automatically after every debug build
-afterEvaluate {
-    tasks.named("assembleDebug") {
-        finalizedBy("uploadApkToGitHub")
-    }
-}
+// GitHub upload disabled — distribution is now via local Tailscale server (update-server/app.py)

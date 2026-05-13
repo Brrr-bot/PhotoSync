@@ -1,37 +1,15 @@
 <?xml version="1.0" encoding="utf-8"?>
 <layer-list xmlns:android="http://schemas.android.com/apk/res/android">
-
-    <!-- Layer 1: outermost soft glow — widest spread, most transparent -->
-    <item android:left="-6dp" android:top="-6dp" android:right="-6dp" android:bottom="-6dp">
-        <shape android:shape="rectangle">
-            <corners android:radius="22dp"/>
-            <solid android:color="#0DFF6A00"/>
-        </shape>
+    <item android:left="-8dp" android:top="-8dp" android:right="-8dp" android:bottom="-8dp">
+        <shape android:shape="rectangle"><corners android:radius="24dp"/><solid android:color="#0800F5FF"/></shape>
     </item>
-
-    <!-- Layer 2: mid glow — tighter, slightly more opaque -->
-    <item android:left="-3dp" android:top="-3dp" android:right="-3dp" android:bottom="-3dp">
-        <shape android:shape="rectangle">
-            <corners android:radius="19dp"/>
-            <solid android:color="#1AFF6A00"/>
-        </shape>
+    <item android:left="-4dp" android:top="-4dp" android:right="-4dp" android:bottom="-4dp">
+        <shape android:shape="rectangle"><corners android:radius="20dp"/><solid android:color="#1800F5FF"/></shape>
     </item>
-
-    <!-- Layer 3: inner glow — sits right at the edge of the card -->
     <item>
-        <shape android:shape="rectangle">
-            <corners android:radius="16dp"/>
-            <solid android:color="#33FF6A00"/>
-        </shape>
+        <shape android:shape="rectangle"><corners android:radius="16dp"/><solid android:color="#4000F5FF"/></shape>
     </item>
-
-    <!-- Layer 4: card body — dark background with bright orange stroke -->
-    <item android:left="3dp" android:top="3dp" android:right="3dp" android:bottom="3dp">
-        <shape android:shape="rectangle">
-            <corners android:radius="13dp"/>
-            <solid android:color="@color/card_bg"/>
-            <stroke android:width="1.5dp" android:color="@color/neon_amber"/>
-        </shape>
+    <item android:left="4dp" android:top="4dp" android:right="4dp" android:bottom="4dp">
+        <shape android:shape="rectangle"><corners android:radius="12dp"/><solid android:color="@color/card_bg"/><stroke android:width="1.5dp" android:color="@color/neon_cyan"/></shape>
     </item>
-
 </layer-list>

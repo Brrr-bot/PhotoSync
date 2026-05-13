@@ -1,17 +1,15 @@
 <?xml version="1.0" encoding="utf-8"?>
-<!-- Outer glow ring + dark card body with cyan border -->
 <layer-list xmlns:android="http://schemas.android.com/apk/res/android">
-    <item>
-        <shape android:shape="rectangle">
-            <corners android:radius="16dp"/>
-            <solid android:color="@color/neon_cyan_glow"/>
-        </shape>
+    <item android:left="-8dp" android:top="-8dp" android:right="-8dp" android:bottom="-8dp">
+        <shape android:shape="rectangle"><corners android:radius="24dp"/><solid android:color="#0800F5FF"/></shape>
     </item>
-    <item android:left="3dp" android:top="3dp" android:right="3dp" android:bottom="3dp">
-        <shape android:shape="rectangle">
-            <corners android:radius="13dp"/>
-            <solid android:color="@color/card_bg"/>
-            <stroke android:width="1.5dp" android:color="@color/neon_cyan"/>
-        </shape>
+    <item android:left="-4dp" android:top="-4dp" android:right="-4dp" android:bottom="-4dp">
+        <shape android:shape="rectangle"><corners android:radius="20dp"/><solid android:color="#1800F5FF"/></shape>
+    </item>
+    <item>
+        <shape android:shape="rectangle"><corners android:radius="16dp"/><solid android:color="#4000F5FF"/></shape>
+    </item>
+    <item android:left="4dp" android:top="4dp" android:right="4dp" android:bottom="4dp">
+        <shape android:shape="rectangle"><corners android:radius="12dp"/><solid android:color="@color/card_bg"/><stroke android:width="1.5dp" android:color="@color/neon_cyan"/></shape>
     </item>
 </layer-list>

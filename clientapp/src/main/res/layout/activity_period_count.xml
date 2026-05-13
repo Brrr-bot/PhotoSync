@@ -1,0 +1,101 @@
+<?xml version="1.0" encoding="utf-8"?>
+<LinearLayout xmlns:android="http://schemas.android.com/apk/res/android"
+    android:layout_width="match_parent"
+    android:layout_height="wrap_content"
+    android:orientation="vertical"
+    android:background="#0A0A1E"
+    android:padding="24dp">
+
+    <TextView
+        android:id="@+id/tv_period_school"
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:textColor="#00CFA8"
+        android:textSize="14sp"
+        android:textStyle="bold"
+        android:fontFamily="monospace"
+        android:layout_marginBottom="6dp" />
+
+    <TextView
+        android:id="@+id/tv_period_info"
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:textColor="#FFFFFF"
+        android:textSize="13sp"
+        android:layout_marginBottom="20dp" />
+
+    <!-- Row 1: periods 1-4 -->
+    <LinearLayout
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:orientation="horizontal"
+        android:layout_marginBottom="10dp">
+
+        <Button android:id="@+id/btn_p1"
+            android:layout_width="0dp" android:layout_height="64dp"
+            android:layout_weight="1" android:layout_marginEnd="6dp"
+            android:backgroundTint="#1A00CFA8"
+            android:textColor="#00CFA8" android:textSize="12sp"
+            android:gravity="center" />
+        <Button android:id="@+id/btn_p2"
+            android:layout_width="0dp" android:layout_height="64dp"
+            android:layout_weight="1" android:layout_marginEnd="6dp"
+            android:backgroundTint="#1A00CFA8"
+            android:textColor="#00CFA8" android:textSize="12sp"
+            android:gravity="center" />
+        <Button android:id="@+id/btn_p3"
+            android:layout_width="0dp" android:layout_height="64dp"
+            android:layout_weight="1" android:layout_marginEnd="6dp"
+            android:backgroundTint="#1A00CFA8"
+            android:textColor="#00CFA8" android:textSize="12sp"
+            android:gravity="center" />
+        <Button android:id="@+id/btn_p4"
+            android:layout_width="0dp" android:layout_height="64dp"
+            android:layout_weight="1"
+            android:backgroundTint="#1A00CFA8"
+            android:textColor="#00CFA8" android:textSize="12sp"
+            android:gravity="center" />
+    </LinearLayout>
+
+    <!-- Row 2: periods 5-8 -->
+    <LinearLayout
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:orientation="horizontal"
+        android:layout_marginBottom="20dp">
+
+        <Button android:id="@+id/btn_p5"
+            android:layout_width="0dp" android:layout_height="64dp"
+            android:layout_weight="1" android:layout_marginEnd="6dp"
+            android:backgroundTint="#1A00CFA8"
+            android:textColor="#00CFA8" android:textSize="12sp"
+            android:gravity="center" />
+        <Button android:id="@+id/btn_p6"
+            android:layout_width="0dp" android:layout_height="64dp"
+            android:layout_weight="1" android:layout_marginEnd="6dp"
+            android:backgroundTint="#1A00CFA8"
+            android:textColor="#00CFA8" android:textSize="12sp"
+            android:gravity="center" />
+        <Button android:id="@+id/btn_p7"
+            android:layout_width="0dp" android:layout_height="64dp"
+            android:layout_weight="1" android:layout_marginEnd="6dp"
+            android:backgroundTint="#1A00CFA8"
+            android:textColor="#00CFA8" android:textSize="12sp"
+            android:gravity="center" />
+        <Button android:id="@+id/btn_p8"
+            android:layout_width="0dp" android:layout_height="64dp"
+            android:layout_weight="1"
+            android:backgroundTint="#1A00CFA8"
+            android:textColor="#00CFA8" android:textSize="12sp"
+            android:gravity="center" />
+    </LinearLayout>
+
+    <Button
+        android:id="@+id/btn_cancel"
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:text="Cancel"
+        android:textColor="#7BBCCC"
+        android:backgroundTint="#0D7BBCCC" />
+
+</LinearLayout>

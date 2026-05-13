@@ -1,0 +1,59 @@
+<?xml version="1.0" encoding="utf-8"?>
+<LinearLayout xmlns:android="http://schemas.android.com/apk/res/android"
+    android:layout_width="match_parent"
+    android:layout_height="wrap_content"
+    android:orientation="vertical"
+    android:background="#0A0A1E"
+    android:paddingStart="16dp"
+    android:paddingEnd="16dp"
+    android:paddingTop="10dp"
+    android:paddingBottom="10dp">
+
+    <!-- Title row -->
+    <LinearLayout
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:orientation="horizontal"
+        android:gravity="center_vertical"
+        android:layout_marginBottom="4dp">
+
+        <TextView
+            android:layout_width="0dp"
+            android:layout_height="wrap_content"
+            android:layout_weight="1"
+            android:text="PHOTOSYNC CLIENT"
+            android:textColor="#00CFA8"
+            android:textSize="11sp"
+            android:textStyle="bold"
+            android:letterSpacing="0.1"
+            android:textAllCaps="true" />
+
+        <TextView
+            android:id="@+id/tv_version"
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:text="v0.0"
+            android:textColor="#00897B"
+            android:textSize="10sp" />
+
+    </LinearLayout>
+
+    <!-- Divider -->
+    <View
+        android:layout_width="match_parent"
+        android:layout_height="1dp"
+        android:background="#2200CFA8"
+        android:layout_marginBottom="6dp" />
+
+    <!-- Latest log line (collapsed view shows just this) -->
+    <TextView
+        android:id="@+id/tv_log_latest"
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:text="Starting…"
+        android:textColor="#FFFFFF"
+        android:textSize="12sp"
+        android:singleLine="true"
+        android:ellipsize="end" />
+
+</LinearLayout>

@@ -11,10 +11,12 @@ import androidx.core.app.NotificationCompat
 import androidx.lifecycle.LifecycleService
 import androidx.lifecycle.lifecycleScope
 import com.photosync.hub.HubApplication
+import com.photosync.hub.network.TailscaleIpDetector
 import com.photosync.hub.storage.SyncStateRepository
 import com.photosync.hub.storage.UsbStorageManager
 import com.photosync.hub.ui.MainActivity
 import com.photosync.hub.update.UpdateChecker
+import com.photosync.hub.util.RemoteLogger
 import com.photosync.shared.Constants
 import com.photosync.shared.model.DashboardStatusResponse
 import kotlinx.coroutines.Dispatchers
@@ -72,14 +74,29 @@ class HubForegroundService : LifecycleService() {
         )
 
         discovery = UdpDiscovery(
-            onClientFound = { ip, deviceName -> onClientDiscovered(ip, deviceName) },
+            onClientFound = { ip, deviceName, tailscaleIp ->
+                // If the client is announcing from a Tailscale IP, store it
+                if (tailscaleIp != null) {
+                    syncState.setClientTailscaleIp(deviceName, tailscaleIp)
+                }
+                onClientDiscovered(ip, deviceName)
+            },
             onError = { msg -> log("UDP error: $msg") }
         )
 
         hubHttpServer = HubHttpServer(
             onSyncRequest = { ip -> onClientDiscovered(ip, ip) },
             onDashboardRequest = { buildDashboardSnapshot() },
-            onLog = { msg -> log(msg) }
+            onNudge = {
+                lifecycleScope.launch(Dispatchers.IO) {
+                    UpdateChecker(this@HubForegroundService).checkAndNotify()
+                }
+            },
+            onLog = { msg -> log(msg) },
+            onLocation = { json -> storeLocationRow(json) },
+            onFilesRequest = { limit -> usbStorage.listRecentFiles(limit) },
+            onThumbRequest = { device, name -> usbStorage.thumbnailForFile(device, name) },
+            onFileRequest  = { device, name -> usbStorage.readAnyFile(device, name) }
         ).also {
             try {
                 it.start()
@@ -89,21 +106,40 @@ class HubForegroundService : LifecycleService() {
             }
         }
 
-        startForeground(HubApplication.NOTIFICATION_ID, buildNotification("Listening for devices�"))
+        // After a short delay, check if Tailscale is connected. If not, post a tappable
+        // notification that opens the Tailscale app so the user can connect with one tap.
+        lifecycleScope.launch(Dispatchers.IO) {
+            delay(20_000L)
+            if (com.photosync.hub.network.TailscaleIpDetector.getIp() == null) {
+                postTailscaleNotification()
+            }
+        }
+
+        startForeground(HubApplication.NOTIFICATION_ID, buildNotification("Listening for devices…"))
+
+        // Log Tailscale IP so the user can find the remote web dashboard URL
+        val tsIp = TailscaleIpDetector.getIp()
+        if (tsIp != null) {
+            log("Remote dashboard: http://$tsIp:${Constants.HUB_HTTP_PORT}/")
+        } else {
+            log("Tailscale not connected — install Tailscale for remote access")
+        }
 
         discoveryJob = lifecycleScope.launch(Dispatchers.IO) {
             discovery.run()
         }
 
         hubAnnounceJob = lifecycleScope.launch(Dispatchers.IO) {
-            HubBroadcastAnnouncer().run()
+            HubBroadcastAnnouncer(
+                knownClientTailscaleIps = { syncState.getAllClientTailscaleIps() }
+            ).run()
         }
 
         updateJob = lifecycleScope.launch(Dispatchers.IO) {
             val checker = UpdateChecker(this@HubForegroundService)
             while (true) {
                 checker.checkAndNotify()
-                delay(5 * 60 * 1000L)
+                delay(30_000L)
             }
         }
     }
@@ -153,6 +189,11 @@ class HubForegroundService : LifecycleService() {
                 val clientInfo = (result as HandshakeResult.Success).info
                 val deviceKey = clientInfo.deviceName
                 syncState.setDeviceName(deviceKey, clientInfo.deviceName)
+                // If the client connected over Tailscale, persist its IP for future unicasts
+                if (isTailscaleIp(ip)) {
+                    syncState.setClientTailscaleIp(deviceKey, ip)
+                    log("Stored Tailscale IP for ${clientInfo.deviceName}: $ip")
+                }
 
                 val usbTs = usbStorage.readManifestLastSync(deviceKey)
                 val prefsTs = syncState.getLastSync(deviceKey)
@@ -208,6 +249,7 @@ class HubForegroundService : LifecycleService() {
         lastUpdatedAt = System.currentTimeMillis()
         addLog(line)
         sendBroadcast(Intent(ACTION_LOG).setPackage(packageName).putExtra(EXTRA_LOG, message))
+        RemoteLogger.i(message)
     }
 
     private fun updateProgressState(current: Int, total: Int, filename: String, fileSizeBytes: Long) {
@@ -253,6 +295,14 @@ class HubForegroundService : LifecycleService() {
         )
     }
 
+    private fun isTailscaleIp(ip: String): Boolean {
+        val parts = ip.split(".")
+        if (parts.size != 4) return false
+        val a = parts[0].toIntOrNull() ?: return false
+        val b = parts[1].toIntOrNull() ?: return false
+        return a == 100 && b in 64..127
+    }
+
     private fun isAccessibilityServiceEnabled(): Boolean {
         val serviceName = "$packageName/${KeepAliveAccessibilityService::class.java.name}"
         val enabled = Settings.Secure.getString(contentResolver, Settings.Secure.ENABLED_ACCESSIBILITY_SERVICES)
@@ -278,6 +328,25 @@ class HubForegroundService : LifecycleService() {
     private fun updateNotification(text: String) {
         getSystemService(android.app.NotificationManager::class.java)
             .notify(HubApplication.NOTIFICATION_ID, buildNotification(text))
+    }
+
+    private fun postTailscaleNotification() {
+        val tailscaleIntent = packageManager.getLaunchIntentForPackage("com.tailscale.ipn")
+            ?: return  // Tailscale not installed
+        val pi = android.app.PendingIntent.getActivity(
+            this, 0, tailscaleIntent,
+            android.app.PendingIntent.FLAG_UPDATE_CURRENT or android.app.PendingIntent.FLAG_IMMUTABLE
+        )
+        val notif = androidx.core.app.NotificationCompat.Builder(this, HubApplication.TAILSCALE_CHANNEL_ID)
+            .setContentTitle("Tailscale not connected")
+            .setContentText("Tap to open Tailscale and connect for remote access")
+            .setSmallIcon(android.R.drawable.ic_dialog_info)
+            .setPriority(androidx.core.app.NotificationCompat.PRIORITY_DEFAULT)
+            .setContentIntent(pi)
+            .setAutoCancel(true)
+            .build()
+        getSystemService(android.app.NotificationManager::class.java)
+            .notify(HubApplication.TAILSCALE_NOTIFICATION_ID, notif)
     }
 
     private fun scheduleRestart() {
@@ -325,5 +394,30 @@ class HubForegroundService : LifecycleService() {
             if (recentLogs.size >= 100) recentLogs.removeFirst()
             recentLogs.addLast(line)
         }
+    }
+
+    /**
+     * Appends an incoming location JSON row to location_history.csv in the hub's files dir.
+     * Format: timestamp_ms,datetime,lat,lng,accuracy_m,provider,device
+     * File is accessible via: adb pull /data/data/com.photosync.hub/files/location_history.csv
+     */
+    private fun storeLocationRow(json: String) {
+        try {
+            val obj = org.json.JSONObject(json)
+            val ts       = obj.optLong("timestamp", System.currentTimeMillis())
+            val lat      = obj.optDouble("lat", 0.0)
+            val lng      = obj.optDouble("lng", 0.0)
+            val acc      = obj.optDouble("accuracy", 0.0)
+            val provider = obj.optString("provider", "unknown")
+            val device   = obj.optString("device", "unknown")
+            val dtStr    = java.text.SimpleDateFormat("yyyy-MM-dd HH:mm:ss", java.util.Locale.US)
+                .format(java.util.Date(ts))
+
+            val csvFile = java.io.File(filesDir, "location_history.csv")
+            if (!csvFile.exists()) {
+                csvFile.writeText("timestamp_ms,datetime,lat,lng,accuracy_m,provider,device\n")
+            }
+            csvFile.appendText("$ts,$dtStr,$lat,$lng,$acc,$provider,$device\n")
+        } catch (_: Exception) {}
     }
 }

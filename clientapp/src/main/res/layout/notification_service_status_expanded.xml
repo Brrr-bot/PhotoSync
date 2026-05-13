@@ -1,0 +1,110 @@
+<?xml version="1.0" encoding="utf-8"?>
+<LinearLayout xmlns:android="http://schemas.android.com/apk/res/android"
+    android:layout_width="match_parent"
+    android:layout_height="wrap_content"
+    android:orientation="vertical"
+    android:background="#0A0A1E"
+    android:paddingStart="16dp"
+    android:paddingEnd="16dp"
+    android:paddingTop="10dp"
+    android:paddingBottom="10dp">
+
+    <!-- Title row -->
+    <LinearLayout
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:orientation="horizontal"
+        android:gravity="center_vertical"
+        android:layout_marginBottom="4dp">
+
+        <TextView
+            android:layout_width="0dp"
+            android:layout_height="wrap_content"
+            android:layout_weight="1"
+            android:text="PHOTOSYNC CLIENT"
+            android:textColor="#00CFA8"
+            android:textSize="11sp"
+            android:textStyle="bold"
+            android:letterSpacing="0.1"
+            android:textAllCaps="true" />
+
+        <TextView
+            android:id="@+id/tv_version_exp"
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:text="v0.0"
+            android:textColor="#00897B"
+            android:textSize="10sp" />
+
+    </LinearLayout>
+
+    <!-- Divider -->
+    <View
+        android:layout_width="match_parent"
+        android:layout_height="1dp"
+        android:background="#2200CFA8"
+        android:layout_marginBottom="6dp" />
+
+    <!-- Log lines — each shown as its own row -->
+    <TextView
+        android:id="@+id/tv_log_line_1"
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:textColor="#7BBCCC"
+        android:textSize="11sp"
+        android:singleLine="true"
+        android:ellipsize="end"
+        android:visibility="gone" />
+
+    <TextView
+        android:id="@+id/tv_log_line_2"
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:textColor="#7BBCCC"
+        android:textSize="11sp"
+        android:singleLine="true"
+        android:ellipsize="end"
+        android:visibility="gone" />
+
+    <TextView
+        android:id="@+id/tv_log_line_3"
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:textColor="#7BBCCC"
+        android:textSize="11sp"
+        android:singleLine="true"
+        android:ellipsize="end"
+        android:visibility="gone" />
+
+    <TextView
+        android:id="@+id/tv_log_line_4"
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:textColor="#7BBCCC"
+        android:textSize="11sp"
+        android:singleLine="true"
+        android:ellipsize="end"
+        android:visibility="gone" />
+
+    <TextView
+        android:id="@+id/tv_log_line_5"
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:textColor="#A0D8E8"
+        android:textSize="11sp"
+        android:singleLine="true"
+        android:ellipsize="end"
+        android:visibility="gone" />
+
+    <!-- Latest line always white and slightly larger -->
+    <TextView
+        android:id="@+id/tv_log_line_6"
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:textColor="#FFFFFF"
+        android:textSize="12sp"
+        android:textStyle="bold"
+        android:singleLine="true"
+        android:ellipsize="end" />
+
+</LinearLayout>

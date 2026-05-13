@@ -18,7 +18,9 @@ class MediaHttpServer(
     private val onLog: ((String) -> Unit)? = null,
     private val onPendingDeletes: (() -> Unit)? = null,
     /** Called with the hub's Tailscale IP whenever a handshake carries one. */
-    private val onHubTailscaleIp: ((String) -> Unit)? = null
+    private val onHubTailscaleIp: ((String) -> Unit)? = null,
+    /** Called when the laptop nudges the device to check for an OTA update immediately. */
+    private val onNudge: (() -> Unit)? = null
 ) : NanoHTTPD(Constants.CLIENT_PORT) {
 
     private val gson = Gson()
@@ -36,6 +38,9 @@ class MediaHttpServer(
     @Volatile var stateCompressionDone: Int = 0
     @Volatile var stateCompressionTotal: Int = 0
     @Volatile var stateCompressionFile: String = ""
+    // Cumulative count of files compressed since the client started — survives across
+    // batches so the UI can show "X compressed in this session" not just "1/1".
+    @Volatile var stateCompressionLifetime: Int = 0
 
     // True while any sync activity is in progress
     @Volatile var stateActive: Boolean = false
@@ -85,15 +90,20 @@ class MediaHttpServer(
         // and any other Error subclass never escape to the NanoHTTPD thread boundary.
         // An uncaught Error on a NanoHTTPD worker thread kills the whole process.
         return try {
-            when (session.uri) {
-                Constants.PATH_HANDSHAKE -> {
+            when {
+                session.uri == Constants.PATH_HANDSHAKE -> {
                     onLog?.invoke("Handshake from ${session.remoteIpAddress}")
                     handleHandshake(session)
                 }
-                Constants.PATH_MEDIA_LIST -> handleList(session)
-                Constants.PATH_MEDIA_FILE -> handleFile(session)
-                Constants.PATH_REPLACE    -> handleReplace(session)
-                Constants.PATH_FIX_DATES  -> handleFixDates(session)
+                session.uri == Constants.PATH_MEDIA_LIST -> handleList(session)
+                session.uri == Constants.PATH_MEDIA_FILE -> handleFile(session)
+                session.uri == Constants.PATH_REPLACE    -> handleReplace(session)
+                session.uri == Constants.PATH_FIX_DATES  -> handleFixDates(session)
+                session.uri == "/nudge"      -> handleNudge()
+                session.uri == "/log"        -> handleLogPost(session)
+                session.uri.startsWith("/timesheet")     -> handleTimesheet(session)
+                session.uri == "/" || session.uri == ""  -> handleHtmlStatus()
+                session.uri == "/state.json" -> handleStateJson()
                 else -> newFixedLengthResponse(Response.Status.NOT_FOUND, MIME_PLAINTEXT, "Not found")
             }
         } catch (t: Throwable) {
@@ -101,6 +111,212 @@ class MediaHttpServer(
             newFixedLengthResponse(Response.Status.INTERNAL_ERROR, MIME_PLAINTEXT,
                 "Server error: ${t.javaClass.simpleName}: ${t.message}")
         }
+    }
+
+    // ── /nudge ────────────────────────────────────────────────────────────────
+
+    private fun handleNudge(): Response {
+        onLog?.invoke("Update nudge received — checking for update now")
+        onNudge?.invoke()
+        return newFixedLengthResponse(Response.Status.OK, MIME_PLAINTEXT, "OK")
+    }
+
+    // ── /log  (POST — Timesheet app posts verified sessions) ─────────────────
+
+    private fun handleLogPost(session: IHTTPSession): Response {
+        return try {
+            val contentLength = session.headers["content-length"]?.toLongOrNull() ?: 0L
+            val body = if (contentLength > 0) {
+                val buf = ByteArray(contentLength.coerceAtMost(65536).toInt())
+                var offset = 0
+                while (offset < buf.size) {
+                    val n = session.inputStream.read(buf, offset, buf.size - offset)
+                    if (n < 0) break
+                    offset += n
+                }
+                String(buf, 0, offset, Charsets.UTF_8)
+            } else {
+                ""
+            }
+            // Extract the "msg" field from JSON {"device":"...","level":"...","msg":"..."}
+            val msgMatch = Regex(""""msg"\s*:\s*"((?:[^"\\]|\\.)*)"""").find(body)
+            val msg = msgMatch?.groupValues?.get(1)
+                ?.replace("\\\"", "\"")?.replace("\\n", "\n")?.replace("\\\\", "\\")
+                ?: body
+            com.photosync.client.util.RemoteLogger.localLog?.let { f ->
+                val ts = java.text.SimpleDateFormat("yyyy-MM-dd HH:mm:ss", java.util.Locale.US).format(java.util.Date())
+                f.appendText("$ts [client] INFO: $msg\n", Charsets.UTF_8)
+            }
+            newFixedLengthResponse(Response.Status.OK, MIME_PLAINTEXT, "OK")
+        } catch (e: Exception) {
+            newFixedLengthResponse(Response.Status.INTERNAL_ERROR, MIME_PLAINTEXT, e.message ?: "error")
+        }
+    }
+
+    // ── /timesheet  (GET ?month=YYYY-MM) ─────────────────────────────────────
+
+    private fun handleTimesheet(session: IHTTPSession): Response {
+        val month = session.parameters["month"]?.firstOrNull()
+            ?: java.text.SimpleDateFormat("yyyy-MM", java.util.Locale.US).format(java.util.Date())
+
+        val pattern = Regex(
+            """\[TIMESHEET\]\s+(\d{4}-\d{2}-\d{2})\s+(.+?)\s+\((\w+)\)\s+""" +
+            """(\d+)\s+period.*?×\s*(\d+)min\s*=\s*(\d+)min"""
+        )
+
+        val sessions  = mutableListOf<Map<String, Any>>()
+        var totalMins = 0
+
+        com.photosync.client.util.RemoteLogger.localLog?.takeIf { it.exists() }?.forEachLine { line ->
+            if ("[TIMESHEET]" !in line) return@forEachLine
+            val m = pattern.find(line) ?: return@forEachLine
+            val (date, school, type, periods, mpp, tmins) = m.destructured
+            if (!date.startsWith(month)) return@forEachLine
+            val t = tmins.toInt()
+            totalMins += t
+            sessions.add(mapOf(
+                "date" to date, "school" to school, "type" to type,
+                "periods" to periods.toInt(), "mins_per_period" to mpp.toInt(),
+                "total_mins" to t, "total_hours" to Math.round(t / 60.0 * 100) / 100.0
+            ))
+        }
+
+        val json = gson.toJson(mapOf(
+            "month"       to month,
+            "total_hours" to Math.round(totalMins / 60.0 * 100) / 100.0,
+            "total_mins"  to totalMins,
+            "sessions"    to sessions
+        ))
+        return newFixedLengthResponse(Response.Status.OK, "application/json", json)
+    }
+
+    // ── / HTML status page ───────────────────────────────────────────────────
+
+    private fun handleHtmlStatus(): Response {
+        val html = buildHtmlPage()
+        return newFixedLengthResponse(Response.Status.OK, "text/html; charset=utf-8", html)
+    }
+
+    private fun handleStateJson(): Response {
+        val payload = mapOf(
+            "active"         to stateActive,
+            "uploadCurrent"  to stateSessionCurrent,
+            "uploadTotal"    to stateSessionTotal,
+            "uploadFile"     to stateCurrentFile,
+            "compDone"       to stateCompressionDone,
+            "compTotal"      to stateCompressionTotal,
+            "compFile"       to stateCompressionFile,
+            "compLifetime"   to stateCompressionLifetime,
+            "device"         to myDeviceName,
+            "time"           to java.text.SimpleDateFormat("HH:mm:ss",
+                                java.util.Locale.getDefault()).format(java.util.Date())
+        )
+        return newFixedLengthResponse(Response.Status.OK, "application/json", gson.toJson(payload))
+    }
+
+    private fun buildHtmlPage(): String {
+        val time = java.text.SimpleDateFormat("HH:mm:ss", java.util.Locale.getDefault()).format(java.util.Date())
+        fun esc(t: String) = t.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
+
+        val uploadCard = if (stateSessionTotal > 0) """
+            <div class="card">
+              <div class="lbl purple">UPLOAD</div>
+              <div class="row">$stateSessionCurrent / $stateSessionTotal &nbsp;·&nbsp; ${esc(stateCurrentFile)}</div>
+              <progress class="xfer" value="$stateSessionCurrent" max="$stateSessionTotal"></progress>
+            </div>""" else ""
+
+        val compressionCard = if (stateCompressionTotal > 0) """
+            <div class="card">
+              <div class="lbl green">COMPRESSION</div>
+              <div class="row">$stateCompressionDone / $stateCompressionTotal &nbsp;·&nbsp; ${esc(stateCompressionFile)}</div>
+              <progress class="comp" value="$stateCompressionDone" max="$stateCompressionTotal"></progress>
+            </div>""" else ""
+
+        val activeLabel = when {
+            stateActive -> "<span class='ok'>● Active</span>"
+            else        -> "<span style='color:#555'>○ Idle</span>"
+        }
+
+        // Static HTML scaffold — values are filled in client-side from /state.json polled
+        // every 1.5 s. No meta-refresh, so the page never reloads or flashes.
+        return """<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>PhotoSync Client</title>
+<style>
+*{box-sizing:border-box}
+body{background:#0a0a0f;color:#c8c8d0;font-family:monospace;margin:0;padding:16px;font-size:13px}
+h1{color:#00ff88;font-size:15px;letter-spacing:3px;margin:0 0 2px}
+.ts{color:#555;font-size:10px;margin-bottom:18px}
+.card{background:#12121a;border:1px solid #222;border-radius:8px;padding:16px;margin-bottom:14px}
+.lbl{font-size:9px;letter-spacing:3px;font-weight:bold;margin-bottom:10px}
+.green{color:#00ff88}.purple{color:#bf00ff}.amber{color:#ffaa00}
+.mode{font-size:28px;font-weight:bold;margin-bottom:10px}
+.row{margin-bottom:5px;line-height:1.5}
+.ok{color:#00ff88}.warn{color:#ff4444}
+progress{display:block;width:100%;height:6px;border:none;margin:6px 0 4px;-webkit-appearance:none;appearance:none}
+progress::-webkit-progress-bar{background:#1a1a2e;border-radius:3px}
+progress.xfer::-webkit-progress-value{background:#bf00ff;border-radius:3px}
+progress.comp::-webkit-progress-value{background:#00ff88;border-radius:3px}
+.hidden{display:none}
+</style>
+</head>
+<body>
+<h1>PHOTOSYNC CLIENT</h1>
+<div class="ts">Live &nbsp;·&nbsp; <span id="time">${esc(time)}</span></div>
+<div class="card">
+  <div class="lbl green">STATUS</div>
+  <div class="mode" id="mode">$activeLabel</div>
+  <div class="row">Device: <span id="device">${esc(myDeviceName)}</span></div>
+</div>
+<div class="card hidden" id="uploadCard">
+  <div class="lbl purple">UPLOAD</div>
+  <div class="row"><span id="uploadCount"></span> &nbsp;·&nbsp; <span id="uploadFile"></span></div>
+  <progress class="xfer" id="uploadBar" value="0" max="1"></progress>
+</div>
+<div class="card hidden" id="compCard">
+  <div class="lbl green">COMPRESSION</div>
+  <div class="row"><span id="compCount"></span> &nbsp;·&nbsp; <span id="compFile"></span></div>
+  <progress class="comp" id="compBar" value="0" max="1"></progress>
+</div>
+<script>
+function esc(s){return (s||'').replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;')}
+async function tick(){
+  try{
+    const r = await fetch('/state.json',{cache:'no-store'});
+    if(!r.ok) return;
+    const s = await r.json();
+    document.getElementById('time').textContent = s.time;
+    document.getElementById('device').textContent = s.device;
+    document.getElementById('mode').innerHTML = s.active
+      ? "<span class='ok'>● Active</span>" : "<span style='color:#555'>○ Idle</span>";
+    const uc = document.getElementById('uploadCard');
+    if(s.uploadTotal > 0){
+      uc.classList.remove('hidden');
+      document.getElementById('uploadCount').textContent = s.uploadCurrent + ' / ' + s.uploadTotal;
+      document.getElementById('uploadFile').textContent = s.uploadFile;
+      document.getElementById('uploadBar').max = s.uploadTotal;
+      document.getElementById('uploadBar').value = s.uploadCurrent;
+    } else uc.classList.add('hidden');
+    const cc = document.getElementById('compCard');
+    if(s.compTotal > 0 || s.compLifetime > 0){
+      cc.classList.remove('hidden');
+      const lifetime = s.compLifetime || 0;
+      const batch = (s.compTotal > 0) ? (s.compDone + ' / ' + s.compTotal) : 'idle';
+      document.getElementById('compCount').textContent =
+        lifetime + ' compressed total  ·  current batch ' + batch;
+      document.getElementById('compFile').textContent = s.compFile || '';
+      document.getElementById('compBar').max = Math.max(s.compTotal, 1);
+      document.getElementById('compBar').value = s.compDone;
+    } else cc.classList.add('hidden');
+  }catch(e){}
+}
+tick(); setInterval(tick, 1500);
+</script>
+</body>
+</html>"""
     }
 
     // ── /handshake ────────────────────────────────────────────────────────────
@@ -141,15 +357,12 @@ class MediaHttpServer(
             stateActive = files.isNotEmpty()
             sessionFileSizes = files.associate { it.id to it.size }
             if (files.isNotEmpty())
-                onLog?.invoke("Hub requesting ${files.size} file(s) to download…")
+                onLog?.invoke("Hub listed ${files.size} file(s) for sync check")
         } else {
-            // Compression scan — reset compression state
-            stateCompressionTotal = files.count {
-                it.mimeType.startsWith("image/") && it.mimeType != "image/gif"
-            }
-            stateCompressionDone = 0
-            stateCompressionFile = ""
-            onLog?.invoke("Hub scanning ${files.size} file(s) — ${stateCompressionTotal} image(s) eligible for compression…")
+            // since=0 happens on every sync cycle (date-check pass). Do NOT reset the
+            // compression counter here — it would flash back to 0/N on every cycle.
+            // Instead let stateCompressionTotal/Done update naturally as /replace fires.
+            // Only log when nothing else has been said recently.
         }
 
         return newFixedLengthResponse(Response.Status.OK, "application/json", gson.toJson(files))
@@ -220,11 +433,21 @@ class MediaHttpServer(
         return try {
             val displayName = mediaStore.getDisplayName(id) ?: id.toString()
             stateCompressionFile = displayName
-            // Bump the total so the UI always shows X/N even when compression is inline
-            // (hub no longer pre-announces total via since=0 for new files).
-            if (stateCompressionDone >= stateCompressionTotal) stateCompressionTotal++
+            // Hub-supplied batch progress: ?batch_index=K&batch_total=N tells us this is
+            // file K of N in the current compression batch. If absent (older hub), we
+            // fall back to the old "always equal" behaviour.
+            val batchTotal = session.parameters["batch_total"]?.firstOrNull()?.toIntOrNull() ?: 0
+            val batchIndex = session.parameters["batch_index"]?.firstOrNull()?.toIntOrNull() ?: 0
+            if (batchTotal > 0) {
+                stateCompressionTotal = batchTotal
+                stateCompressionDone  = batchIndex.coerceAtMost(batchTotal)
+            } else {
+                if (stateCompressionDone >= stateCompressionTotal) stateCompressionTotal++
+                stateCompressionDone++
+            }
             val result = mediaStore.replaceFile(id, mime, bytes, dateTaken)
-            stateCompressionDone++
+            stateCompressionLifetime++
+            if (batchTotal == 0) { /* legacy: already incremented above */ }
             when (result) {
                 ReplaceResult.REPLACED ->
                     onLog?.invoke("✓ Replaced $displayName (${stateCompressionDone}/${stateCompressionTotal})")
@@ -238,7 +461,6 @@ class MediaHttpServer(
             }
             newFixedLengthResponse(Response.Status.OK, MIME_PLAINTEXT, result.name)
         } catch (t: Throwable) {
-            stateCompressionDone++
             onLog?.invoke("Replace failed for $id: ${t.javaClass.simpleName}: ${t.message}")
             newFixedLengthResponse(Response.Status.INTERNAL_ERROR, MIME_PLAINTEXT,
                 "${t.javaClass.simpleName}: ${t.message}")

@@ -17,10 +17,12 @@ import android.widget.TextView
 import androidx.appcompat.app.AppCompatActivity
 import com.photosync.hub.BuildConfig
 import com.photosync.hub.R
+import com.photosync.hub.network.TailscaleIpDetector
 import com.photosync.hub.service.HubForegroundService
 import com.photosync.hub.storage.SyncStateRepository
 import com.photosync.hub.storage.UsbStorageManager
 import com.photosync.hub.update.UpdateChecker
+import com.photosync.shared.Constants
 import java.text.SimpleDateFormat
 import java.util.Date
 import java.util.Locale
@@ -44,6 +46,7 @@ class MainActivity : AppCompatActivity() {
     private lateinit var pbFile: ProgressBar
     private lateinit var tvMbRemaining: TextView
     private lateinit var btnMenu: ImageButton
+    private lateinit var tvTailscaleStatus: TextView
 
     private val logLines = ArrayDeque<String>(100)
 
@@ -158,7 +161,8 @@ class MainActivity : AppCompatActivity() {
         tvCurrentFile    = findViewById(R.id.tv_current_file)
         pbFile           = findViewById(R.id.pb_file)
         tvMbRemaining    = findViewById(R.id.tv_mb_remaining)
-        btnMenu          = findViewById(R.id.btn_menu)
+        btnMenu             = findViewById(R.id.btn_menu)
+        tvTailscaleStatus   = findViewById(R.id.tv_tailscale_status)
 
         btnMenu.setOnClickListener { showDropdown(it) }
 
@@ -219,6 +223,10 @@ class MainActivity : AppCompatActivity() {
                 }
                 R.id.action_repair_orient -> {
                     repairOrientation()
+                    true
+                }
+                R.id.action_accessibility -> {
+                    startActivity(Intent(Settings.ACTION_ACCESSIBILITY_SETTINGS))
                     true
                 }
                 R.id.action_check_update -> {
@@ -287,6 +295,12 @@ class MainActivity : AppCompatActivity() {
             "✓  Background keep-alive enabled"
         else
             "✗  Enable in Settings → Accessibility → PhotoSync Hub"
+
+        val tsIp = TailscaleIpDetector.getIp()
+        tvTailscaleStatus.text = if (tsIp != null)
+            "◉  http://$tsIp:${Constants.HUB_HTTP_PORT}/"
+        else
+            "○  Tailscale not connected — install Tailscale to access remotely"
 
         // Append last-sync info to the USB status line
         val known = syncState.getKnownDevices()

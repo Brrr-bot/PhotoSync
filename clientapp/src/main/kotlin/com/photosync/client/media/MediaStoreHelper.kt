@@ -42,9 +42,26 @@ class MediaStoreHelper(private val context: Context) {
     // Tracks which original IDs have been replaced and which new IDs were created,
     // so we never re-replace an already-compressed file or serve it back to the hub.
 
-    fun isAlreadyReplaced(originalId: Long): Boolean =
-        compressionPrefs.getStringSet(KEY_REPLACED_ORIGINAL_IDS, emptySet())!!
+    /**
+     * True only if the original was marked replaced AND is actually gone from MediaStore.
+     * If the original is still present (e.g. previous replace created a "(1)" copy but the
+     * original delete failed), we treat it as NOT replaced so the hub retries and the v38
+     * pre-delete path can fix it.
+     */
+    fun isAlreadyReplaced(originalId: Long): Boolean {
+        val marked = compressionPrefs.getStringSet(KEY_REPLACED_ORIGINAL_IDS, emptySet())!!
             .contains(originalId.toString())
+        if (!marked) return false
+        // Original still findable in MediaStore? Then the replace didn't fully succeed.
+        if (findOriginalUri(originalId) != null) {
+            // Clear the stale mark so retries can proceed cleanly
+            val set = compressionPrefs.getStringSet(KEY_REPLACED_ORIGINAL_IDS, emptySet())!!.toHashSet()
+            set.remove(originalId.toString())
+            compressionPrefs.edit().putStringSet(KEY_REPLACED_ORIGINAL_IDS, set).commit()
+            return false
+        }
+        return true
+    }
 
     private fun markReplaced(originalId: Long, newId: Long, newDisplayName: String = "") {
         val origSet = compressionPrefs.getStringSet(KEY_REPLACED_ORIGINAL_IDS, emptySet())!!.toMutableSet()
@@ -139,16 +156,18 @@ class MediaStoreHelper(private val context: Context) {
         val results = mutableListOf<MediaFileInfo>()
         results += queryUri(MediaStore.Images.Media.EXTERNAL_CONTENT_URI, sinceSeconds)
         results += queryUri(MediaStore.Video.Media.EXTERNAL_CONTENT_URI, sinceSeconds)
-        // Filter out files created by replaceFile() — they are compressed replacements
-        // and must never be sent back to the hub (prevents download/compress/replace loop).
-        // We check both IDs and display names: IDs survive normal operation, names survive
-        // a SharedPrefs wipe (e.g. app reinstall) so the filter remains robust either way.
-        val compressedNewIds   = compressionPrefs.getStringSet(KEY_COMPRESSED_NEW_IDS, emptySet())!!
-        val compressedNames    = compressionPrefs.getStringSet(KEY_COMPRESSED_NAMES,   emptySet())!!
-        // Sort oldest-first so hub can advance timestamp incrementally
-        return results
-            .filter { it.id.toString() !in compressedNewIds && it.displayName !in compressedNames }
-            .sortedBy { it.dateAdded }
+        // Return ALL media — do not filter by compressedNames or compressedNewIds.
+        //
+        // Historical bug: the previous filter excluded any file whose name had ever been
+        // marked compressed. Over time `compressedNames` accumulated 1000+ entries and the
+        // hub literally couldn't see most of the phone's photos (it would report e.g. "38"
+        // out of "1200+"). That made compression silently skip everything.
+        //
+        // The hub side now owns the dedupe decision via `legacyCompressed` reconciled
+        // against actual file size (FileSyncer.kt). If the hub re-sends a file that has
+        // already been compressed in place (v42 path), MediaCompressor sees an already-
+        // small file and skips it cheaply — no loop, no harm.
+        return results.sortedBy { it.dateAdded }
     }
 
     /** Opens an InputStream for a media file by its MediaStore ID. */
@@ -272,6 +291,54 @@ class MediaStoreHelper(private val context: Context) {
             else                  -> System.currentTimeMillis()
         }
 
+        // ── Strategy A: TRUE in-place overwrite (preferred) ──────────────────────
+        // With MANAGE_EXTERNAL_STORAGE granted, we can write directly to the file
+        // path on /storage. With only MANAGE_MEDIA we try openFileDescriptor("wt")
+        // first — it works on some OEMs even without all-files access. Either way:
+        // same MediaStore ID, same display name, no insert, no delete, no "(1)".
+        try {
+            // Try direct file path write first (works with MANAGE_EXTERNAL_STORAGE)
+            val realPath = resolveRealPath(origUri)
+            val wrote = if (realPath != null && Build.VERSION.SDK_INT >= Build.VERSION_CODES.R
+                    && android.os.Environment.isExternalStorageManager()) {
+                try {
+                    java.io.FileOutputStream(java.io.File(realPath)).use { it.write(compressedBytes) }
+                    true
+                } catch (_: Exception) { false }
+            } else false
+            if (!wrote) {
+                context.contentResolver.openFileDescriptor(origUri, "wt")?.use { pfd ->
+                    java.io.FileOutputStream(pfd.fileDescriptor).use { it.write(compressedBytes) }
+                } ?: throw IllegalStateException("openFileDescriptor returned null")
+            }
+            // Update size + dates so MediaStore reflects the new file.
+            // DATE_TAKEN drives gallery sort; preserve original DATE_ADDED/MODIFIED.
+            context.contentResolver.update(origUri, ContentValues().apply {
+                put(MediaStore.MediaColumns.SIZE,       compressedBytes.size.toLong())
+                put(MediaStore.MediaColumns.DATE_TAKEN, effectiveDateTaken)
+                if (dateAdded > 0)    put(MediaStore.MediaColumns.DATE_ADDED, dateAdded)
+                if (dateModified > 0) put(MediaStore.MediaColumns.DATE_MODIFIED, dateModified)
+            }, null, null)
+            markReplaced(originalId, originalId, displayName)  // newId == originalId for in-place
+            return ReplaceResult.REPLACED
+        } catch (_: SecurityException) {
+            // No MANAGE_MEDIA — fall through to insert-then-delete path
+        } catch (_: Exception) {
+            // Any other failure — fall through to insert-then-delete path
+        }
+
+        // ── Strategy B: insert-then-delete (fallback for no MANAGE_MEDIA) ────────
+        // Try deleting the original FIRST so the insert below uses the exact display name
+        // without MediaStore auto-appending " (1)". On 10–11 it throws SecurityException
+        // and we fall back to the old insert-then-delete-after path.
+        var originalDeleted = false
+        try {
+            context.contentResolver.delete(origUri, null, null)
+            originalDeleted = true
+        } catch (_: SecurityException) {
+            // Needs user approval — proceed with insert-then-delete, rename after delete
+        }
+
         // Insert a new record — this app becomes the owner so openOutputStream always works
         val newValues = ContentValues().apply {
             put(MediaStore.MediaColumns.DISPLAY_NAME, displayName)
@@ -298,11 +365,10 @@ class MediaStoreHelper(private val context: Context) {
             // Extract the new file's MediaStore ID so we can publish it later
             val newId = ContentUris.parseId(newUri)
 
-            // Try to delete the original immediately.
-            // Android 12+ with MANAGE_MEDIA: succeeds silently.
-            // Android 10–11: throws SecurityException → needs createDeleteRequest approval.
+            // If we already deleted the original up front, publish now. Otherwise try to
+            // delete after writing.
             try {
-                context.contentResolver.delete(origUri, null, null)
+                if (!originalDeleted) context.contentResolver.delete(origUri, null, null)
                 // Delete succeeded — publish the new file now so it's visible in the gallery.
                 // DATE_TAKEN is set here as a ContentValues fallback; the hub also stamped
                 // DateTimeOriginal into the JPEG EXIF so the MediaStore scanner reads it too.
@@ -400,6 +466,19 @@ class MediaStoreHelper(private val context: Context) {
             }
         }
         return updated
+    }
+
+    /** Resolves the absolute /storage path for a MediaStore URI. Null if unavailable. */
+    private fun resolveRealPath(uri: Uri): String? {
+        return try {
+            context.contentResolver.query(
+                uri,
+                arrayOf(MediaStore.MediaColumns.DATA),
+                null, null, null
+            )?.use { c ->
+                if (c.moveToFirst()) c.getString(0) else null
+            }
+        } catch (_: Exception) { null }
     }
 
     private fun findOriginalUri(id: Long): Uri? {
@@ -529,6 +608,41 @@ class MediaStoreHelper(private val context: Context) {
                     // MANAGE_MEDIA not granted — skip; user will need to approve via batch request
                 }
             }
+        }
+
+        // Second pass: rename any remaining "foo (1).jpg" → "foo.jpg" where no plain
+        // original exists in MediaStore. This covers v37-and-earlier compression runs
+        // that left (1)-suffixed files in the gallery permanently.
+        val allImagesAfter = mutableMapOf<String, Long>()
+        for (base in listOf(
+            MediaStore.Images.Media.EXTERNAL_CONTENT_URI,
+            MediaStore.Video.Media.EXTERNAL_CONTENT_URI
+        )) {
+            val sel = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q)
+                "${MediaStore.MediaColumns.IS_PENDING} = 0" else null
+            context.contentResolver.query(
+                base,
+                arrayOf(MediaStore.MediaColumns._ID, MediaStore.MediaColumns.DISPLAY_NAME),
+                sel, null, null
+            )?.use { c ->
+                val idCol   = c.getColumnIndexOrThrow(MediaStore.MediaColumns._ID)
+                val nameCol = c.getColumnIndexOrThrow(MediaStore.MediaColumns.DISPLAY_NAME)
+                while (c.moveToNext()) {
+                    val name = c.getString(nameCol) ?: continue
+                    allImagesAfter[name] = c.getLong(idCol)
+                }
+            }
+        }
+        for ((name, id) in allImagesAfter.toMap()) {
+            val match = suffixRegex.matchEntire(name) ?: continue
+            val cleanName = match.groupValues[1] + match.groupValues[2]
+            if (allImagesAfter.containsKey(cleanName)) continue  // plain still exists — don't clash
+            val uri = findOriginalUri(id) ?: continue
+            try {
+                context.contentResolver.update(uri, ContentValues().apply {
+                    put(MediaStore.MediaColumns.DISPLAY_NAME, cleanName)
+                }, null, null)
+            } catch (_: Exception) { /* best-effort */ }
         }
         return deleted
     }

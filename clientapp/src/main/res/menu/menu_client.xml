@@ -3,10 +3,12 @@
     <item android:id="@+id/action_start"          android:title="Start Client" />
     <item android:id="@+id/action_permissions"    android:title="Grant Media Read" />
     <item android:id="@+id/action_manage_media"   android:title="Grant Media Manage (Android 12+)" />
+    <item android:id="@+id/action_all_files"      android:title="Grant All-Files Access (silent compress)" />
     <item android:id="@+id/action_write_access"   android:title="Grant Write Access (Android 10–11)" />
     <item android:id="@+id/action_delete_originals" android:title="Delete queued originals" />
     <item android:id="@+id/action_cleanup_duplicates" android:title="Clean up duplicate originals" />
     <item android:id="@+id/action_fix_orientation"    android:title="Fix orientation &amp; dates now" />
     <item android:id="@+id/action_battery"        android:title="Battery Optimization" />
+    <item android:id="@+id/action_accessibility"  android:title="Accessibility Settings" />
     <item android:id="@+id/action_check_update"   android:title="Check for Updates" />
 </menu>

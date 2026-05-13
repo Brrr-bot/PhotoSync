@@ -19,7 +19,7 @@ object Constants {
     const val HEADER_DEVICE = "X-PhotoSync-Device"
 
     const val HMAC_VALIDITY_MS = 60_000L
-    const val HANDSHAKE_TIMEOUT_MS = 3_000L
+    const val HANDSHAKE_TIMEOUT_MS = 12_000L
     const val FILE_TIMEOUT_MS = 120_000L
     const val ANNOUNCE_INTERVAL_MS = 15_000L
 
@@ -28,6 +28,10 @@ object Constants {
     const val HUB_DISCOVERY_PREFIX = "PHOTOSYNC_HUB_HERE"
     const val PATH_SYNC = "/sync"
     const val PATH_DASHBOARD = "/dashboard"
+    const val PATH_LOCATION = "/location"
+    const val PATH_HUB_FILES = "/hub/files"
+    const val PATH_HUB_THUMB = "/hub/thumb"
+    const val PATH_HUB_FILE  = "/hub/file"
 
-    const val UPDATE_CHECK_URL = "https://raw.githubusercontent.com/ngalogivn-ship-it/photosync/main/version.json"
+    const val UPDATE_CHECK_URL = "http://100.107.143.20:9000/version.json"
 }

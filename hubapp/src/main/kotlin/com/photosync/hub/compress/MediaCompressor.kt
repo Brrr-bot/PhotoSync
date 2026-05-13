@@ -2,8 +2,8 @@ package com.photosync.hub.compress
 
 import android.graphics.Bitmap
 import android.graphics.BitmapFactory
-import android.graphics.Matrix
 import android.media.ExifInterface
+import android.util.Log
 import java.io.ByteArrayInputStream
 import java.io.ByteArrayOutputStream
 import java.io.File
@@ -17,24 +17,22 @@ object MediaCompressor {
     private const val JPEG_QUALITY = 82
 
     /**
-     * Compresses an image from [originalBytes] to JPEG at [JPEG_QUALITY]% quality,
-     * scaled so the longest side is at most [MAX_DIMENSION]px.
-     * Preserves EXIF orientation by baking the rotation into the pixel data.
-     * Returns null if the input is not a recognised image or is already smaller than the result.
-     */
-    /**
-     * Compresses [originalBytes] and stamps [dateTakenMs] into the output JPEG EXIF so
-     * the phone's MediaStore scanner sets DATE_TAKEN correctly without any client-side
-     * ExifInterface calls (which risk native JNI crashes on certain Android versions).
+     * Compresses [originalBytes] to JPEG at [JPEG_QUALITY]%, scaled so the longest side is
+     * at most [MAX_DIMENSION]px. Preserves EXIF orientation tag (does NOT bake into pixels —
+     * baking caused double-rotation on Samsung devices whose camera sets ROTATE_90 in EXIF
+     * while pixels are already correctly oriented). Returns null if the input is not a
+     * recognised image or the compressed result would be larger than the original.
      *
-     * @param cacheDir  Writable directory for the temp file used during EXIF stamping.
-     *                  Pass [android.content.Context.getCacheDir].  If null, EXIF stamping
-     *                  is skipped (ContentValues DATE_TAKEN is the fallback).
-     * @param dateTakenMs  Original capture time in milliseconds, or 0 to skip stamping.
+     * @param cacheDir     Writable dir for the temp file used during EXIF stamping. Pass
+     *                     [android.content.Context.getCacheDir]. Null skips EXIF stamping.
+     * @param dateTakenMs  Capture time in ms, or 0 to skip date stamping.
      */
     fun compressImage(originalBytes: ByteArray, dateTakenMs: Long = 0L, cacheDir: File? = null): ByteArray? {
         return try {
-            // Read EXIF orientation BEFORE decoding — must use a fresh stream
+            // Read EXIF orientation BEFORE decoding — must use a fresh stream.
+            // We preserve it in the output EXIF rather than baking it into pixels;
+            // baking caused incorrect rotation on Samsung devices where the camera
+            // sets ROTATE_90 in EXIF but pixels are already correctly oriented.
             val orientation = try {
                 ExifInterface(ByteArrayInputStream(originalBytes))
                     .getAttributeInt(ExifInterface.TAG_ORIENTATION, ExifInterface.ORIENTATION_NORMAL)
@@ -46,7 +44,10 @@ object MediaCompressor {
             val opts = BitmapFactory.Options().apply { inJustDecodeBounds = true }
             BitmapFactory.decodeByteArray(originalBytes, 0, originalBytes.size, opts)
 
-            if (opts.outWidth <= 0 || opts.outHeight <= 0) return null   // not an image
+            if (opts.outWidth <= 0 || opts.outHeight <= 0) {
+                Log.w("MediaCompressor", "decode failed: bounds (${opts.outWidth}x${opts.outHeight}) for ${originalBytes.size}B input")
+                return null
+            }
 
             // Calculate inSampleSize for fast decode at roughly target size
             val inSampleSize = calcSampleSize(opts.outWidth, opts.outHeight, MAX_DIMENSION)
@@ -57,31 +58,27 @@ object MediaCompressor {
             val sampled = BitmapFactory.decodeByteArray(originalBytes, 0, originalBytes.size, decodeOpts)
                 ?: return null
 
-            // Bake EXIF rotation into pixels so galleries that ignore EXIF show correct orientation
-            val oriented = applyOrientation(sampled, orientation)
-
-            // Scale precisely to MAX_DIMENSION on longest side
-            val scaled = scaleTo(oriented, MAX_DIMENSION)
+            // Scale precisely to MAX_DIMENSION on longest side (no pixel rotation — orientation
+            // is preserved via EXIF tag so all modern galleries display it correctly)
+            val scaled = scaleTo(sampled, MAX_DIMENSION)
 
             val out = ByteArrayOutputStream()
             scaled.compress(Bitmap.CompressFormat.JPEG, JPEG_QUALITY, out)
 
             // Recycle intermediate bitmaps
-            if (scaled !== oriented) scaled.recycle()
-            if (oriented !== sampled) oriented.recycle()
+            if (scaled !== sampled) scaled.recycle()
             sampled.recycle()
 
             val compressed = out.toByteArray()
             if (compressed.size >= originalBytes.size) return null   // already optimal
 
-            // Stamp DateTimeOriginal into the compressed JPEG via a temp file so the
-            // phone's MediaStore scanner reads the correct capture date from EXIF.
-            // This avoids all ExifInterface use on the client side (JNI crash risk).
-            if (dateTakenMs > 0L && cacheDir != null) {
-                stampExifDate(compressed, dateTakenMs, cacheDir)?.let { return it }
+            // Stamp DateTimeOriginal + preserve orientation tag into the compressed JPEG.
+            if (cacheDir != null && (dateTakenMs > 0L || orientation != ExifInterface.ORIENTATION_NORMAL)) {
+                stampExifDate(compressed, dateTakenMs, orientation, cacheDir)?.let { return it }
             }
             compressed
         } catch (e: Exception) {
+            Log.w("MediaCompressor", "compress threw: ${e.javaClass.simpleName}: ${e.message}")
             null
         }
     }
@@ -91,16 +88,26 @@ object MediaCompressor {
      * Uses a temp file in [cacheDir] because ExifInterface requires a seekable file.
      * Returns the modified bytes, or null if stamping fails (caller falls back to plain bytes).
      */
-    private fun stampExifDate(jpegBytes: ByteArray, dateTakenMs: Long, cacheDir: File): ByteArray? {
+    private fun stampExifDate(
+        jpegBytes: ByteArray,
+        dateTakenMs: Long,
+        orientation: Int,
+        cacheDir: File
+    ): ByteArray? {
         var tmp: File? = null
         return try {
             tmp = File.createTempFile("ps_exif_", ".jpg", cacheDir)
             tmp.writeBytes(jpegBytes)
-            val formatted = SimpleDateFormat("yyyy:MM:dd HH:mm:ss", Locale.US).format(Date(dateTakenMs))
             ExifInterface(tmp.absolutePath).apply {
-                setAttribute(ExifInterface.TAG_DATETIME_ORIGINAL, formatted)
-                setAttribute(ExifInterface.TAG_DATETIME,          formatted)
-                setAttribute(ExifInterface.TAG_DATETIME_DIGITIZED, formatted)
+                if (dateTakenMs > 0L) {
+                    val formatted = SimpleDateFormat("yyyy:MM:dd HH:mm:ss", Locale.US).format(Date(dateTakenMs))
+                    setAttribute(ExifInterface.TAG_DATETIME_ORIGINAL, formatted)
+                    setAttribute(ExifInterface.TAG_DATETIME,          formatted)
+                    setAttribute(ExifInterface.TAG_DATETIME_DIGITIZED, formatted)
+                }
+                // Preserve original orientation so galleries display correctly without
+                // baking rotation into pixels (which corrupted Samsung portrait photos).
+                setAttribute(ExifInterface.TAG_ORIENTATION, orientation.toString())
                 saveAttributes()
             }
             tmp.readBytes()
@@ -114,26 +121,6 @@ object MediaCompressor {
     /** Returns true for mime types we can compress. */
     fun canCompress(mimeType: String) = mimeType.startsWith("image/") &&
             mimeType != "image/gif" && mimeType != "image/svg+xml"
-
-    /**
-     * Rotates/flips [bitmap] to match the EXIF [orientation] tag, baking the
-     * transform into the pixel data so the output JPEG needs no orientation tag.
-     */
-    private fun applyOrientation(bitmap: Bitmap, orientation: Int): Bitmap {
-        val matrix = Matrix()
-        when (orientation) {
-            ExifInterface.ORIENTATION_ROTATE_90    -> matrix.postRotate(90f)
-            ExifInterface.ORIENTATION_ROTATE_180   -> matrix.postRotate(180f)
-            ExifInterface.ORIENTATION_ROTATE_270   -> matrix.postRotate(270f)
-            ExifInterface.ORIENTATION_FLIP_HORIZONTAL -> matrix.postScale(-1f, 1f)
-            ExifInterface.ORIENTATION_FLIP_VERTICAL   -> matrix.postScale(1f, -1f)
-            ExifInterface.ORIENTATION_TRANSPOSE    -> { matrix.postScale(-1f, 1f); matrix.postRotate(-90f) }
-            ExifInterface.ORIENTATION_TRANSVERSE   -> { matrix.postScale(-1f, 1f); matrix.postRotate(90f) }
-            else -> return bitmap   // ORIENTATION_NORMAL or UNDEFINED — nothing to do
-        }
-        val rotated = Bitmap.createBitmap(bitmap, 0, 0, bitmap.width, bitmap.height, matrix, true)
-        return rotated
-    }
 
     private fun calcSampleSize(width: Int, height: Int, target: Int): Int {
         var size = 1

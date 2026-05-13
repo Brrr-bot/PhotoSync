@@ -3,6 +3,7 @@
     <item android:id="@+id/action_start"          android:title="Start Hub" />
     <item android:id="@+id/action_usb"            android:title="Select USB Drive" />
     <item android:id="@+id/action_battery"        android:title="Battery Optimization" />
+    <item android:id="@+id/action_accessibility"  android:title="Accessibility Settings" />
     <item android:id="@+id/action_repair_orient"  android:title="Repair orientation (re-compress all)" />
     <item android:id="@+id/action_check_update"   android:title="Check for Updates" />
 </menu>

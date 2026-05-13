@@ -2,12 +2,17 @@ package com.photosync.hub.storage
 
 import android.content.Context
 import android.content.SharedPreferences
+import android.graphics.Bitmap
+import android.graphics.BitmapFactory
+import android.media.MediaScannerConnection
 import android.net.Uri
+import android.provider.DocumentsContract
 import androidx.documentfile.provider.DocumentFile
 import androidx.exifinterface.media.ExifInterface
 import com.google.gson.Gson
 import com.google.gson.reflect.TypeToken
 import com.photosync.shared.model.MediaFileInfo
+import java.io.ByteArrayOutputStream
 import java.io.InputStream
 import java.text.SimpleDateFormat
 import java.util.Date
@@ -41,8 +46,10 @@ class UsbStorageManager(
     }
 
     /**
-     * Writes [stream] to [deviceName]/[file.displayName] on the USB drive.
-     * Skips if the file already exists (idempotent).
+     * Writes [stream] to [deviceName]/YYYY-MM-DD/[file.displayName] on the USB drive.
+     * New files go into a date subfolder derived from the photo's capture date so that
+     * browsing by folder in a file explorer shows photos in chronological order.
+     * Existing flat-folder files are detected and skipped (backward compatible).
      * Returns true if the file was actually written, false if skipped.
      */
     fun writeFile(deviceName: String, file: MediaFileInfo, stream: InputStream): Boolean {
@@ -53,26 +60,71 @@ class UsbStorageManager(
             ?: root.createDirectory(deviceName)
             ?: throw IllegalStateException("Cannot create device folder '$deviceName'")
 
-        // Skip if already backed up
-        if (deviceFolder.findFile(file.displayName) != null) return false
+        // Skip if already present anywhere in the device folder (flat or subfolder)
+        if (findFileAnywhere(deviceFolder, file.displayName) != null) return false
+
+        // Derive date subfolder from capture time (falls back to dateAdded)
+        val dateMs = when {
+            file.dateTaken > 0 -> file.dateTaken
+            file.dateAdded > 0 -> file.dateAdded * 1000L
+            else               -> System.currentTimeMillis()
+        }
+        val dateLabel = SimpleDateFormat("yyyy-MM-dd", Locale.US).format(Date(dateMs))
+        val dateFolder = deviceFolder.findFile(dateLabel)
+            ?: deviceFolder.createDirectory(dateLabel)
+            ?: throw IllegalStateException("Cannot create date folder '$dateLabel'")
 
         // Use "application/octet-stream" so SAF doesn't append a second extension.
-        // Many OEM implementations add the MIME type's extension even when displayName
-        // already has one (e.g. "IMG_001.jpg" → "IMG_001.jpg.jpg").
-        val newFile = deviceFolder.createFile("application/octet-stream", file.displayName)
+        val newFile = dateFolder.createFile("application/octet-stream", file.displayName)
             ?: throw IllegalStateException("Cannot create file '${file.displayName}'")
 
         context.contentResolver.openOutputStream(newFile.uri)?.use { out ->
             stream.copyTo(out)
         } ?: throw IllegalStateException("Cannot open output stream")
 
-        // Stamp EXIF DateTimeOriginal on JPEG/HEIC images so gallery apps sort by the
-        // original capture date rather than the SAF write time (which is always "now").
+        // Stamp EXIF DateTimeOriginal so gallery apps sort by capture date.
         if (file.mimeType.startsWith("image/") && file.mimeType != "image/gif") {
             stampExifDate(newFile.uri, file)
         }
 
+        // Notify MediaStore so the gallery app picks up the new file immediately.
+        scanFileForGallery(newFile.uri)
+
         return true
+    }
+
+    /**
+     * Converts a SAF document URI to a real filesystem path and asks MediaScanner
+     * to index it so gallery apps see the file without needing a manual refresh.
+     * Works for external storage volumes (USB OTG drives) where document IDs are
+     * formatted as "volumeId:relative/path".
+     */
+    private fun scanFileForGallery(uri: Uri) {
+        try {
+            val docId = DocumentsContract.getDocumentId(uri)
+            val colon = docId.indexOf(':')
+            if (colon < 0) return
+            val volumeId = docId.substring(0, colon)
+            val relativePath = docId.substring(colon + 1)
+            val filePath = "/storage/$volumeId/$relativePath"
+            MediaScannerConnection.scanFile(context, arrayOf(filePath), null, null)
+        } catch (_: Exception) { /* best-effort — gallery refresh not critical */ }
+    }
+
+    /**
+     * Finds a file by [displayName] anywhere under [deviceFolder] —
+     * checks the flat root first, then all immediate subfolders (date folders).
+     */
+    private fun findFileAnywhere(deviceFolder: DocumentFile, displayName: String): DocumentFile? {
+        // Check flat root
+        deviceFolder.findFile(displayName)?.let { return it }
+        // Check date subfolders (one level deep)
+        for (child in deviceFolder.listFiles()) {
+            if (child.isDirectory) {
+                child.findFile(displayName)?.let { return it }
+            }
+        }
+        return null
     }
 
     /**
@@ -108,12 +160,13 @@ class UsbStorageManager(
 
     /**
      * Reads a file from the USB drive and returns its bytes, or null if not found.
+     * Searches both the flat device folder and date subfolders.
      */
     fun readFile(deviceName: String, displayName: String): ByteArray? {
         return try {
             val root = DocumentFile.fromTreeUri(context, treeUri ?: return null) ?: return null
             val folder = root.findFile(deviceName) ?: return null
-            val file = folder.findFile(displayName) ?: return null
+            val file = findFileAnywhere(folder, displayName) ?: return null
             context.contentResolver.openInputStream(file.uri)?.use { it.readBytes() }
         } catch (e: Exception) {
             null
@@ -121,14 +174,42 @@ class UsbStorageManager(
     }
 
     /**
-     * Returns the set of all filenames already in [deviceName]'s folder on the USB drive.
-     * Call once per sync session and cache — much faster than calling findFile() per file.
+     * Overwrites an existing file on the USB drive with [bytes].
+     * Used to replace an original image with its compressed version in-place.
+     * Searches flat folder and date subfolders.
+     * Returns true on success, false if the file doesn't exist or write fails.
+     */
+    fun overwriteFile(deviceName: String, displayName: String, bytes: ByteArray): Boolean {
+        return try {
+            val root = DocumentFile.fromTreeUri(context, treeUri ?: return false) ?: return false
+            val folder = root.findFile(deviceName) ?: return false
+            val file = findFileAnywhere(folder, displayName) ?: return false
+            context.contentResolver.openOutputStream(file.uri, "wt")?.use {
+                it.write(bytes)
+            } ?: return false
+            true
+        } catch (e: Exception) {
+            false
+        }
+    }
+
+    /**
+     * Returns the set of all filenames under [deviceName]'s folder on the USB drive,
+     * scanning both the flat root and all date subfolders (one level deep).
+     * Call once per sync session and cache — SAF listFiles() is slow.
      */
     fun getExistingFileNames(deviceName: String): Set<String> {
         return try {
             val root = DocumentFile.fromTreeUri(context, treeUri ?: return emptySet()) ?: return emptySet()
             val folder = root.findFile(deviceName) ?: return emptySet()
-            folder.listFiles().mapNotNull { it.name }.toHashSet()
+            val result = mutableSetOf<String>()
+            for (item in folder.listFiles()) {
+                when {
+                    item.isDirectory -> item.listFiles().forEach { f -> f.name?.let { result.add(it) } }
+                    else             -> item.name?.let { result.add(it) }
+                }
+            }
+            result
         } catch (e: Exception) {
             emptySet()
         }
@@ -152,6 +233,64 @@ class UsbStorageManager(
         } catch (e: Exception) {
             0L
         }
+    }
+
+    /**
+     * Writes a human-readable integrity manifest to the USB root:
+     * "photosync_manifest_[deviceName].json"
+     * Lists every filename on the phone, every filename on USB (for this device),
+     * and any phone files that are missing from USB.
+     */
+    fun writeManifest(
+        deviceName: String,
+        phoneFiles: List<String>,
+        usbFiles: Set<String>,
+        checkedAtMs: Long
+    ) {
+        try {
+            val root = DocumentFile.fromTreeUri(context, treeUri ?: return) ?: return
+            val phoneSet = phoneFiles.toHashSet()
+            val missingFromUsb = phoneFiles.filter { name ->
+                name !in usbFiles &&
+                name.substringBeforeLast('.') !in usbFiles
+            }
+            val ts = SimpleDateFormat("yyyy-MM-dd HH:mm:ss", Locale.US).format(Date(checkedAtMs))
+            val json = buildString {
+                append("{\n")
+                append("  \"checkedAt\": \"$ts\",\n")
+                append("  \"deviceName\": \"$deviceName\",\n")
+                append("  \"phoneFileCount\": ${phoneFiles.size},\n")
+                append("  \"usbFileCount\": ${usbFiles.size},\n")
+                append("  \"missingFromUsbCount\": ${missingFromUsb.size},\n")
+                append("  \"allPhoneFilesPresent\": ${missingFromUsb.isEmpty()},\n")
+                if (missingFromUsb.isNotEmpty()) {
+                    append("  \"missingFromUsb\": [\n")
+                    missingFromUsb.forEachIndexed { i, name ->
+                        append("    \"$name\"")
+                        if (i < missingFromUsb.lastIndex) append(",")
+                        append("\n")
+                    }
+                    append("  ],\n")
+                } else {
+                    append("  \"missingFromUsb\": [],\n")
+                }
+                append("  \"phoneFiles\": [\n")
+                phoneFiles.forEachIndexed { i, name ->
+                    append("    \"$name\"")
+                    if (i < phoneFiles.lastIndex) append(",")
+                    append("\n")
+                }
+                append("  ]\n")
+                append("}")
+            }
+            val filename = "photosync_manifest_${deviceName.replace(' ', '_')}.json"
+            root.findFile(filename)?.delete()
+            root.createFile("application/json", filename)?.let { file ->
+                context.contentResolver.openOutputStream(file.uri)?.use { out ->
+                    out.write(json.toByteArray())
+                }
+            }
+        } catch (_: Exception) { /* non-fatal */ }
     }
 
     /** Persists [lastSyncMs] for [deviceName] into the USB manifest. */
@@ -214,10 +353,11 @@ class UsbStorageManager(
             val root = DocumentFile.fromTreeUri(context, treeUri ?: return result) ?: return result
             val folder = root.findFile(deviceName) ?: return result
             val imageExtensions = setOf("jpg", "jpeg", "png", "webp", "heic", "heif")
-            for (file in folder.listFiles()) {
-                val name = file.name ?: continue
+
+            fun scanFile(file: DocumentFile) {
+                val name = file.name ?: return
                 val ext = name.substringAfterLast('.', "").lowercase()
-                if (ext !in imageExtensions) continue
+                if (ext !in imageExtensions) return
                 try {
                     context.contentResolver.openFileDescriptor(file.uri, "r")?.use { pfd ->
                         val exif = ExifInterface(pfd.fileDescriptor)
@@ -231,9 +371,94 @@ class UsbStorageManager(
                     }
                 } catch (_: Exception) { /* corrupt EXIF — skip */ }
             }
+
+            for (item in folder.listFiles()) {
+                if (item.isDirectory) item.listFiles().forEach { scanFile(it) }
+                else scanFile(item)
+            }
         } catch (_: Exception) { /* USB not accessible */ }
         return result
     }
+
+    /**
+     * Returns up to [limit] most-recently-modified image/video files across all device folders,
+     * sorted newest first. Used by the hub's /hub/files endpoint.
+     */
+    fun listRecentFiles(limit: Int = 50): List<HubFileEntry> {
+        val result = mutableListOf<HubFileEntry>()
+        try {
+            val root = DocumentFile.fromTreeUri(context, treeUri ?: return result) ?: return result
+            val imageExts = setOf("jpg", "jpeg", "png", "webp", "heic", "heif", "mp4", "mov")
+            for (deviceDir in root.listFiles()) {
+                if (!deviceDir.isDirectory) continue
+                val deviceName = deviceDir.name ?: continue
+                fun collect(f: DocumentFile) {
+                    val name = f.name ?: return
+                    val ext = name.substringAfterLast('.', "").lowercase()
+                    if (ext !in imageExts) return
+                    result += HubFileEntry(deviceName, name, f.length(), f.lastModified())
+                }
+                for (child in deviceDir.listFiles()) {
+                    if (child.isDirectory) child.listFiles().forEach { collect(it) }
+                    else collect(child)
+                }
+            }
+        } catch (_: Exception) {}
+        result.sortByDescending { it.lastModifiedMs }
+        return result.take(limit)
+    }
+
+    /**
+     * Reads any file from the USB drive by device + display name, searching nested date folders.
+     */
+    fun readAnyFile(deviceName: String, displayName: String): ByteArray? {
+        return try {
+            val root = DocumentFile.fromTreeUri(context, treeUri ?: return null) ?: return null
+            val folder = root.findFile(deviceName) ?: return null
+            val file = findFileAnywhere(folder, displayName) ?: return null
+            context.contentResolver.openInputStream(file.uri)?.use { it.readBytes() }
+        } catch (_: Exception) { null }
+    }
+
+    /**
+     * Returns a scaled-down JPEG thumbnail (longest side ≤ [maxPx]) for the given file,
+     * or null if the file can't be found or decoded.
+     */
+    fun thumbnailForFile(deviceName: String, displayName: String, maxPx: Int = 240): ByteArray? {
+        return try {
+            val bytes = readAnyFile(deviceName, displayName) ?: return null
+            val opts = BitmapFactory.Options().apply { inJustDecodeBounds = true }
+            BitmapFactory.decodeByteArray(bytes, 0, bytes.size, opts)
+            if (opts.outWidth <= 0) return null
+            val sample = run {
+                var s = 1; var w = opts.outWidth; var h = opts.outHeight
+                while (w / 2 >= maxPx && h / 2 >= maxPx) { w /= 2; h /= 2; s *= 2 }
+                s
+            }
+            val bmp = BitmapFactory.decodeByteArray(bytes, 0, bytes.size,
+                BitmapFactory.Options().apply { inSampleSize = sample }) ?: return null
+            val (w, h) = bmp.width to bmp.height
+            val scaled = if (w >= h) {
+                val nh = (h.toFloat() / w * maxPx).toInt().coerceAtLeast(1)
+                Bitmap.createScaledBitmap(bmp, maxPx, nh, true)
+            } else {
+                val nw = (w.toFloat() / h * maxPx).toInt().coerceAtLeast(1)
+                Bitmap.createScaledBitmap(bmp, nw, maxPx, true)
+            }
+            if (scaled !== bmp) bmp.recycle()
+            val out = ByteArrayOutputStream()
+            scaled.compress(Bitmap.CompressFormat.JPEG, 75, out)
+            scaled.recycle()
+            out.toByteArray()
+        } catch (_: Exception) { null }
+    }
+
+    data class HubFileEntry(
+        val deviceName: String,
+        val displayName: String,
+        val sizeBytes: Long,
+        val lastModifiedMs: Long
+    )
 
     private fun loadUri(): Uri? {
         val str = prefs.getString(PREF_USB_URI, null) ?: return null

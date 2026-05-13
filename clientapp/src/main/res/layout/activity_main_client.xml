@@ -32,7 +32,7 @@
                 android:layout_height="wrap_content"
                 android:layout_weight="1"
                 android:text="@string/app_name"
-                android:textColor="@color/neon_green"
+                android:textColor="@color/neon_cyan"
                 android:textSize="17sp"
                 android:letterSpacing="0.12"
                 android:textStyle="bold"
@@ -44,7 +44,7 @@
                 android:layout_height="48dp"
                 android:background="?attr/selectableItemBackgroundBorderless"
                 android:src="@drawable/ic_more_vert"
-                android:tint="@color/neon_green"
+                android:tint="@color/neon_cyan"
                 android:contentDescription="Menu"/>
         </LinearLayout>
 
@@ -113,6 +113,37 @@
                             android:textColor="@color/text_primary"
                             android:textSize="13sp"
                             android:layout_marginTop="4dp"/>
+
+                        <TextView android:id="@+id/tv_tailscale_status"
+                            android:layout_width="match_parent"
+                            android:layout_height="wrap_content"
+                            android:textColor="@color/neon_cyan"
+                            android:textSize="12sp"
+                            android:fontFamily="monospace"
+                            android:layout_marginTop="4dp"/>
+
+                        <LinearLayout
+                            android:layout_width="match_parent"
+                            android:layout_height="wrap_content"
+                            android:orientation="horizontal"
+                            android:gravity="center_vertical"
+                            android:layout_marginTop="12dp">
+
+                            <androidx.appcompat.widget.SwitchCompat
+                                android:id="@+id/sw_mobile_data"
+                                android:layout_width="wrap_content"
+                                android:layout_height="wrap_content"
+                                android:thumbTint="@color/neon_cyan"
+                                android:trackTint="@color/neon_deep"/>
+
+                            <TextView
+                                android:layout_width="wrap_content"
+                                android:layout_height="wrap_content"
+                                android:text="Sync on mobile data"
+                                android:textColor="@color/text_primary"
+                                android:textSize="13sp"
+                                android:layout_marginStart="8dp"/>
+                        </LinearLayout>
                     </LinearLayout>
                 </FrameLayout>
 
@@ -158,7 +189,7 @@
                             android:max="100"
                             android:progress="0"
                             android:progressTint="@color/neon_purple"
-                            android:progressBackgroundTint="#33BF00FF"
+                            android:progressBackgroundTint="#3300897B"
                             android:layout_marginBottom="14dp"/>
 
                         <!-- Current file progress -->
@@ -223,7 +254,7 @@
                             android:layout_width="wrap_content"
                             android:layout_height="wrap_content"
                             android:text="COMPRESSION"
-                            android:textColor="@color/neon_green"
+                            android:textColor="@color/neon_cyan"
                             android:textSize="11sp"
                             android:letterSpacing="0.2"
                             android:textStyle="bold"
@@ -248,13 +279,126 @@
                             android:max="100"
                             android:progress="0"
                             android:progressTint="@color/neon_green"
-                            android:progressBackgroundTint="#2200FF88"
+                            android:progressBackgroundTint="#2200CFA8"
                             android:visibility="invisible"/>
 
                     </LinearLayout>
                 </FrameLayout>
 
-                <!-- Card 4: LIVE LOG (amber) -->
+                <!-- Card 4: HUB FILES (green) -->
+                <FrameLayout
+                    android:id="@+id/card_hub_files"
+                    android:layout_width="match_parent"
+                    android:layout_height="wrap_content"
+                    android:layout_marginBottom="12dp"
+                    android:background="@drawable/neon_card_green"
+                    android:padding="20dp">
+
+                    <LinearLayout
+                        android:layout_width="match_parent"
+                        android:layout_height="wrap_content"
+                        android:orientation="vertical">
+
+                        <!-- Header row: label + MORE button -->
+                        <LinearLayout
+                            android:layout_width="match_parent"
+                            android:layout_height="wrap_content"
+                            android:orientation="horizontal"
+                            android:gravity="center_vertical"
+                            android:layout_marginBottom="12dp">
+
+                            <TextView
+                                android:layout_width="0dp"
+                                android:layout_height="wrap_content"
+                                android:layout_weight="1"
+                                android:text="HUB FILES"
+                                android:textColor="@color/neon_green"
+                                android:textSize="11sp"
+                                android:letterSpacing="0.2"
+                                android:textStyle="bold"
+                                android:fontFamily="monospace"/>
+
+                            <TextView
+                                android:id="@+id/btn_hub_files_more"
+                                android:layout_width="wrap_content"
+                                android:layout_height="wrap_content"
+                                android:text="MORE →"
+                                android:textColor="@color/neon_green"
+                                android:textSize="11sp"
+                                android:textStyle="bold"
+                                android:fontFamily="monospace"
+                                android:padding="4dp"
+                                android:background="?attr/selectableItemBackgroundBorderless"/>
+                        </LinearLayout>
+
+                        <!-- 5 thumbnail slots in a horizontal row -->
+                        <LinearLayout
+                            android:layout_width="match_parent"
+                            android:layout_height="70dp"
+                            android:orientation="horizontal"
+                            android:weightSum="5">
+
+                            <ImageView
+                                android:id="@+id/iv_hub_thumb_0"
+                                android:layout_width="0dp"
+                                android:layout_height="match_parent"
+                                android:layout_weight="1"
+                                android:layout_marginEnd="3dp"
+                                android:scaleType="centerCrop"
+                                android:background="#1a1a2e"/>
+
+                            <ImageView
+                                android:id="@+id/iv_hub_thumb_1"
+                                android:layout_width="0dp"
+                                android:layout_height="match_parent"
+                                android:layout_weight="1"
+                                android:layout_marginEnd="3dp"
+                                android:scaleType="centerCrop"
+                                android:background="#1a1a2e"/>
+
+                            <ImageView
+                                android:id="@+id/iv_hub_thumb_2"
+                                android:layout_width="0dp"
+                                android:layout_height="match_parent"
+                                android:layout_weight="1"
+                                android:layout_marginEnd="3dp"
+                                android:scaleType="centerCrop"
+                                android:background="#1a1a2e"/>
+
+                            <ImageView
+                                android:id="@+id/iv_hub_thumb_3"
+                                android:layout_width="0dp"
+                                android:layout_height="match_parent"
+                                android:layout_weight="1"
+                                android:layout_marginEnd="3dp"
+                                android:scaleType="centerCrop"
+                                android:background="#1a1a2e"/>
+
+                            <ImageView
+                                android:id="@+id/iv_hub_thumb_4"
+                                android:layout_width="0dp"
+                                android:layout_height="match_parent"
+                                android:layout_weight="1"
+                                android:scaleType="centerCrop"
+                                android:background="#1a1a2e"/>
+
+                        </LinearLayout>
+
+                        <!-- Status text (shown while loading or if hub unreachable) -->
+                        <TextView
+                            android:id="@+id/tv_hub_files_status"
+                            android:layout_width="match_parent"
+                            android:layout_height="wrap_content"
+                            android:layout_marginTop="8dp"
+                            android:text="Connect to hub to see recent files"
+                            android:textColor="#666"
+                            android:textSize="11sp"
+                            android:fontFamily="monospace"/>
+
+                    </LinearLayout>
+                </FrameLayout>
+
+                <!-- Card 5: LIVE LOG (amber) -->
                 <FrameLayout
                     android:layout_width="match_parent"
                     android:layout_height="wrap_content"

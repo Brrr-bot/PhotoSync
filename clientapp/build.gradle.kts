@@ -59,6 +59,10 @@ dependencies {
     implementation(libs.gson)
     implementation(libs.okhttp)
     implementation(libs.androidx.lifecycle.service)
+
+    // ML Kit Text Recognition — free, on-device OCR for timetable parsing
+    implementation("com.google.mlkit:text-recognition:16.0.1")
+    implementation("androidx.recyclerview:recyclerview:1.3.2")
 }
 
 // ── GitHub release — upload client APK to existing release ───────────────────
@@ -150,9 +154,4 @@ tasks.register("uploadApkToGitHub") {
     }
 }
 
-// Hook: run upload automatically after every debug build
-afterEvaluate {
-    tasks.named("assembleDebug") {
-        finalizedBy("uploadApkToGitHub")
-    }
-}
+// GitHub upload disabled — distribution is now via local Tailscale server (update-server/app.py)

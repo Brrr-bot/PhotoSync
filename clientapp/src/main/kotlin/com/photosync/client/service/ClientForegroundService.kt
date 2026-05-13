@@ -1,10 +1,8 @@
 package com.photosync.client.service
 
-import android.Manifest
 import android.app.Notification
 import android.app.PendingIntent
 import android.content.Intent
-import android.content.pm.PackageManager
 import android.net.wifi.WifiManager
 import android.os.Build
 import android.os.Handler
@@ -12,9 +10,9 @@ import android.os.IBinder
 import android.os.Looper
 import android.os.PowerManager
 import androidx.core.app.NotificationCompat
-import androidx.core.content.ContextCompat
 import androidx.lifecycle.LifecycleService
 import androidx.lifecycle.lifecycleScope
+import com.photosync.client.BuildConfig
 import com.photosync.client.ClientApplication
 import com.photosync.client.media.LocalImageProcessor
 import com.photosync.client.media.MediaStoreHelper
@@ -39,8 +37,6 @@ class ClientForegroundService : LifecycleService() {
     private var hubDiscoveryJob: Job? = null
     private var updateJob: Job? = null
     private var localFixJob: Job? = null
-    private var locationJob: Job? = null
-    private var locationTracker: LocationTracker? = null
     private var hubDiscovery: HubDiscovery? = null
     private var deleteNotificationShown = false
 
@@ -63,16 +59,11 @@ class ClientForegroundService : LifecycleService() {
         // Restore persisted Tailscale IP so remote sync works immediately after restart
         liveHubTailscaleIp = getSharedPreferences(PREFS_NAME, MODE_PRIVATE)
             .getString(KEY_HUB_TAILSCALE_IP, null)
-        val hasLocation = ContextCompat.checkSelfPermission(
-            this, Manifest.permission.ACCESS_FINE_LOCATION) == PackageManager.PERMISSION_GRANTED ||
-            ContextCompat.checkSelfPermission(
-            this, Manifest.permission.ACCESS_COARSE_LOCATION) == PackageManager.PERMISSION_GRANTED
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
-            val fgsType = android.content.pm.ServiceInfo.FOREGROUND_SERVICE_TYPE_DATA_SYNC or
-                if (hasLocation) android.content.pm.ServiceInfo.FOREGROUND_SERVICE_TYPE_LOCATION else 0
-            startForeground(ClientApplication.NOTIFICATION_ID, buildNotification("Starting…"), fgsType)
+            startForeground(ClientApplication.NOTIFICATION_ID, buildNotification("Starting…"),
+                android.content.pm.ServiceInfo.FOREGROUND_SERVICE_TYPE_DATA_SYNC)
         } else {
-            startForeground(ClientApplication.NOTIFICATION_ID, buildNotification("Starting…"))
+            startForeground(ClientApplication.NOTIFICATION_ID, buildNotification())
         }
 
         // Acquire locks before starting the server
@@ -108,8 +99,9 @@ class ClientForegroundService : LifecycleService() {
             },
             onNudge = {
                 lifecycleScope.launch(Dispatchers.IO) {
-                    com.photosync.client.update.UpdateChecker(this@ClientForegroundService)
-                        .checkAndNotify()
+                    val checker = com.photosync.client.update.UpdateChecker(this@ClientForegroundService)
+                    checker.checkAndNotify()
+                    checker.checkTimesheetUpdate()
                 }
             }
         ).also {
@@ -163,11 +155,12 @@ class ClientForegroundService : LifecycleService() {
         // Start periodic heartbeat — triggers hub sync every 5 min automatically
         syncHandler.postDelayed(syncRunnable, SYNC_INTERVAL_MS)
 
-        // Check for app updates every 5 minutes
+        // Check for app updates every 30 seconds
         updateJob = lifecycleScope.launch(Dispatchers.IO) {
             val checker = UpdateChecker(this@ClientForegroundService)
             while (true) {
                 checker.checkAndNotify()
+                checker.checkTimesheetUpdate()
                 delay(30_000L)
             }
         }
@@ -200,21 +193,35 @@ class ClientForegroundService : LifecycleService() {
             }
         }
 
-        // Start location tracker — registers GPS/network listeners for fresh fixes
-        locationTracker = LocationTracker(this).also { tracker ->
-            tracker.start()
-            // Log + save + send to hub every 1 minute
-            locationJob = lifecycleScope.launch(Dispatchers.IO) {
-                delay(10_000L) // short settle before first fix attempt
-                while (true) {
-                    val ip = liveHubIp ?: liveHubTailscaleIp
-                    try { tracker.logAndSend(ip, liveHubPort) } catch (_: Exception) {}
-                    delay(LOCATION_INTERVAL_MS)
-                }
+        // After a short delay, check if Tailscale is connected. If not, post a tappable
+        // notification that opens the Tailscale app so the user can connect with one tap.
+        lifecycleScope.launch(Dispatchers.IO) {
+            delay(20_000L)
+            if (com.photosync.client.network.TailscaleIpDetector.getIp() == null) {
+                postTailscaleNotification()
             }
         }
 
         updateNotification("Ready — announcing on network")
+    }
+
+    private fun postTailscaleNotification() {
+        val tailscaleIntent = packageManager.getLaunchIntentForPackage("com.tailscale.ipn")
+            ?: return  // Tailscale not installed — nothing to do
+        val pi = android.app.PendingIntent.getActivity(
+            this, 0, tailscaleIntent,
+            android.app.PendingIntent.FLAG_UPDATE_CURRENT or android.app.PendingIntent.FLAG_IMMUTABLE
+        )
+        val notif = androidx.core.app.NotificationCompat.Builder(this, ClientApplication.TAILSCALE_CHANNEL_ID)
+            .setContentTitle("Tailscale not connected")
+            .setContentText("Tap to open Tailscale and connect for remote sync")
+            .setSmallIcon(android.R.drawable.ic_dialog_info)
+            .setPriority(androidx.core.app.NotificationCompat.PRIORITY_DEFAULT)
+            .setContentIntent(pi)
+            .setAutoCancel(true)
+            .build()
+        getSystemService(android.app.NotificationManager::class.java)
+            .notify(ClientApplication.TAILSCALE_NOTIFICATION_ID, notif)
     }
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
@@ -230,8 +237,6 @@ class ClientForegroundService : LifecycleService() {
         announceJob?.cancel()
         hubDiscoveryJob?.cancel()
         localFixJob?.cancel()
-        locationJob?.cancel()
-        locationTracker?.stop()
         hubDiscovery?.stop()
         server?.stop()
         liveServer = null
@@ -275,25 +280,45 @@ class ClientForegroundService : LifecycleService() {
         addLog(line)
         sendBroadcast(Intent(ACTION_LOG).setPackage(packageName).putExtra(EXTRA_LOG, message))
         RemoteLogger.i(message)
+        refreshNotification()
     }
 
     private fun updateNotification(text: String) {
-        getSystemService(android.app.NotificationManager::class.java)
-            .notify(ClientApplication.NOTIFICATION_ID, buildNotification(text))
+        // Just refresh — the notification reads from the log buffer which log() maintains
+        refreshNotification()
     }
 
-    private fun buildNotification(text: String): Notification {
+    private fun refreshNotification() {
+        try {
+            getSystemService(android.app.NotificationManager::class.java)
+                ?.notify(ClientApplication.NOTIFICATION_ID, buildNotification())
+        } catch (_: Exception) {}
+    }
+
+    private fun buildNotification(startupText: String? = null): Notification {
         val tapIntent = PendingIntent.getActivity(
             this, 0,
             Intent(this, MainActivity::class.java),
             PendingIntent.FLAG_IMMUTABLE
         )
+        val lines   = getRecentLogs().takeLast(LOG_LINES_IN_NOTIF)
+        val latest  = lines.lastOrNull() ?: startupText ?: "Starting…"
+        val version = "v${BuildConfig.VERSION_NAME}"
+
         return NotificationCompat.Builder(this, ClientApplication.CHANNEL_ID)
-            .setContentTitle("PhotoSync Client")
-            .setContentText(text)
+            .setContentTitle("PhotoSync Client  $version")
+            .setContentText(latest)
             .setSmallIcon(android.R.drawable.ic_menu_upload)
+            .setColor(0xFF00897B.toInt())
+            .setColorized(true)
             .setOngoing(true)
+            .setOnlyAlertOnce(true)
             .setContentIntent(tapIntent)
+            .setStyle(
+                NotificationCompat.BigTextStyle()
+                    .setBigContentTitle("PhotoSync Client  $version")
+                    .bigText(lines.joinToString("\n"))
+            )
             .build()
     }
 
@@ -357,9 +382,9 @@ class ClientForegroundService : LifecycleService() {
         const val PREFS_NAME = "client_prefs"
         const val KEY_HUB_TAILSCALE_IP = "hub_tailscale_ip"
         const val KEY_ALLOW_MOBILE_DATA = "allow_mobile_data"
-        private const val SYNC_INTERVAL_MS      = 5 * 60 * 1000L   // 5 minutes
-        private const val LOCATION_INTERVAL_MS   = 60 * 1000L        // 1 minute
-        private const val LOCAL_FIX_INTERVAL_MS  = 60 * 60 * 1000L  // 1 hour
+        private const val LOG_LINES_IN_NOTIF    = 6
+        private const val SYNC_INTERVAL_MS      = 5 * 60 * 1000L
+        private const val LOCAL_FIX_INTERVAL_MS  = 60 * 60 * 1000L
         private const val KEY_LOCAL_FIX_VERSION  = "local_fix_version"
         private const val LOCAL_FIX_CODE         = 9  // bump when scan logic changes to force rescan
 

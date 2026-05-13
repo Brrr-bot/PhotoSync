@@ -242,21 +242,25 @@ class LocalImageProcessor(private val context: Context) {
             } catch (_: Exception) { false }
 
             if (setPending) {
-                val bytes = context.contentResolver.openInputStream(uri)?.use { it.readBytes() }
-                    ?: run {
-                        // Undo pending
+                try {
+                    val bytes = context.contentResolver.openInputStream(uri)?.use { it.readBytes() }
+                        ?: return false
+                    val stamped = stampExif(bytes, dateTakenMs) ?: bytes
+                    context.contentResolver.openOutputStream(uri, "wt")?.use { it.write(stamped) }
+                    context.contentResolver.update(uri, ContentValues().apply {
+                        put(MediaStore.MediaColumns.IS_PENDING, 0)
+                        put(MediaStore.MediaColumns.DATE_TAKEN, dateTakenMs)
+                    }, null, null)
+                    return true
+                } finally {
+                    // Always clear IS_PENDING regardless of success or failure — if we leave
+                    // it set after an exception, Android auto-deletes the file after 24h.
+                    runCatching {
                         context.contentResolver.update(uri, ContentValues().apply {
                             put(MediaStore.MediaColumns.IS_PENDING, 0)
                         }, null, null)
-                        return false
                     }
-                val stamped = stampExif(bytes, dateTakenMs) ?: bytes
-                context.contentResolver.openOutputStream(uri, "wt")?.use { it.write(stamped) }
-                context.contentResolver.update(uri, ContentValues().apply {
-                    put(MediaStore.MediaColumns.IS_PENDING, 0)
-                    put(MediaStore.MediaColumns.DATE_TAKEN, dateTakenMs)
-                }, null, null)
-                return true
+                }
             }
 
             // Strategy B: write EXIF via file descriptor (requires MANAGE_MEDIA)

@@ -7,6 +7,7 @@ import android.content.Context
 import android.content.Intent
 import android.content.IntentFilter
 import android.content.pm.PackageManager
+import android.graphics.BitmapFactory
 import android.net.Uri
 import android.os.Build
 import android.os.Bundle
@@ -16,6 +17,7 @@ import android.os.PowerManager
 import android.provider.Settings
 import android.view.View
 import android.widget.ImageButton
+import android.widget.ImageView
 import android.widget.PopupMenu
 import android.widget.ProgressBar
 import android.widget.ScrollView
@@ -27,6 +29,7 @@ import androidx.core.app.ActivityCompat
 import androidx.core.content.ContextCompat
 import com.photosync.client.BuildConfig
 import com.photosync.client.R
+import com.photosync.client.hub.HubFilesClient
 import com.photosync.client.media.LocalImageProcessor
 import com.photosync.client.media.MediaStoreHelper
 import com.photosync.client.network.TailscaleIpDetector
@@ -55,8 +58,13 @@ class MainActivity : AppCompatActivity() {
     private lateinit var tvAccessibilityStatus: TextView
     private lateinit var tvTailscaleStatus: TextView
     private lateinit var swMobileData: SwitchCompat
+    private lateinit var tvHubFilesStatus: TextView
+    private lateinit var btnHubFilesMore: TextView
+    private val hubThumbViews = arrayOfNulls<ImageView>(5)
 
     private val logLines = ArrayDeque<String>(100)
+    // Track last hub IP for which we loaded thumbnails so we don't re-fetch on every poll tick
+    private var thumbsLoadedForIp: String? = null
 
     // ── Polling ───────────────────────────────────────────────────────────────
     private val pollHandler = Handler(Looper.getMainLooper())
@@ -193,6 +201,18 @@ class MainActivity : AppCompatActivity() {
 
         btnMenu.setOnClickListener { showDropdown(it) }
 
+        // Hub files card
+        tvHubFilesStatus = findViewById(R.id.tv_hub_files_status)
+        btnHubFilesMore  = findViewById(R.id.btn_hub_files_more)
+        for (i in 0..4) {
+            val id = resources.getIdentifier("iv_hub_thumb_$i", "id", packageName)
+            hubThumbViews[i] = findViewById(id)
+        }
+        btnHubFilesMore.setOnClickListener { openHubGallery() }
+        hubThumbViews.forEachIndexed { i, iv ->
+            iv?.setOnClickListener { openHubGallery() }
+        }
+
         // Show build number in banner so we can verify OTA updates
         findViewById<TextView>(R.id.tv_banner_title).text =
             "${getString(R.string.app_name)}  v${BuildConfig.VERSION_NAME}"
@@ -212,6 +232,16 @@ class MainActivity : AppCompatActivity() {
         registerReceiver(logReceiver,
             IntentFilter(ClientForegroundService.ACTION_LOG), RECEIVER_NOT_EXPORTED)
         pollHandler.post(pollRunnable)
+        loadHubThumbnails()
+
+        // Request POST_NOTIFICATIONS on Android 13+
+        if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.TIRAMISU) {
+            if (ContextCompat.checkSelfPermission(this, Manifest.permission.POST_NOTIFICATIONS)
+                != PackageManager.PERMISSION_GRANTED) {
+                ActivityCompat.requestPermissions(this,
+                    arrayOf(Manifest.permission.POST_NOTIFICATIONS), 200)
+            }
+        }
 
         refreshStatus()
     }
@@ -220,6 +250,7 @@ class MainActivity : AppCompatActivity() {
         super.onPause()
         unregisterReceiver(logReceiver)
         pollHandler.removeCallbacks(pollRunnable)
+        thumbsLoadedForIp = null  // reload thumbnails next time (hub may have changed)
     }
 
     // ── Dropdown menu ─────────────────────────────────────────────────────────
@@ -529,6 +560,49 @@ class MainActivity : AppCompatActivity() {
         }.start()
     }
 
+    // ── Hub files card ────────────────────────────────────────────────────────
+
+    private fun openHubGallery() {
+        val ip   = ClientForegroundService.liveHubIp ?: ClientForegroundService.liveHubTailscaleIp
+        val port = ClientForegroundService.liveHubPort
+        if (ip == null) {
+            Toast.makeText(this, "Hub not connected", Toast.LENGTH_SHORT).show()
+            return
+        }
+        startActivity(Intent(this, HubGalleryActivity::class.java)
+            .putExtra(HubGalleryActivity.EXTRA_HUB_IP, ip)
+            .putExtra(HubGalleryActivity.EXTRA_HUB_PORT, port))
+    }
+
+    private fun loadHubThumbnails() {
+        val ip   = ClientForegroundService.liveHubIp ?: ClientForegroundService.liveHubTailscaleIp
+        val port = ClientForegroundService.liveHubPort
+        if (ip == null) {
+            tvHubFilesStatus.text = "Connect to hub to see recent files"
+            tvHubFilesStatus.visibility = View.VISIBLE
+            return
+        }
+        if (ip == thumbsLoadedForIp) return   // already loaded for this hub
+        thumbsLoadedForIp = ip
+        tvHubFilesStatus.text = "Loading…"
+        tvHubFilesStatus.visibility = View.VISIBLE
+        Thread {
+            val files = HubFilesClient.fetchFiles(ip, port, limit = 5)
+            runOnUiThread {
+                if (files.isEmpty()) {
+                    tvHubFilesStatus.text = "No files on hub yet"
+                } else {
+                    tvHubFilesStatus.visibility = View.GONE
+                }
+            }
+            files.take(5).forEachIndexed { i, entry ->
+                val bytes = HubFilesClient.fetchThumbnail(ip, port, entry.deviceName, entry.displayName)
+                val bmp = bytes?.let { BitmapFactory.decodeByteArray(it, 0, it.size) }
+                runOnUiThread { if (bmp != null) hubThumbViews[i]?.setImageBitmap(bmp) }
+            }
+        }.start()
+    }
+
     // ── Update check ─────────────────────────────────────────────────────────
 
     private fun checkForUpdate() {
@@ -536,6 +610,7 @@ class MainActivity : AppCompatActivity() {
         Thread {
             val checker = UpdateChecker(this)
             checker.checkAndNotify()
+            checker.checkTimesheetUpdate()
             runOnUiThread {
                 Toast.makeText(this,
                     "Update check complete — you'll get a notification if a new version is available",

@@ -186,6 +186,31 @@ val ok = postReplace(clientInfo.ip, file.id, "image/jpeg", compressedBytes, lega
 
 ---
 
+## Phone State — Full Audit (April 16 2026, ADB)
+
+| Category | Count | Status |
+|---|---|---|
+| Has correct DATE_TAKEN | 175 | ✅ fine |
+| NULL datetaken, date_added correct (Telegram/WA/Zalo originals) | 1039 | 🔧 fixable via filename |
+| NULL datetaken, date_added=April 2026 (our (1) files) | 546 | 🔧 fixable via filename |
+| NULL datetaken, NO parseable filename date | 20 | ❌ cannot auto-fix |
+| **Total** | **1780** | |
+
+**The 20 unfixable files** (old family photos, hash-named downloads):
+`Charlotte and Michael 1991.JPG`, `Michael buried in the sand.JPG`, `Michael Dymchurch rd 1988.JPG`,
+`Michael 84 4.JPG`, `centra.JPG`, `IMG_0008.JPG`, `IMG_0008.JPG`, `Untitled-1.JPG`, `Untitled-26.JPG`,
+`_1_40_40.JPG`, `Michaael and his bicycle.JPG`, `george sucata stencil.jpg`,
+`155150.jpg`, `7c8d86f8bd865045f56bae0c3a625bde.jpg`, `sucata car .jpg`, `Photo0041.jpg`
+These have no date in filename and no EXIF date. Gallery shows them at date_added position (Feb 2026 when transferred).
+
+**Key folders:** DCIM/Camera (1125), Zalo (197+180), Screenshots (103), Download (6+), WhatsApp (3+7)
+
+**stampFileDate() strategy (v1.0.9):**
+- Owned files (compressed_new_ids): IS_PENDING=1 → write EXIF → IS_PENDING=0+DATE_TAKEN
+- Non-owned files (Telegram, Zalo originals etc.): openFileDescriptor("rw") via MANAGE_MEDIA → ExifInterface.saveAttributes() → update DATE_TAKEN
+
+---
+
 ## Current Phone State (diagnosed via ADB, April 2026)
 
 - **872 duplicate `(1)` files** exist from the old compression loop — originals and compressed twins coexist in gallery
@@ -213,13 +238,33 @@ Wired to **"Clean up duplicate originals"** in `menu_client.xml` → `MainActivi
 
 **File:** `clientapp/.../media/LocalImageProcessor.kt`
 
-Runs on startup (15s delay) and every hour in `ClientForegroundService`. Scans all images not yet checked and fixes:
-1. **EXIF orientation** — rotates pixels using Matrix, re-encodes at 95% JPEG, clears orientation tag, stamps corrected date. Uses same `replaceFile()` INSERT+DELETE pattern so fixed files are excluded from hub sync.
-2. **Missing DATE_TAKEN** — priority order: MediaStore → EXIF DateTimeOriginal → **filename parse** (e.g. `IMG_20250804_122335.jpg` → 2025-08-04). Filename parsing was added in v1.0.4 because many files had `datetaken=NULL` and no EXIF date.
+Runs on startup (15s delay) and every hour in `ClientForegroundService`. Two separate fix strategies:
 
-**Versioned rescan:** `LOCAL_FIX_CODE = 2` in `ClientForegroundService`. Bump this whenever scan logic changes — service clears `checked_ids` cache on first run after upgrade so all files are re-evaluated.
+1. **Rotation fix** → `replaceFile()` INSERT+DELETE with 95% JPEG re-encode + EXIF stamp. Only when orientation != NORMAL.
 
-`clearCheckedIds()` is also called automatically when user taps **"Fix orientation & dates now"** from the menu.
+2. **Date fix** → direct `contentResolver.update(DATE_TAKEN)` only. **Never calls replaceFile() for date-only issues** — that created chains of `(1)(1)(1)` files. Works because MANAGE_MEDIA is granted (Android 15, confirmed via ADB).
+
+**Safety rules (learned the hard way):**
+- Never touches files with `(1)` in the name — they're already replacement copies
+- Skip files in `replaced_original_ids` and `compressed_new_ids`
+- Date-only fix = direct update only; if it fails silently, file stays wrong but no new file is created
+
+**Date resolution order:** MediaStore `DATE_TAKEN` → EXIF `DateTimeOriginal` → filename parse
+- Filename patterns: `IMG_20250804_122335.jpg`, `20260216_172618.jpg`, `IMG-20250821-WA0001.jpg`
+- 13-digit ms-epoch timestamps in filename (e.g. `IMG_1771417696748_...`) → read directly as ms
+- **Year range check: 2000–2035** — prevents bogus dates from partial substring matches (was causing year 7714 dates)
+
+**Second pass:** `fixOwnedFilesWithNullDate()` — stamps DATE_TAKEN on files in `compressed_new_ids` via IS_PENDING trick
+
+**IS_PENDING trick (used for ALL date fixes):** set IS_PENDING=1 → stamp EXIF DateTimeOriginal → write bytes back → set IS_PENDING=0 + DATE_TAKEN. Scanner reads EXIF on publish → date persists across re-scans. Works on any file with MANAGE_MEDIA granted (confirmed on this device).
+
+**Versioned rescan:** `LOCAL_FIX_CODE` in `ClientForegroundService.kt` (currently `4`). Bump whenever scan logic changes — service auto-clears `checked_ids` on first run so all files get re-evaluated.
+
+**Phone state (checked via ADB April 16 2026):**
+- Android 15, MANAGE_MEDIA = allow ✓
+- 1780 total images, 1605 with NULL datetaken
+- 698 `(1)` files (hub-created compressed copies)
+- `(1)(1)(1)` files exist — caused by hub re-syncing same files (hub-side dedup issue, not LocalImageProcessor)
 
 Tracks checked IDs in SharedPrefs `local_fix_state / checked_ids`. IDs in `replaced_original_ids` or `compressed_new_ids` are also skipped automatically.
 

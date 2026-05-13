@@ -1,32 +1,35 @@
 <?xml version="1.0" encoding="utf-8"?>
 <resources>
-    <!-- Legacy -->
     <color name="black">#FF000000</color>
     <color name="white">#FFFFFFFF</color>
 
-    <!-- Space background -->
     <color name="bg_space">#050510</color>
     <color name="card_bg">#0A0A1E</color>
     <color name="banner_bg">#CC04040F</color>
 
-    <!-- Neon palette -->
+    <!-- Cyan family -->
     <color name="neon_cyan">#00F5FF</color>
-    <color name="neon_purple">#BF00FF</color>
-    <color name="neon_green">#39FF14</color>
-    <color name="neon_amber">#FF6A00</color>
+    <color name="neon_ice">#4DD9FF</color>
+    <color name="neon_teal">#00CFA8</color>
+    <color name="neon_deep">#0099CC</color>
 
-    <!-- Neon glow (semi-transparent versions for outer glow layer) -->
+    <!-- Legacy names remapped to cyan family -->
+    <color name="neon_purple">#00897B</color>     <!-- deep teal -->
+    <color name="neon_green">#00CFA8</color>       <!-- teal -->
+    <color name="neon_amber">#00F5FF</color>       <!-- cyan -->
+
+    <!-- Glows -->
     <color name="neon_cyan_glow">#3300F5FF</color>
-    <color name="neon_purple_glow">#33BF00FF</color>
-    <color name="neon_green_glow">#3339FF14</color>
-    <color name="neon_amber_glow">#33FF6A00</color>
+    <color name="neon_ice_glow">#334DD9FF</color>
+    <color name="neon_teal_glow">#3300CFA8</color>
+    <color name="neon_purple_glow">#3300897B</color>
+    <color name="neon_green_glow">#3300CFA8</color>
+    <color name="neon_amber_glow">#3300F5FF</color>
 
-    <!-- Text -->
     <color name="text_primary">#FFFFFF</color>
-    <color name="text_secondary">#8899BB</color>
-    <color name="text_label">#AABBCC</color>
+    <color name="text_secondary">#7BBCCC</color>
+    <color name="text_label">#A0D8E8</color>
 
-    <!-- Status colours -->
-    <color name="green_ok">#39FF14</color>
+    <color name="green_ok">#00CFA8</color>
     <color name="red_error">#FF3355</color>
 </resources>
