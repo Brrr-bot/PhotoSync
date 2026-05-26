@@ -26,6 +26,55 @@ class UsbStorageManager(
     private val treeUri: Uri? get() = loadUri()
     private val gson = Gson()
 
+    // Cache for listRecentFiles — scanning 2000+ files via SAF takes 30+ seconds
+    @Volatile private var recentFilesCache: List<HubFileEntry> = emptyList()
+    @Volatile private var recentFilesCacheTime: Long = 0L
+    @Volatile private var cacheRefreshInProgress: Boolean = false
+    // URI map built during scan: "deviceName/displayName" -> Uri for instant thumbnail reads
+    @Volatile private var fileUriCache: Map<String, Uri> = emptyMap()
+    private val CACHE_TTL_MS = 60_000L
+
+    fun invalidateRecentFilesCache() {
+        recentFilesCacheTime = 0L
+        // Kick off a background refresh so the next request hits the warm cache
+        if (!cacheRefreshInProgress) {
+            Thread {
+                cacheRefreshInProgress = true
+                try { refreshRecentFilesCache() } finally { cacheRefreshInProgress = false }
+            }.also { it.isDaemon = true; it.name = "hub-cache-refresh" }.start()
+        }
+    }
+
+    fun warmCache() = refreshRecentFilesCache()
+
+    private fun refreshRecentFilesCache() {
+        val result = mutableListOf<HubFileEntry>()
+        val uriMap = mutableMapOf<String, Uri>()
+        try {
+            val root = DocumentFile.fromTreeUri(context, treeUri ?: return) ?: return
+            val imageExts = setOf("jpg", "jpeg", "png", "webp", "heic", "heif", "mp4", "mov")
+            for (deviceDir in root.listFiles()) {
+                if (!deviceDir.isDirectory) continue
+                val deviceName = deviceDir.name ?: continue
+                fun collect(f: DocumentFile) {
+                    val name = f.name ?: return
+                    val ext = name.substringAfterLast('.', "").lowercase()
+                    if (ext !in imageExts) return
+                    result += HubFileEntry(deviceName, name, f.length(), f.lastModified())
+                    uriMap["$deviceName/$name"] = f.uri
+                }
+                for (child in deviceDir.listFiles()) {
+                    if (child.isDirectory) child.listFiles().forEach { collect(it) }
+                    else collect(child)
+                }
+            }
+        } catch (_: Exception) {}
+        result.sortByDescending { it.lastModifiedMs }
+        recentFilesCache = result
+        fileUriCache = uriMap
+        recentFilesCacheTime = System.currentTimeMillis()
+    }
+
     fun isReady(): Boolean {
         val uri = treeUri ?: return false
         return try {
@@ -382,30 +431,20 @@ class UsbStorageManager(
 
     /**
      * Returns up to [limit] most-recently-modified image/video files across all device folders,
-     * sorted newest first. Used by the hub's /hub/files endpoint.
+     * sorted newest first. Result is cached for 60 s — SAF scanning 2000+ files takes 30+ s.
+     * Call [invalidateRecentFilesCache] after a sync to force a fresh scan on next request.
      */
     fun listRecentFiles(limit: Int = 50): List<HubFileEntry> {
-        val result = mutableListOf<HubFileEntry>()
-        try {
-            val root = DocumentFile.fromTreeUri(context, treeUri ?: return result) ?: return result
-            val imageExts = setOf("jpg", "jpeg", "png", "webp", "heic", "heif", "mp4", "mov")
-            for (deviceDir in root.listFiles()) {
-                if (!deviceDir.isDirectory) continue
-                val deviceName = deviceDir.name ?: continue
-                fun collect(f: DocumentFile) {
-                    val name = f.name ?: return
-                    val ext = name.substringAfterLast('.', "").lowercase()
-                    if (ext !in imageExts) return
-                    result += HubFileEntry(deviceName, name, f.length(), f.lastModified())
-                }
-                for (child in deviceDir.listFiles()) {
-                    if (child.isDirectory) child.listFiles().forEach { collect(it) }
-                    else collect(child)
-                }
-            }
-        } catch (_: Exception) {}
-        result.sortByDescending { it.lastModifiedMs }
-        return result.take(limit)
+        val now = System.currentTimeMillis()
+        val cacheStale = now - recentFilesCacheTime >= CACHE_TTL_MS
+        // Always return cached data immediately (stale-while-revalidate)
+        if (cacheStale && !cacheRefreshInProgress) {
+            Thread {
+                cacheRefreshInProgress = true
+                try { refreshRecentFilesCache() } finally { cacheRefreshInProgress = false }
+            }.also { it.isDaemon = true; it.name = "hub-cache-refresh" }.start()
+        }
+        return recentFilesCache.take(limit)
     }
 
     /**
@@ -413,6 +452,12 @@ class UsbStorageManager(
      */
     fun readAnyFile(deviceName: String, displayName: String): ByteArray? {
         return try {
+            // Fast path: use URI from scan cache if available
+            val cachedUri = fileUriCache["$deviceName/$displayName"]
+            if (cachedUri != null) {
+                return context.contentResolver.openInputStream(cachedUri)?.use { it.readBytes() }
+            }
+            // Slow path: SAF scan (used before cache is warm)
             val root = DocumentFile.fromTreeUri(context, treeUri ?: return null) ?: return null
             val folder = root.findFile(deviceName) ?: return null
             val file = findFileAnywhere(folder, displayName) ?: return null
@@ -427,6 +472,17 @@ class UsbStorageManager(
     fun thumbnailForFile(deviceName: String, displayName: String, maxPx: Int = 240): ByteArray? {
         return try {
             val bytes = readAnyFile(deviceName, displayName) ?: return null
+            // Read EXIF orientation before decoding
+            val orientation = bytes.inputStream().use {
+                ExifInterface(it).getAttributeInt(
+                    ExifInterface.TAG_ORIENTATION, ExifInterface.ORIENTATION_NORMAL)
+            }
+            val rotation = when (orientation) {
+                ExifInterface.ORIENTATION_ROTATE_90  -> 90f
+                ExifInterface.ORIENTATION_ROTATE_180 -> 180f
+                ExifInterface.ORIENTATION_ROTATE_270 -> 270f
+                else                                 -> 0f
+            }
             val opts = BitmapFactory.Options().apply { inJustDecodeBounds = true }
             BitmapFactory.decodeByteArray(bytes, 0, bytes.size, opts)
             if (opts.outWidth <= 0) return null
@@ -438,7 +494,7 @@ class UsbStorageManager(
             val bmp = BitmapFactory.decodeByteArray(bytes, 0, bytes.size,
                 BitmapFactory.Options().apply { inSampleSize = sample }) ?: return null
             val (w, h) = bmp.width to bmp.height
-            val scaled = if (w >= h) {
+            var scaled = if (w >= h) {
                 val nh = (h.toFloat() / w * maxPx).toInt().coerceAtLeast(1)
                 Bitmap.createScaledBitmap(bmp, maxPx, nh, true)
             } else {
@@ -446,6 +502,12 @@ class UsbStorageManager(
                 Bitmap.createScaledBitmap(bmp, nw, maxPx, true)
             }
             if (scaled !== bmp) bmp.recycle()
+            if (rotation != 0f) {
+                val matrix = android.graphics.Matrix().apply { postRotate(rotation) }
+                val rotated = Bitmap.createBitmap(scaled, 0, 0, scaled.width, scaled.height, matrix, true)
+                scaled.recycle()
+                scaled = rotated
+            }
             val out = ByteArrayOutputStream()
             scaled.compress(Bitmap.CompressFormat.JPEG, 75, out)
             scaled.recycle()

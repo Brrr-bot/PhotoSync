@@ -128,6 +128,7 @@ class FileSyncer(
         if (toProcess.isEmpty()) {
             val newestTs = allFiles.maxOfOrNull { it.dateAdded * 1000 } ?: lastSync
             if (newestTs > lastSync) syncState.updateLastSync(clientInfo.mac, newestTs)
+            usbStorage.invalidateRecentFilesCache()
             onProgress("✓ ${clientInfo.deviceName}: all ${allFiles.size} phone file(s) confirmed on USB (${existing.size} total files on drive)")
         } else {
             onProgress("${clientInfo.deviceName}: ${toProcess.size} new file(s) to sync…")
@@ -200,7 +201,10 @@ class FileSyncer(
                 }
             }
 
-            if (synced > 0) syncState.updateLastSync(clientInfo.mac, latestTimestamp)
+            if (synced > 0) {
+                syncState.updateLastSync(clientInfo.mac, latestTimestamp)
+                usbStorage.invalidateRecentFilesCache()
+            }
             onProgress("${clientInfo.deviceName}: $synced/${toProcess.size} files synced")
         }
 

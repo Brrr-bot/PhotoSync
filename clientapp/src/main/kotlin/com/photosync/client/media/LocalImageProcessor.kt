@@ -84,12 +84,25 @@ class LocalImageProcessor(private val context: Context) {
             val exifDateRaw  = exif.getAttribute(ExifInterface.TAG_DATETIME_ORIGINAL)
             val exifDateMs   = exifDateRaw?.let { parseExifDate(it) }
             val filenameDateMs = parseDateFromFilename(image.displayName)
+            val dateAddedMs  = if (image.dateAdded > 0) image.dateAdded * 1000L else 0L
 
-            // Best date: MediaStore → EXIF → filename
+            // Best date: MediaStore DATE_TAKEN → EXIF → filename (sanity-checked) → DATE_ADDED
+            //
+            // Sanity check: some apps (Zalo, Telegram) embed internal message IDs in filenames
+            // that happen to be 13 digits and pass the ms-epoch range check but aren't real dates.
+            // If the filename-derived date differs from DATE_ADDED by more than 24 h, the filename
+            // number is almost certainly an app-internal ID, not a capture date — use DATE_ADDED.
+            val safeFilenameDateMs = if (filenameDateMs != null && dateAddedMs > 0) {
+                val diffMs = Math.abs(filenameDateMs - dateAddedMs)
+                if (diffMs > 24 * 60 * 60 * 1000L) null else filenameDateMs
+            } else filenameDateMs
+
             val effectiveDateTaken = when {
-                image.dateTaken > 0 -> image.dateTaken
-                exifDateMs != null  -> exifDateMs
-                else                -> filenameDateMs ?: 0L
+                image.dateTaken > 0    -> image.dateTaken
+                exifDateMs != null     -> exifDateMs
+                safeFilenameDateMs != null -> safeFilenameDateMs
+                dateAddedMs > 0        -> dateAddedMs   // actual download/copy time
+                else                   -> 0L
             }
 
             // Pixel dimensions without full decode

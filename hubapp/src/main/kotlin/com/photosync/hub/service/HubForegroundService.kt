@@ -142,6 +142,13 @@ class HubForegroundService : LifecycleService() {
                 delay(30_000L)
             }
         }
+
+        // Pre-warm the file list cache in the background so /hub/files responds instantly
+        lifecycleScope.launch(Dispatchers.IO) {
+            delay(5_000L)
+            usbStorage.warmCache()
+            log("Hub file cache warmed")
+        }
     }
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {

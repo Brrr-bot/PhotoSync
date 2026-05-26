@@ -562,8 +562,25 @@ class MainActivity : AppCompatActivity() {
 
     // ── Hub files card ────────────────────────────────────────────────────────
 
+    /**
+     * Returns the best IP to reach the hub:
+     * - Local LAN IP when the hub broadcast arrived within the last 90 s (still on same network)
+     * - Tailscale IP otherwise (works across any network)
+     * Falls back to whichever is non-null when the preferred one isn't available.
+     */
+    private fun effectiveHubIp(): String? {
+        val localIp = ClientForegroundService.liveHubIp
+        val tsIp    = ClientForegroundService.liveHubTailscaleIp
+        val localFresh = System.currentTimeMillis() - ClientForegroundService.liveHubIpUpdatedAt < 90_000L
+        return when {
+            localIp != null && localFresh -> localIp
+            tsIp != null                 -> tsIp
+            else                         -> localIp   // stale LAN IP — best we have
+        }
+    }
+
     private fun openHubGallery() {
-        val ip   = ClientForegroundService.liveHubIp ?: ClientForegroundService.liveHubTailscaleIp
+        val ip   = effectiveHubIp()
         val port = ClientForegroundService.liveHubPort
         if (ip == null) {
             Toast.makeText(this, "Hub not connected", Toast.LENGTH_SHORT).show()
@@ -575,7 +592,7 @@ class MainActivity : AppCompatActivity() {
     }
 
     private fun loadHubThumbnails() {
-        val ip   = ClientForegroundService.liveHubIp ?: ClientForegroundService.liveHubTailscaleIp
+        val ip   = effectiveHubIp()
         val port = ClientForegroundService.liveHubPort
         if (ip == null) {
             tvHubFilesStatus.text = "Connect to hub to see recent files"
@@ -583,7 +600,6 @@ class MainActivity : AppCompatActivity() {
             return
         }
         if (ip == thumbsLoadedForIp) return   // already loaded for this hub
-        thumbsLoadedForIp = ip
         tvHubFilesStatus.text = "Loading…"
         tvHubFilesStatus.visibility = View.VISIBLE
         Thread {
@@ -591,7 +607,10 @@ class MainActivity : AppCompatActivity() {
             runOnUiThread {
                 if (files.isEmpty()) {
                     tvHubFilesStatus.text = "No files on hub yet"
+                    // Retry after 15s — hub cache may still be warming after a restart
+                    pollHandler.postDelayed({ loadHubThumbnails() }, 15_000L)
                 } else {
+                    thumbsLoadedForIp = ip
                     tvHubFilesStatus.visibility = View.GONE
                 }
             }

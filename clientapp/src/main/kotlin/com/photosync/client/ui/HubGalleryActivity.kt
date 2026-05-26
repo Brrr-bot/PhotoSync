@@ -1,8 +1,10 @@
 package com.photosync.client.ui
 
 import android.content.ContentValues
+import android.content.Intent
 import android.graphics.Bitmap
 import android.graphics.BitmapFactory
+import android.net.Uri
 import android.os.Build
 import android.os.Bundle
 import android.os.Environment
@@ -16,12 +18,14 @@ import android.widget.TextView
 import android.widget.Toast
 import androidx.appcompat.app.AlertDialog
 import androidx.appcompat.app.AppCompatActivity
+import androidx.core.content.FileProvider
 import androidx.recyclerview.widget.GridLayoutManager
 import androidx.recyclerview.widget.RecyclerView
 import com.photosync.client.R
 import com.photosync.client.hub.HubFileEntry
 import com.photosync.client.hub.HubFilesClient
 import com.photosync.client.service.ClientForegroundService
+import java.io.File
 import java.text.SimpleDateFormat
 import java.util.Date
 import java.util.Locale
@@ -70,7 +74,7 @@ class HubGalleryActivity : AppCompatActivity() {
         tvStatus.text = "Loading…"
         tvStatus.visibility = View.VISIBLE
         Thread {
-            val files = HubFilesClient.fetchFiles(ip, hubPort, limit = 200)
+            val files = HubFilesClient.fetchFiles(ip, hubPort, limit = 10_000)
             runOnUiThread {
                 if (files.isEmpty()) {
                     tvStatus.text = "No files found on hub"
@@ -109,10 +113,42 @@ class HubGalleryActivity : AppCompatActivity() {
 
         AlertDialog.Builder(this)
             .setTitle(entry.displayName)
-            .setMessage("Device: ${entry.deviceName}\nDate: $dateStr\nSize: $sizeMb\n\nSave original back to your phone?")
+            .setMessage("Device: ${entry.deviceName}\nDate: $dateStr\nSize: $sizeMb")
             .setPositiveButton("Download") { _, _ -> downloadFile(entry) }
+            .setNeutralButton("Share via Hub") { _, _ -> shareFromHub(entry) }
             .setNegativeButton("Cancel", null)
             .show()
+    }
+
+    private fun shareFromHub(entry: HubFileEntry) {
+        val ip = hubIp ?: return
+        Toast.makeText(this, "Fetching original…", Toast.LENGTH_SHORT).show()
+        Thread {
+            val bytes = HubFilesClient.fetchFile(ip, hubPort, entry.deviceName, entry.displayName)
+            if (bytes == null) {
+                runOnUiThread { Toast.makeText(this, "Download failed", Toast.LENGTH_SHORT).show() }
+                return@Thread
+            }
+            val mime = when (entry.displayName.substringAfterLast('.').lowercase()) {
+                "jpg", "jpeg" -> "image/jpeg"
+                "png"  -> "image/png"
+                "webp" -> "image/webp"
+                "mp4"  -> "video/mp4"
+                "mov"  -> "video/quicktime"
+                else   -> "image/jpeg"
+            }
+            val tmpFile = File(cacheDir, entry.displayName)
+            tmpFile.writeBytes(bytes)
+            val uri: Uri = FileProvider.getUriForFile(this, "${packageName}.fileprovider", tmpFile)
+            runOnUiThread {
+                val intent = Intent(Intent.ACTION_SEND).apply {
+                    type = mime
+                    putExtra(Intent.EXTRA_STREAM, uri)
+                    addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
+                }
+                startActivity(Intent.createChooser(intent, "Share ${entry.displayName}"))
+            }
+        }.start()
     }
 
     private fun downloadFile(entry: HubFileEntry) {

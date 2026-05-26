@@ -112,7 +112,7 @@ class HubHttpServer(
             return newFixedLengthResponse(Response.Status.METHOD_NOT_ALLOWED, MIME_PLAINTEXT, "GET required")
         if (!verifyHmacFromHeaders(session))
             return newFixedLengthResponse(Response.Status.UNAUTHORIZED, MIME_PLAINTEXT, "Unauthorized")
-        val limit = session.parameters["limit"]?.firstOrNull()?.toIntOrNull()?.coerceIn(1, 200) ?: 50
+        val limit = session.parameters["limit"]?.firstOrNull()?.toIntOrNull()?.coerceIn(1, 10_000) ?: 50
         val files = onFilesRequest?.invoke(limit) ?: emptyList()
         val json = gson.toJson(files)
         return newFixedLengthResponse(Response.Status.OK, "application/json", json)

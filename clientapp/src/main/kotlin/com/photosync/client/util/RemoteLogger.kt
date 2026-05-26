@@ -17,7 +17,7 @@ import java.util.concurrent.TimeUnit
 
 object RemoteLogger {
     private const val TAG    = "RemoteLogger"
-    private const val SERVER = "http://100.107.143.20:9000/log"
+    private const val SERVER = "https://app-updates.mcubittbuilders.workers.dev/api/log"
     private const val DEVICE = "client"
 
     private val client = OkHttpClient.Builder()
@@ -50,7 +50,7 @@ object RemoteLogger {
         // Best-effort send to remote server
         scope.launch {
             try {
-                val json = """{"device":"$DEVICE","level":"$level","msg":${escapeJson(msg)}}"""
+                val json = """{"app":"$DEVICE","level":"$level","msg":${escapeJson(msg)}}"""
                 val body = json.toRequestBody("application/json".toMediaType())
                 client.newCall(Request.Builder().url(SERVER).post(body).build()).execute().close()
             } catch (_: Throwable) {}

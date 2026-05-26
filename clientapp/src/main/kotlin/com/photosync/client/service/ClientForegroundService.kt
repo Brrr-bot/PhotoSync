@@ -138,6 +138,7 @@ class ClientForegroundService : LifecycleService() {
         // Listen for hub announcements so we know hub's IP for phone-initiated sync
         hubDiscovery = HubDiscovery { ip, port, deviceName, tailscaleIp ->
             liveHubIp = ip
+            liveHubIpUpdatedAt = System.currentTimeMillis()
             liveHubPort = port
             liveHubName = deviceName
             if (tailscaleIp != null) {
@@ -373,6 +374,7 @@ class ClientForegroundService : LifecycleService() {
 
         /** Last hub seen via UDP broadcast — used for phone-initiated sync on local network. */
         @Volatile var liveHubIp: String? = null
+        @Volatile var liveHubIpUpdatedAt: Long = 0L   // epoch ms; stale after 90s
         @Volatile var liveHubPort: Int = Constants.HUB_HTTP_PORT
         @Volatile var liveHubName: String? = null
 
@@ -386,7 +388,7 @@ class ClientForegroundService : LifecycleService() {
         private const val SYNC_INTERVAL_MS      = 5 * 60 * 1000L
         private const val LOCAL_FIX_INTERVAL_MS  = 60 * 60 * 1000L
         private const val KEY_LOCAL_FIX_VERSION  = "local_fix_version"
-        private const val LOCAL_FIX_CODE         = 9  // bump when scan logic changes to force rescan
+        private const val LOCAL_FIX_CODE         = 10 // bump when scan logic changes to force rescan
 
         private val recentLogs = ArrayDeque<String>(100)
 
