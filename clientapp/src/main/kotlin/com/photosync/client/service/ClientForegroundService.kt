@@ -109,6 +109,7 @@ class ClientForegroundService : LifecycleService() {
                 it.start()
                 liveServer = it
                 log("HTTP server started on port ${Constants.CLIENT_PORT}")
+                RemoteLogger.i("Started v${com.photosync.client.BuildConfig.VERSION_NAME} (build ${com.photosync.client.BuildConfig.VERSION_CODE})")
             } catch (e: Exception) {
                 log("ERROR: server failed to start — ${e.message}")
             }

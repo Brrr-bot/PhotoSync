@@ -101,6 +101,7 @@ class HubForegroundService : LifecycleService() {
             try {
                 it.start()
                 log("Hub HTTP server started on port ${Constants.HUB_HTTP_PORT}")
+                RemoteLogger.i("Started v${com.photosync.hub.BuildConfig.VERSION_NAME} (build ${com.photosync.hub.BuildConfig.VERSION_CODE})")
             } catch (e: Exception) {
                 log("Hub HTTP server failed to start: ${e.message}")
             }
