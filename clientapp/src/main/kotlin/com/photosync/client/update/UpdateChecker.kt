@@ -48,19 +48,18 @@ class UpdateChecker(private val context: Context) {
         Log.i(TAG, "Downloading update v$versionName…")
         RemoteLogger.i("OTA: downloading client v$versionName")
         val apkFile = downloadApk(apkUrl, "client-$remoteCode.apk") ?: run {
-            Log.e(TAG, "APK download failed"); return
+            Log.e(TAG, "APK download failed")
+            RemoteLogger.e("OTA: download failed, will retry next poll")
+            notifiedPhotosync.set(0)
+            return
         }
-        val installed = silentInstall(apkFile)
-        Log.i(TAG, "silentInstall=$installed")
-        RemoteLogger.i("OTA: silentInstall=$installed")
-        if (!installed) {
-            postInstallNotification(
-                title   = "PhotoSync Client update available",
-                body    = "Version $versionName ready — tap to install",
-                apkFile = apkFile,
-                notifId = ClientApplication.UPDATE_NOTIFICATION_ID
-            )
-        }
+        RemoteLogger.i("OTA: download complete, showing notification")
+        postInstallNotification(
+            title   = "PhotoSync Client update available",
+            body    = "Version $versionName ready — tap to install",
+            apkFile = apkFile,
+            notifId = ClientApplication.UPDATE_NOTIFICATION_ID
+        )
     }
 
     fun checkTimesheetUpdate() {
@@ -81,7 +80,9 @@ class UpdateChecker(private val context: Context) {
         if (remoteCode <= installedCode) return
         if (notifiedTimesheet.getAndSet(remoteCode) == remoteCode) return
 
-        val apkFile = downloadApk(apkUrl, "timesheet-$remoteCode.apk") ?: return
+        val apkFile = downloadApk(apkUrl, "timesheet-$remoteCode.apk") ?: run {
+            notifiedTimesheet.set(0); return
+        }
         postInstallNotification(
             title   = "Timesheet update ready",
             body    = "v$remoteCode downloaded — tap to install",
