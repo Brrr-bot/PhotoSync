@@ -36,8 +36,8 @@ jobs:
           gh release delete "$TAG" --yes 2>/dev/null || true
           git push --delete origin "$TAG" 2>/dev/null || true
           gh release create "$TAG" \
-            hubapp/build/outputs/apk/debug/hubapp-debug.apk#photosync-hub.apk \
-            clientapp/build/outputs/apk/debug/clientapp-debug.apk#photosync-client.apk \
+            hubapp/build/outputs/apk/debug/hubapp-debug.apk \
+            clientapp/build/outputs/apk/debug/clientapp-debug.apk \
             --title "PhotoSync $VN" \
             --notes "Build $VC"
 
@@ -47,8 +47,8 @@ jobs:
           VN=1.0.$(( ${{ github.run_number }} + 200 ))
           TAG="v${VC}"
           REPO="${{ github.repository }}"
-          HUB_URL="https://github.com/${REPO}/releases/download/${TAG}/photosync-hub.apk"
-          CLIENT_URL="https://github.com/${REPO}/releases/download/${TAG}/photosync-client.apk"
+          HUB_URL="https://github.com/${REPO}/releases/download/${TAG}/hubapp-debug.apk"
+          CLIENT_URL="https://github.com/${REPO}/releases/download/${TAG}/clientapp-debug.apk"
           PORTAL="https://app-updates.mcubittbuilders.workers.dev"
           curl -sf -X POST "${PORTAL}/upload/hub" \
             -H "X-Upload-Key: ${{ secrets.UPLOAD_KEY }}" \
