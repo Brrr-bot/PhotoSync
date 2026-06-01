@@ -30,7 +30,7 @@ jobs:
         run: chmod +x gradlew
 
       - name: Build APKs
-        run: ./gradlew :hubapp:assembleDebug :clientapp:assembleDebug --no-daemon -PversionCode=$(( ${{ github.run_number }} + 300 )) -PversionName=1.0.$(( ${{ github.run_number }} + 300 ))
+        run: ./gradlew :hubapp:assembleDebug :clientapp:assembleDebug --no-daemon -PdebugKeystore=$HOME/.android/debug.keystore -PversionCode=$(( ${{ github.run_number }} + 300 )) -PversionName=1.0.$(( ${{ github.run_number }} + 300 ))
 
       - name: Create GitHub Release and upload APKs
         env:
