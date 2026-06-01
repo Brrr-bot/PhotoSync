@@ -23,7 +23,8 @@ jobs:
       - name: Set up debug signing keystore
         run: |
           mkdir -p ~/.android
-          echo "${{ secrets.DEBUG_KEYSTORE_B64 }}" | base64 --decode > ~/.android/debug.keystore
+          python3 -c "import base64; open('$HOME/.android/debug.keystore','wb').write(base64.b64decode('${{ secrets.DEBUG_KEYSTORE_B64 }}'))"
+          keytool -list -keystore $HOME/.android/debug.keystore -storepass android -noprompt 2>&1 | head -3
 
       - name: Grant execute permission to gradlew
         run: chmod +x gradlew
