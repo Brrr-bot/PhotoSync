@@ -486,9 +486,16 @@ class UsbStorageManager(
             val opts = BitmapFactory.Options().apply { inJustDecodeBounds = true }
             BitmapFactory.decodeByteArray(bytes, 0, bytes.size, opts)
             if (opts.outWidth <= 0) return null
+            // Downsample until BOTH the long side is within 2x of target AND the total
+            // decoded pixel count stays under a safe budget (~4M px ≈ 16MB at ARGB_8888).
+            // Using the long side / total-pixel budget (not an AND of both dims) prevents
+            // a giant full-res decode on extreme aspect ratios (tall screenshots,
+            // wide panoramas) that previously OOM'd with a single 300MB+ allocation.
             val sample = run {
-                var s = 1; var w = opts.outWidth; var h = opts.outHeight
-                while (w / 2 >= maxPx && h / 2 >= maxPx) { w /= 2; h /= 2; s *= 2 }
+                var s = 1
+                val w = opts.outWidth.toLong()
+                val h = opts.outHeight.toLong()
+                while (maxOf(w, h) / s > maxPx.toLong() * 2 || (w / s) * (h / s) > 4_000_000L) s *= 2
                 s
             }
             val bmp = BitmapFactory.decodeByteArray(bytes, 0, bytes.size,
@@ -512,7 +519,7 @@ class UsbStorageManager(
             scaled.compress(Bitmap.CompressFormat.JPEG, 75, out)
             scaled.recycle()
             out.toByteArray()
-        } catch (_: Exception) { null }
+        } catch (_: Throwable) { null }   // incl. OutOfMemoryError on pathological images
     }
 
     data class HubFileEntry(

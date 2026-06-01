@@ -77,7 +77,7 @@ object MediaCompressor {
                 stampExifDate(compressed, dateTakenMs, orientation, cacheDir)?.let { return it }
             }
             compressed
-        } catch (e: Exception) {
+        } catch (e: Throwable) {   // incl. OutOfMemoryError on pathological images
             Log.w("MediaCompressor", "compress threw: ${e.javaClass.simpleName}: ${e.message}")
             null
         }
@@ -123,9 +123,12 @@ object MediaCompressor {
             mimeType != "image/gif" && mimeType != "image/svg+xml"
 
     private fun calcSampleSize(width: Int, height: Int, target: Int): Int {
+        // Downsample until the long side is within 2x of target AND total decoded pixels
+        // stay under ~16M px. Using long-side / total-pixel limits (not an AND of both
+        // dims) avoids a full-res decode + OOM on extreme aspect ratios.
         var size = 1
-        var w = width; var h = height
-        while (w / 2 >= target && h / 2 >= target) { w /= 2; h /= 2; size *= 2 }
+        val w = width.toLong(); val h = height.toLong()
+        while (maxOf(w, h) / size > target.toLong() * 2 || (w / size) * (h / size) > 16_000_000L) size *= 2
         return size
     }
 
