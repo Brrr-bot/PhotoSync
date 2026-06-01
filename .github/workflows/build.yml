@@ -24,14 +24,14 @@ jobs:
         run: chmod +x gradlew
 
       - name: Build APKs
-        run: ./gradlew :hubapp:assembleDebug :clientapp:assembleDebug --no-daemon -PversionCode=$(( ${{ github.run_number }} + 200 )) -PversionName=1.0.$(( ${{ github.run_number }} + 200 ))
+        run: ./gradlew :hubapp:assembleDebug :clientapp:assembleDebug --no-daemon -PversionCode=$(( ${{ github.run_number }} + 300 )) -PversionName=1.0.$(( ${{ github.run_number }} + 300 ))
 
       - name: Create GitHub Release and upload APKs
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
-          VC=$(( ${{ github.run_number }} + 200 ))
-          VN=1.0.$(( ${{ github.run_number }} + 200 ))
+          VC=$(( ${{ github.run_number }} + 300 ))
+          VN=1.0.$(( ${{ github.run_number }} + 300 ))
           TAG="v${VC}"
           gh release delete "$TAG" --yes 2>/dev/null || true
           git push --delete origin "$TAG" 2>/dev/null || true
@@ -43,8 +43,8 @@ jobs:
 
       - name: Register hub and client with update portal
         run: |
-          VC=$(( ${{ github.run_number }} + 200 ))
-          VN=1.0.$(( ${{ github.run_number }} + 200 ))
+          VC=$(( ${{ github.run_number }} + 300 ))
+          VN=1.0.$(( ${{ github.run_number }} + 300 ))
           TAG="v${VC}"
           REPO="${{ github.repository }}"
           HUB_URL="https://github.com/${REPO}/releases/download/${TAG}/hubapp-debug.apk"
