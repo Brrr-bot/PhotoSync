@@ -273,14 +273,19 @@ class MediaStoreHelper(private val context: Context) {
             }
         }
 
-        // MediaStore.Images.Media only allows inserts into DCIM/ or Pictures/.
-        // Files from WhatsApp, Telegram, screenshots etc. live under Android/media/...
-        // or other restricted paths — inserting there throws "Primary directory X not allowed".
-        // Preserve the original path when it's allowed; otherwise fall back to DCIM/.
-        val safeRelativePath = if (
-            relativePath.startsWith("DCIM", ignoreCase = true) ||
-            relativePath.startsWith("Pictures", ignoreCase = true)
-        ) relativePath else "DCIM/"
+        // Keep the file in the SAME folder it came from (e.g. a compressed screenshot must stay
+        // in Pictures/Screenshots, a DCIM/Camera photo in DCIM/Camera). The original path was a
+        // valid location for this media type when the file was created there, so preserve it.
+        // Only app-private "Android/media/..." paths (WhatsApp/Telegram caches) can't be re-inserted
+        // — fall back to the standard top folder for the media type in that case.
+        val safeRelativePath = if (relativePath.isBlank() || relativePath.startsWith("Android/", ignoreCase = true))
+            (if (isVideo) "Movies/" else "DCIM/")
+        else relativePath
+        // Videos must be inserted into the Video collection, images into the Images collection.
+        val targetCollection = if (isVideo)
+            MediaStore.Video.Media.EXTERNAL_CONTENT_URI
+        else
+            MediaStore.Images.Media.EXTERNAL_CONTENT_URI
 
         // DATE_TAKEN (ms) drives gallery sort order; prefer the hub-supplied value as it
         // comes from EXIF on the USB copy and is the most reliable source.
@@ -353,7 +358,7 @@ class MediaStoreHelper(private val context: Context) {
         }
 
         val newUri = context.contentResolver.insert(
-            MediaStore.Images.Media.EXTERNAL_CONTENT_URI, newValues
+            targetCollection, newValues
         ) ?: throw IllegalStateException("MediaStore insert failed")
 
         try {

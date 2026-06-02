@@ -72,6 +72,11 @@ dependencies {
     // ML Kit Text Recognition — free, on-device OCR for timetable parsing
     implementation("com.google.mlkit:text-recognition:16.0.1")
     implementation("androidx.recyclerview:recyclerview:1.3.2")
+
+    // Media3 Transformer — transcode recent videos to low quality to save phone space
+    implementation("androidx.media3:media3-transformer:1.4.1")
+    implementation("androidx.media3:media3-effect:1.4.1")
+    implementation("androidx.media3:media3-common:1.4.1")
 }
 
 // ── GitHub release — upload client APK to existing release ───────────────────

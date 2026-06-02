@@ -39,7 +39,6 @@ class HubGalleryActivity : AppCompatActivity() {
     private var hubIp: String? = null
     private var hubPort: Int = 0
     private val entries = mutableListOf<HubFileEntry>()
-    private val thumbCache = HashMap<String, Bitmap>()
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
@@ -60,11 +59,7 @@ class HubGalleryActivity : AppCompatActivity() {
         loadFiles()
     }
 
-    override fun onDestroy() {
-        super.onDestroy()
-        thumbCache.values.forEach { it.recycle() }
-        thumbCache.clear()
-    }
+    // Thumbnails are kept in ThumbnailCache (disk + memory), so they survive across opens.
 
     private fun loadFiles() {
         val ip = hubIp ?: run {
@@ -91,16 +86,14 @@ class HubGalleryActivity : AppCompatActivity() {
 
     private fun loadThumb(entry: HubFileEntry, iv: ImageView, overlay: FrameLayout) {
         val key = "${entry.deviceName}/${entry.displayName}"
-        thumbCache[key]?.let { iv.setImageBitmap(it); return }
+        // Cached (disk or memory) → show instantly, never re-fetch (hub files are immutable).
+        ThumbnailCache.get(this, key)?.let { iv.setImageBitmap(it); overlay.visibility = View.GONE; return }
         val ip = hubIp ?: return
         Thread {
             val bytes = HubFilesClient.fetchThumbnail(ip, hubPort, entry.deviceName, entry.displayName)
-            val bmp = bytes?.let { BitmapFactory.decodeByteArray(it, 0, it.size) }
+            val bmp = bytes?.let { ThumbnailCache.put(this, key, it) }
             runOnUiThread {
-                if (bmp != null) {
-                    thumbCache[key] = bmp
-                    iv.setImageBitmap(bmp)
-                }
+                if (bmp != null) iv.setImageBitmap(bmp)
                 overlay.visibility = View.GONE
             }
         }.start()

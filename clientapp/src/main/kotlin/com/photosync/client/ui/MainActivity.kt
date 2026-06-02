@@ -557,6 +557,23 @@ class MainActivity : AppCompatActivity() {
                     else "All images already correct",
                     Toast.LENGTH_LONG).show()
             }
+            // Also run the video space pass (replace old videos with posters, compress recent).
+            try {
+                val vsm = com.photosync.client.media.VideoSpaceManager(this)
+                val vs = vsm.process { done, total, _ ->
+                    if (done % 3 == 0 || done == total) runOnUiThread {
+                        Toast.makeText(this, "Video space: $done/$total", Toast.LENGTH_SHORT).show()
+                    }
+                }
+                runOnUiThread {
+                    Toast.makeText(this,
+                        "Videos: ${vs.thumbed} → poster, ${vs.compressed} compressed, " +
+                        "${vs.freedBytes / 1_048_576}MB freed (${vs.skipped} skipped)",
+                        Toast.LENGTH_LONG).show()
+                }
+            } catch (t: Throwable) {
+                runOnUiThread { Toast.makeText(this, "Video space error: ${t.message}", Toast.LENGTH_LONG).show() }
+            }
         }.start()
     }
 
@@ -592,33 +609,54 @@ class MainActivity : AppCompatActivity() {
     }
 
     private fun loadHubThumbnails() {
+        // 1) Instantly show the last-known 5 thumbnails from the disk cache — no blank cards,
+        //    no waiting for the network. They stay until a newer file replaces one.
+        val cardPrefs = getSharedPreferences("hub_card", MODE_PRIVATE)
+        val lastKeys = cardPrefs.getString("last5", "")!!.split("\n").filter { it.isNotBlank() }
+        lastKeys.forEachIndexed { i, key ->
+            if (i < hubThumbViews.size) ThumbnailCache.get(this, key)?.let { hubThumbViews[i]?.setImageBitmap(it) }
+        }
+        if (lastKeys.isNotEmpty()) tvHubFilesStatus.visibility = View.GONE
+
         val ip   = effectiveHubIp()
         val port = ClientForegroundService.liveHubPort
         if (ip == null) {
-            tvHubFilesStatus.text = "Connect to hub to see recent files"
-            tvHubFilesStatus.visibility = View.VISIBLE
+            if (lastKeys.isEmpty()) {
+                tvHubFilesStatus.text = "Connect to hub to see recent files"
+                tvHubFilesStatus.visibility = View.VISIBLE
+            }
             return
         }
-        if (ip == thumbsLoadedForIp) return   // already loaded for this hub
-        tvHubFilesStatus.text = "Loading…"
-        tvHubFilesStatus.visibility = View.VISIBLE
+        if (ip == thumbsLoadedForIp) return   // file list already refreshed for this hub this session
+
         Thread {
             val files = HubFilesClient.fetchFiles(ip, port, limit = 5)
             runOnUiThread {
                 if (files.isEmpty()) {
-                    tvHubFilesStatus.text = "No files on hub yet"
-                    // Retry after 15s — hub cache may still be warming after a restart
-                    pollHandler.postDelayed({ loadHubThumbnails() }, 15_000L)
+                    if (lastKeys.isEmpty()) {
+                        tvHubFilesStatus.text = "No files on hub yet"
+                        pollHandler.postDelayed({ loadHubThumbnails() }, 15_000L)
+                    }
                 } else {
                     thumbsLoadedForIp = ip
                     tvHubFilesStatus.visibility = View.GONE
                 }
             }
+            val keys = ArrayList<String>()
             files.take(5).forEachIndexed { i, entry ->
-                val bytes = HubFilesClient.fetchThumbnail(ip, port, entry.deviceName, entry.displayName)
-                val bmp = bytes?.let { BitmapFactory.decodeByteArray(it, 0, it.size) }
-                runOnUiThread { if (bmp != null) hubThumbViews[i]?.setImageBitmap(bmp) }
+                val key = "${entry.deviceName}/${entry.displayName}"
+                keys.add(key)
+                // Cached → use it; only download thumbnails for files we haven't seen before.
+                val cached = ThumbnailCache.get(this, key)
+                if (cached != null) {
+                    runOnUiThread { hubThumbViews[i]?.setImageBitmap(cached) }
+                } else {
+                    val bytes = HubFilesClient.fetchThumbnail(ip, port, entry.deviceName, entry.displayName)
+                    val bmp = bytes?.let { ThumbnailCache.put(this, key, it) }
+                    runOnUiThread { if (bmp != null) hubThumbViews[i]?.setImageBitmap(bmp) }
+                }
             }
+            if (keys.isNotEmpty()) cardPrefs.edit().putString("last5", keys.joinToString("\n")).apply()
         }.start()
     }
 

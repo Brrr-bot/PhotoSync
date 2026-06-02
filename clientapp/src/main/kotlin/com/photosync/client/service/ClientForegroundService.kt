@@ -190,6 +190,18 @@ class ClientForegroundService : LifecycleService() {
                     }
                 }
                 if (fixed > 0) log("LocalFix complete — fixed $fixed image(s)")
+
+                // Video space management — only touches videos the hub already holds.
+                try {
+                    val vsm = com.photosync.client.media.VideoSpaceManager(this@ClientForegroundService)
+                    val vs = vsm.process { done, total, _ ->
+                        if (done % 5 == 0 || done == total) updateNotification("Video space: $done/$total")
+                    }
+                    if (vs.thumbed > 0 || vs.compressed > 0 || vs.skipped > 0)
+                        log("VideoSpace: ${vs.thumbed} posterised, ${vs.compressed} compressed, " +
+                            "${vs.freedBytes / 1_048_576}MB freed (${vs.skipped} skipped)")
+                } catch (t: Throwable) { log("VideoSpace error: ${t.javaClass.simpleName}: ${t.message}") }
+
                 updateNotification("Ready — announcing on network")
                 delay(LOCAL_FIX_INTERVAL_MS)
             }
