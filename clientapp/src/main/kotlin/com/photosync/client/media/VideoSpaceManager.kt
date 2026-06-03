@@ -27,6 +27,9 @@ class VideoSpaceManager(private val context: Context) {
     private val store = MediaStoreHelper(context)
 
     fun process(progress: ((done: Int, total: Int, msg: String) -> Unit)? = null): Summary {
+        // Run date-repair before the hub check — it's a purely local MediaStore operation.
+        repairCompressedVideoDates()
+
         val ip = ClientForegroundService.liveHubIp
             ?.takeIf { System.currentTimeMillis() - ClientForegroundService.liveHubIpUpdatedAt < 90_000L }
             ?: ClientForegroundService.liveHubTailscaleIp
@@ -43,7 +46,6 @@ class VideoSpaceManager(private val context: Context) {
         }
 
         repairPosterDates(hubByName)
-        repairCompressedVideoDates()
 
         // Legacy ID-based tracking (pre-v316) — still respected to avoid re-compressing.
         val compressedIds = prefs.getStringSet(KEY_COMPRESSED, emptySet())!!
@@ -442,7 +444,13 @@ class VideoSpaceManager(private val context: Context) {
 
         if (newRepaired.isNotEmpty()) {
             repaired.addAll(newRepaired)
-            prefs.edit().putStringSet(KEY_VIDEO_DATES_REPAIRED, repaired).apply()
+            // Also mark as compressed so the main loop doesn't re-transcode repaired videos.
+            val compressedNames = prefs.getStringSet(KEY_COMPRESSED_NAMES, emptySet())!!.toMutableSet()
+            compressedNames.addAll(newRepaired)
+            prefs.edit()
+                .putStringSet(KEY_VIDEO_DATES_REPAIRED, repaired)
+                .putStringSet(KEY_COMPRESSED_NAMES, compressedNames)
+                .apply()
         }
     }
     companion object {
