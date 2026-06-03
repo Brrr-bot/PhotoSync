@@ -4,6 +4,7 @@ import android.content.Context
 import android.content.SharedPreferences
 import android.graphics.Bitmap
 import android.graphics.BitmapFactory
+import android.media.MediaMetadataRetriever
 import android.media.MediaScannerConnection
 import android.net.Uri
 import android.provider.DocumentsContract
@@ -466,10 +467,35 @@ class UsbStorageManager(
     }
 
     /**
+     * Deletes a file from the USB drive by device name and display name.
+     * Searches flat folder and date subfolders (one level deep).
+     * Returns true if the file was found and deleted.
+     */
+    fun deleteFile(deviceName: String, displayName: String): Boolean {
+        return try {
+            val root = DocumentFile.fromTreeUri(context, treeUri ?: return false) ?: return false
+            val folder = root.findFile(deviceName) ?: return false
+            val file = findFileAnywhere(folder, displayName) ?: return false
+            val deleted = file.delete()
+            if (deleted) {
+                // Update in-memory caches so the deleted file stops appearing immediately
+                fileUriCache = fileUriCache - "$deviceName/$displayName"
+                recentFilesCache = recentFilesCache.filter {
+                    it.deviceName != deviceName || it.displayName != displayName
+                }
+            }
+            deleted
+        } catch (_: Exception) { false }
+    }
+
+    /**
      * Returns a scaled-down JPEG thumbnail (longest side ≤ [maxPx]) for the given file,
      * or null if the file can't be found or decoded.
+     * For video files (.mp4 / .mov) uses MediaMetadataRetriever to extract a frame.
      */
     fun thumbnailForFile(deviceName: String, displayName: String, maxPx: Int = 240): ByteArray? {
+        val ext = displayName.substringAfterLast('.', "").lowercase()
+        if (ext == "mp4" || ext == "mov") return videoThumbnailForFile(deviceName, displayName, maxPx)
         return try {
             val bytes = readAnyFile(deviceName, displayName) ?: return null
             // Read EXIF orientation before decoding
@@ -486,16 +512,9 @@ class UsbStorageManager(
             val opts = BitmapFactory.Options().apply { inJustDecodeBounds = true }
             BitmapFactory.decodeByteArray(bytes, 0, bytes.size, opts)
             if (opts.outWidth <= 0) return null
-            // Downsample until BOTH the long side is within 2x of target AND the total
-            // decoded pixel count stays under a safe budget (~4M px ≈ 16MB at ARGB_8888).
-            // Using the long side / total-pixel budget (not an AND of both dims) prevents
-            // a giant full-res decode on extreme aspect ratios (tall screenshots,
-            // wide panoramas) that previously OOM'd with a single 300MB+ allocation.
             val sample = run {
-                var s = 1
-                val w = opts.outWidth.toLong()
-                val h = opts.outHeight.toLong()
-                while (maxOf(w, h) / s > maxPx.toLong() * 2 || (w / s) * (h / s) > 4_000_000L) s *= 2
+                var s = 1; var w = opts.outWidth; var h = opts.outHeight
+                while (w / 2 >= maxPx && h / 2 >= maxPx) { w /= 2; h /= 2; s *= 2 }
                 s
             }
             val bmp = BitmapFactory.decodeByteArray(bytes, 0, bytes.size,
@@ -519,7 +538,41 @@ class UsbStorageManager(
             scaled.compress(Bitmap.CompressFormat.JPEG, 75, out)
             scaled.recycle()
             out.toByteArray()
-        } catch (_: Throwable) { null }   // incl. OutOfMemoryError on pathological images
+        } catch (_: Exception) { null }
+    }
+
+    /** Extracts a frame from a video file on USB and returns it as a scaled JPEG thumbnail. */
+    private fun videoThumbnailForFile(deviceName: String, displayName: String, maxPx: Int): ByteArray? {
+        return try {
+            val uri = fileUriCache["$deviceName/$displayName"] ?: run {
+                val root = DocumentFile.fromTreeUri(context, treeUri ?: return null) ?: return null
+                val folder = root.findFile(deviceName) ?: return null
+                findFileAnywhere(folder, displayName)?.uri ?: return null
+            }
+            val mmr = MediaMetadataRetriever()
+            try {
+                mmr.setDataSource(context, uri)
+                val durationUs = (mmr.extractMetadata(MediaMetadataRetriever.METADATA_KEY_DURATION)
+                    ?.toLongOrNull() ?: 0L) * 1000L
+                val frameUs = if (durationUs > 2_000_000L) 1_000_000L else 0L
+                val frame = mmr.getFrameAtTime(frameUs, MediaMetadataRetriever.OPTION_CLOSEST_SYNC)
+                    ?: mmr.frameAtTime ?: return null
+                val w = frame.width; val h = frame.height
+                if (w <= 0 || h <= 0) { frame.recycle(); return null }
+                val scaled = if (w >= h) {
+                    val nh = (h.toFloat() / w * maxPx).toInt().coerceAtLeast(1)
+                    Bitmap.createScaledBitmap(frame, maxPx, nh, true)
+                } else {
+                    val nw = (w.toFloat() / h * maxPx).toInt().coerceAtLeast(1)
+                    Bitmap.createScaledBitmap(frame, nw, maxPx, true)
+                }
+                if (scaled !== frame) frame.recycle()
+                val out = ByteArrayOutputStream()
+                scaled.compress(Bitmap.CompressFormat.JPEG, 75, out)
+                scaled.recycle()
+                out.toByteArray()
+            } finally { try { mmr.release() } catch (_: Throwable) {} }
+        } catch (_: Throwable) { null }
     }
 
     data class HubFileEntry(
