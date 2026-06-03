@@ -63,6 +63,33 @@ object HubFilesClient {
         } catch (_: Exception) { null }
     }
 
+    /** Deletes [name] for [device] from the hub's USB drive. Returns true if the hub confirmed deletion. */
+    fun deleteFile(ip: String, port: Int, device: String, name: String): Boolean {
+        return try {
+            val enc = java.net.URLEncoder.encode(name, "UTF-8")
+            val devEnc = java.net.URLEncoder.encode(device, "UTF-8")
+            val conn = openWithMethod("DELETE",
+                "http://$ip:$port${Constants.PATH_HUB_DELETE}?device=$devEnc&name=$enc")
+            val ok = conn.responseCode == 200
+            conn.disconnect()
+            ok
+        } catch (_: Exception) { false }
+    }
+
+    private fun openWithMethod(method: String, url: String, timeoutMs: Int = 10_000): HttpURLConnection {
+        val ts = System.currentTimeMillis()
+        val device = android.os.Build.MODEL
+        val hmac = HmacAuth.sign(HmacAuth.buildPayload(ts, device))
+        val conn = URL(url).openConnection() as HttpURLConnection
+        conn.requestMethod = method
+        conn.setRequestProperty(Constants.HEADER_HMAC, hmac)
+        conn.setRequestProperty(Constants.HEADER_TIMESTAMP, ts.toString())
+        conn.setRequestProperty(Constants.HEADER_DEVICE, device)
+        conn.connectTimeout = timeoutMs
+        conn.readTimeout = timeoutMs
+        return conn
+    }
+
     private fun openGet(url: String, timeoutMs: Int = 10_000): HttpURLConnection {
         val ts = System.currentTimeMillis()
         val device = android.os.Build.MODEL
