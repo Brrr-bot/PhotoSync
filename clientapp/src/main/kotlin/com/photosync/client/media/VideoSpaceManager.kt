@@ -43,6 +43,7 @@ class VideoSpaceManager(private val context: Context) {
         }
 
         repairPosterDates(hubByName)
+        repairCompressedVideoDates()
 
         // Legacy ID-based tracking (pre-v316) — still respected to avoid re-compressing.
         val compressedIds = prefs.getStringSet(KEY_COMPRESSED, emptySet())!!
@@ -366,6 +367,84 @@ class VideoSpaceManager(private val context: Context) {
         return null
     }
 
+
+    /**
+     * One-off repair: finds compressed videos whose DATE_TAKEN doesn't match the date in their
+     * filename (left wrong by the old replaceFile Strategy A code which couldn't update dates on
+     * Camera-owned rows). Reads each video, deletes the MediaStore row, re-inserts as an
+     * app-owned row with the correct date from parseDateFromName().
+     *
+     * Only repairs videos where we can confidently parse the correct date from the filename
+     * AND the stored date is wrong by more than 24 hours.  Tracked in KEY_VIDEO_DATES_REPAIRED
+     * so each video is only attempted once.
+     */
+    private fun repairCompressedVideoDates() {
+        val repaired = prefs.getStringSet(KEY_VIDEO_DATES_REPAIRED, emptySet())!!.toMutableSet()
+        val videos = queryVideos()
+        val newRepaired = mutableSetOf<String>()
+
+        for (v in videos) {
+            if (v.name in repaired) continue
+            val correctMs = parseDateFromName(v.name).takeIf { it > 0 } ?: continue
+            // Only repair if the stored date is wrong by more than 24 hours
+            if (kotlin.math.abs(v.takenMs - correctMs) < 86_400_000L) {
+                newRepaired.add(v.name)   // already correct — mark done
+                continue
+            }
+            val videoUri = ContentUris.withAppendedId(MediaStore.Video.Media.EXTERNAL_CONTENT_URI, v.id)
+
+            // Read compressed bytes before deleting
+            val bytes = try {
+                context.contentResolver.openInputStream(videoUri)?.use { it.readBytes() }
+            } catch (_: Exception) { null }
+            if (bytes == null || bytes.isEmpty()) continue
+
+            // Delete Camera-owned row (requires MANAGE_EXTERNAL_STORAGE)
+            val deleted = try { context.contentResolver.delete(videoUri, null, null) > 0 } catch (_: Exception) { false }
+            if (!deleted) continue
+
+            // Re-insert as app-owned with correct date
+            val values = ContentValues().apply {
+                put(MediaStore.Video.Media.DISPLAY_NAME, v.name)
+                put(MediaStore.Video.Media.MIME_TYPE, "video/mp4")
+                put(MediaStore.Video.Media.RELATIVE_PATH, v.relativePath)
+                put(MediaStore.Video.Media.DATE_TAKEN, correctMs)
+                if (v.dateAddedSec > 0)    put(MediaStore.Video.Media.DATE_ADDED, v.dateAddedSec)
+                if (v.dateModifiedSec > 0) put(MediaStore.Video.Media.DATE_MODIFIED, v.dateModifiedSec)
+                if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) put(MediaStore.Video.Media.IS_PENDING, 1)
+            }
+            val newUri = try {
+                context.contentResolver.insert(MediaStore.Video.Media.EXTERNAL_CONTENT_URI, values)
+            } catch (_: Exception) { null } ?: continue
+
+            try {
+                context.contentResolver.openOutputStream(newUri)?.use { it.write(bytes) }
+                if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
+                    context.contentResolver.update(newUri, ContentValues().apply {
+                        put(MediaStore.Video.Media.IS_PENDING, 0)
+                        put(MediaStore.Video.Media.SIZE, bytes.size.toLong())
+                        put(MediaStore.Video.Media.DATE_TAKEN, correctMs)
+                        if (v.dateAddedSec > 0)    put(MediaStore.Video.Media.DATE_ADDED, v.dateAddedSec)
+                        if (v.dateModifiedSec > 0) put(MediaStore.Video.Media.DATE_MODIFIED, v.dateModifiedSec)
+                    }, null, null)
+                    // Second update — Samsung resets dates during IS_PENDING transition.
+                    context.contentResolver.update(newUri, ContentValues().apply {
+                        put(MediaStore.Video.Media.DATE_TAKEN, correctMs)
+                        if (v.dateAddedSec > 0)    put(MediaStore.Video.Media.DATE_ADDED, v.dateAddedSec)
+                        if (v.dateModifiedSec > 0) put(MediaStore.Video.Media.DATE_MODIFIED, v.dateModifiedSec)
+                    }, null, null)
+                }
+                newRepaired.add(v.name)
+            } catch (_: Exception) {
+                runCatching { context.contentResolver.delete(newUri, null, null) }
+            }
+        }
+
+        if (newRepaired.isNotEmpty()) {
+            repaired.addAll(newRepaired)
+            prefs.edit().putStringSet(KEY_VIDEO_DATES_REPAIRED, repaired).apply()
+        }
+    }
     companion object {
         private const val OLD_AGE_MS           = 30L * 24 * 60 * 60 * 1000
         private const val KEY_COMPRESSED       = "compressed_video_ids"    // legacy: stores IDs
@@ -373,5 +452,6 @@ class VideoSpaceManager(private val context: Context) {
         private const val KEY_RESTORE          = "poster_restore_map"
         private const val KEY_REPAIRED         = "poster_repaired_set"
         internal const val KEY_POSTER_NAMES    = "poster_names"
+        private const val KEY_VIDEO_DATES_REPAIRED = "compressed_video_dates_repaired"
     }
 }
