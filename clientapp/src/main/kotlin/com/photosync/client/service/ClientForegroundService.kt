@@ -167,6 +167,17 @@ class ClientForegroundService : LifecycleService() {
             }
         }
 
+
+        // One-shot video date repair — runs independently of LocalImageProcessor so it
+        // doesn't have to wait an hour for the image scan to complete.
+        lifecycleScope.launch(Dispatchers.IO) {
+            delay(5_000L)
+            try {
+                com.photosync.client.media.VideoSpaceManager(this@ClientForegroundService)
+                    .repairCompressedVideoDates()
+            } catch (t: Throwable) { log("VideoDateRepair error: ${t.javaClass.simpleName}: ${t.message}") }
+        }
+
         // Fix orientation + missing DATE_TAKEN locally — runs on startup then every hour.
         // Scans all images not yet checked; uses replaceFile() for the same INSERT+DELETE
         // pattern so fixed files are excluded from future hub syncs automatically.
