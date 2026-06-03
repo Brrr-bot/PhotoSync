@@ -94,14 +94,18 @@ class HubForegroundService : LifecycleService() {
             },
             onLog = { msg -> log(msg) },
             onLocation = { json -> storeLocationRow(json) },
-            onFilesRequest = { limit -> usbStorage.listRecentFiles(limit) },
-            onThumbRequest = { device, name -> usbStorage.thumbnailForFile(device, name) },
-            onFileRequest  = { device, name -> usbStorage.readAnyFile(device, name) }
+            onFilesRequest  = { limit -> usbStorage.listRecentFiles(limit) },
+            onThumbRequest  = { device, name -> usbStorage.thumbnailForFile(device, name) },
+            onFileRequest   = { device, name -> usbStorage.readAnyFile(device, name) },
+            onDeleteRequest = { device, name ->
+                val ok = usbStorage.deleteFile(device, name)
+                if (ok) log("Deleted from hub: $device/$name")
+                ok
+            }
         ).also {
             try {
                 it.start()
                 log("Hub HTTP server started on port ${Constants.HUB_HTTP_PORT}")
-                RemoteLogger.i("Started v${com.photosync.hub.BuildConfig.VERSION_NAME} (build ${com.photosync.hub.BuildConfig.VERSION_CODE})")
             } catch (e: Exception) {
                 log("Hub HTTP server failed to start: ${e.message}")
             }
