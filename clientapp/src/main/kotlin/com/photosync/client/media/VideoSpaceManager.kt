@@ -381,7 +381,7 @@ class VideoSpaceManager(private val context: Context) {
      * AND the stored date is wrong by more than 24 hours.  Tracked in KEY_VIDEO_DATES_REPAIRED
      * so each video is only attempted once.
      */
-    private fun repairCompressedVideoDates() {
+    internal fun repairCompressedVideoDates() {
         val repaired = prefs.getStringSet(KEY_VIDEO_DATES_REPAIRED, emptySet())!!.toMutableSet()
         val videos = queryVideos()
         val toFix = videos.count { v ->
