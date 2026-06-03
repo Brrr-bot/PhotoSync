@@ -8,21 +8,27 @@ import android.graphics.Paint
 import android.graphics.Path
 import android.media.MediaMetadataRetriever
 import android.net.Uri
+import androidx.exifinterface.media.ExifInterface
 import java.io.ByteArrayOutputStream
+import java.text.SimpleDateFormat
+import java.util.Date
+import java.util.Locale
 import kotlin.math.min
 
 /**
- * Turns a video into a still JPEG "poster" with a ▶ play badge drawn on it, so a
+ * Turns a video into a still JPEG poster with a play badge drawn on it, so a
  * placeholder image in the gallery is clearly recognisable as a (removed) video.
  */
 object VideoThumbnailer {
+
+    /** Marker stored in EXIF Software tag so the upload scanner can skip poster images. */
+    internal const val POSTER_MARKER = "PhotoSync video poster"
 
     /** Returns JPEG bytes of a representative frame with a play badge, or null on failure. */
     fun makePosterJpeg(context: Context, videoUri: Uri, maxDim: Int = 1280): ByteArray? {
         val mmr = MediaMetadataRetriever()
         return try {
             mmr.setDataSource(context, videoUri)
-            // Grab a frame ~1s in (or the first frame for very short clips).
             val durationUs = (mmr.extractMetadata(MediaMetadataRetriever.METADATA_KEY_DURATION)
                 ?.toLongOrNull() ?: 0L) * 1000L
             val frameUs = if (durationUs > 2_000_000L) 1_000_000L else 0L
@@ -30,7 +36,6 @@ object VideoThumbnailer {
                 ?: mmr.frameAtTime
                 ?: return null
 
-            // Scale down so posters stay small.
             val scaled = run {
                 val w = frame.width; val h = frame.height
                 if (w <= 0 || h <= 0) frame
@@ -55,6 +60,28 @@ object VideoThumbnailer {
         }
     }
 
+    /**
+     * Stamps EXIF DateTimeOriginal + a [POSTER_MARKER] Software tag into JPEG bytes.
+     * Returns modified bytes (returns original on failure).
+     * Used so the gallery sorts the poster at the correct date and the upload scanner skips it.
+     */
+    fun stampPosterExif(jpeg: ByteArray, takenMs: Long): ByteArray {
+        if (jpeg.isEmpty()) return jpeg
+        val tmp = java.io.File.createTempFile("vsp_", ".jpg")
+        return try {
+            tmp.writeBytes(jpeg)
+            val exif = ExifInterface(tmp.absolutePath)
+            val dateStr = SimpleDateFormat("yyyy:MM:dd HH:mm:ss", Locale.US).format(Date(takenMs))
+            exif.setAttribute(ExifInterface.TAG_DATETIME_ORIGINAL, dateStr)
+            exif.setAttribute(ExifInterface.TAG_DATETIME, dateStr)
+            exif.setAttribute(ExifInterface.TAG_DATETIME_DIGITIZED, dateStr)
+            exif.setAttribute(ExifInterface.TAG_SOFTWARE, POSTER_MARKER)
+            exif.saveAttributes()
+            tmp.readBytes()
+        } catch (_: Exception) { jpeg }
+        finally { tmp.delete() }
+    }
+
     /** Draws a translucent circle + white play triangle centred on a copy of [src]. */
     private fun drawPlayBadge(src: Bitmap): Bitmap {
         val bmp = if (src.isMutable) src else src.copy(Bitmap.Config.ARGB_8888, true)
@@ -63,15 +90,12 @@ object VideoThumbnailer {
         val cy = bmp.height / 2f
         val r  = min(bmp.width, bmp.height) * 0.16f
 
-        // Dark circle
         canvas.drawCircle(cx, cy, r, Paint(Paint.ANTI_ALIAS_FLAG).apply {
             color = Color.argb(140, 0, 0, 0)
         })
-        // White ring
         canvas.drawCircle(cx, cy, r, Paint(Paint.ANTI_ALIAS_FLAG).apply {
             color = Color.WHITE; style = Paint.Style.STROKE; strokeWidth = r * 0.10f
         })
-        // Play triangle
         val tri = r * 0.55f
         val path = Path().apply {
             moveTo(cx - tri * 0.5f, cy - tri)
