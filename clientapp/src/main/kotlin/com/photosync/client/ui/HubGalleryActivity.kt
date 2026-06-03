@@ -2,8 +2,6 @@ package com.photosync.client.ui
 
 import android.content.ContentValues
 import android.content.Intent
-import android.graphics.Bitmap
-import android.graphics.BitmapFactory
 import android.net.Uri
 import android.os.Build
 import android.os.Bundle
@@ -59,8 +57,6 @@ class HubGalleryActivity : AppCompatActivity() {
         loadFiles()
     }
 
-    // Thumbnails are kept in ThumbnailCache (disk + memory), so they survive across opens.
-
     private fun loadFiles() {
         val ip = hubIp ?: run {
             tvStatus.text = "Hub not connected"
@@ -86,7 +82,7 @@ class HubGalleryActivity : AppCompatActivity() {
 
     private fun loadThumb(entry: HubFileEntry, iv: ImageView, overlay: FrameLayout) {
         val key = "${entry.deviceName}/${entry.displayName}"
-        // Cached (disk or memory) → show instantly, never re-fetch (hub files are immutable).
+        // Use ThumbnailCache (disk + memory) so thumbnails survive screen rotations and reopens.
         ThumbnailCache.get(this, key)?.let { iv.setImageBitmap(it); overlay.visibility = View.GONE; return }
         val ip = hubIp ?: return
         Thread {
@@ -218,7 +214,41 @@ class HubGalleryActivity : AppCompatActivity() {
             holder.overlay.visibility = View.VISIBLE
             loadThumb(entry, holder.iv, holder.overlay)
             holder.itemView.setOnClickListener { confirmDownload(entry) }
+            holder.itemView.setOnLongClickListener {
+                confirmDeleteFromHub(entry, holder.adapterPosition)
+                true
+            }
         }
+    }
+
+    private fun confirmDeleteFromHub(entry: HubFileEntry, position: Int) {
+        AlertDialog.Builder(this)
+            .setTitle("Delete from hub?")
+            .setMessage("\"${entry.displayName}\" will be permanently deleted from the USB drive on the hub.\n\nDevice: ${entry.deviceName}")
+            .setPositiveButton("Delete") { _, _ -> deleteFromHub(entry, position) }
+            .setNegativeButton("Cancel", null)
+            .show()
+    }
+
+    private fun deleteFromHub(entry: HubFileEntry, position: Int) {
+        val ip = hubIp ?: return
+        Toast.makeText(this, "Deleting…", Toast.LENGTH_SHORT).show()
+        Thread {
+            val ok = HubFilesClient.deleteFile(ip, hubPort, entry.deviceName, entry.displayName)
+            runOnUiThread {
+                if (ok) {
+                    val idx = entries.indexOf(entry)
+                    if (idx >= 0) {
+                        entries.removeAt(idx)
+                        rvGallery.adapter?.notifyItemRemoved(idx)
+                        tvFileCount.text = "${entries.size} files"
+                    }
+                    Toast.makeText(this, "Deleted: ${entry.displayName}", Toast.LENGTH_SHORT).show()
+                } else {
+                    Toast.makeText(this, "Delete failed — hub not reachable or file not found", Toast.LENGTH_SHORT).show()
+                }
+            }
+        }.start()
     }
 
     companion object {
