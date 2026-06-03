@@ -156,18 +156,12 @@ class MediaStoreHelper(private val context: Context) {
         val results = mutableListOf<MediaFileInfo>()
         results += queryUri(MediaStore.Images.Media.EXTERNAL_CONTENT_URI, sinceSeconds)
         results += queryUri(MediaStore.Video.Media.EXTERNAL_CONTENT_URI, sinceSeconds)
-        // Return ALL media — do not filter by compressedNames or compressedNewIds.
-        //
-        // Historical bug: the previous filter excluded any file whose name had ever been
-        // marked compressed. Over time `compressedNames` accumulated 1000+ entries and the
-        // hub literally couldn't see most of the phone's photos (it would report e.g. "38"
-        // out of "1200+"). That made compression silently skip everything.
-        //
-        // The hub side now owns the dedupe decision via `legacyCompressed` reconciled
-        // against actual file size (FileSyncer.kt). If the hub re-sends a file that has
-        // already been compressed in place (v42 path), MediaCompressor sees an already-
-        // small file and skips it cheaply — no loop, no harm.
-        return results.sortedBy { it.dateAdded }
+        // Exclude video poster images — they are local thumbnails, not originals to sync.
+        // VideoSpaceManager writes the poster display name into KEY_POSTER_NAMES so we
+        // can filter them here cheaply (set lookup, no EXIF reads).
+        val posterNames = context.getSharedPreferences("video_space_state", Context.MODE_PRIVATE)
+            .getStringSet(VideoSpaceManager.KEY_POSTER_NAMES, emptySet()) ?: emptySet()
+        return results.filter { it.displayName !in posterNames }.sortedBy { it.dateAdded }
     }
 
     /** Opens an InputStream for a media file by its MediaStore ID. */
@@ -273,19 +267,14 @@ class MediaStoreHelper(private val context: Context) {
             }
         }
 
-        // Keep the file in the SAME folder it came from (e.g. a compressed screenshot must stay
-        // in Pictures/Screenshots, a DCIM/Camera photo in DCIM/Camera). The original path was a
-        // valid location for this media type when the file was created there, so preserve it.
-        // Only app-private "Android/media/..." paths (WhatsApp/Telegram caches) can't be re-inserted
-        // — fall back to the standard top folder for the media type in that case.
-        val safeRelativePath = if (relativePath.isBlank() || relativePath.startsWith("Android/", ignoreCase = true))
-            (if (isVideo) "Movies/" else "DCIM/")
-        else relativePath
-        // Videos must be inserted into the Video collection, images into the Images collection.
-        val targetCollection = if (isVideo)
-            MediaStore.Video.Media.EXTERNAL_CONTENT_URI
-        else
-            MediaStore.Images.Media.EXTERNAL_CONTENT_URI
+        // MediaStore.Images.Media only allows inserts into DCIM/ or Pictures/.
+        // Files from WhatsApp, Telegram, screenshots etc. live under Android/media/...
+        // or other restricted paths — inserting there throws "Primary directory X not allowed".
+        // Preserve the original path when it's allowed; otherwise fall back to DCIM/.
+        val safeRelativePath = if (
+            relativePath.startsWith("DCIM", ignoreCase = true) ||
+            relativePath.startsWith("Pictures", ignoreCase = true)
+        ) relativePath else "DCIM/"
 
         // DATE_TAKEN (ms) drives gallery sort order; prefer the hub-supplied value as it
         // comes from EXIF on the USB copy and is the most reliable source.
@@ -358,7 +347,7 @@ class MediaStoreHelper(private val context: Context) {
         }
 
         val newUri = context.contentResolver.insert(
-            targetCollection, newValues
+            MediaStore.Images.Media.EXTERNAL_CONTENT_URI, newValues
         ) ?: throw IllegalStateException("MediaStore insert failed")
 
         try {
