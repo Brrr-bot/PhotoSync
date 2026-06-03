@@ -1,7 +1,7 @@
 # PhotoSync — CLAUDE.md
 
 > **Read this file before making any changes. Add a changelog entry at the bottom whenever you modify anything.**
-> **After making any code changes, always build and deploy via the update portal automatically — never ask for permission. Run `python build_upload.py hub` and/or `python build_upload.py client` from `C:\Users\mcubi\Desktop\X\update-cf` with `UPLOAD_KEY=Daudiendien` and `GITHUB_TOKEN=[see local.properties — never commit tokens]`.**
+> **After making any code changes, push to `Brrr-bot/PhotoSync` main branch via GitHub API. CI auto-builds on push. Always trigger one `workflow_dispatch` after all file pushes to avoid the portal registration race condition (see CI section below).**
 
 ---
 
@@ -237,6 +237,57 @@ $ADB = "C:\Users\mcubi\AppData\Local\Android\Sdk\platform-tools\adb.exe"
 
 ---
 
+## CI / Build / Deploy
+
+**Repo:** `Brrr-bot/PhotoSync` (private). Workflow ID: `283500744`.
+**Versioning:** `versionCode = github.run_number + 300`. Run #29 = v329.
+**Portal:** `https://app-updates.mcubittbuilders.workers.dev` — app keys `hub`, `client`.
+
+**⚠️ Portal race condition:** Pushing N files one-at-a-time creates N simultaneous CI runs that all race to register with the portal. Only the first write wins, so the portal shows an old version. **Fix: always trigger one `workflow_dispatch` after all pushes.** The dispatch run registers the correct latest version.
+
+**Push files via GitHub API (Python — no gh CLI available):**
+```python
+import base64, json, urllib.request
+TOKEN = '<see project_github_tokens memory — never commit the real token>'
+REPO = 'Brrr-bot/PhotoSync'
+
+def push_file(gh_path, local_path, message):
+    req = urllib.request.Request(f'https://api.github.com/repos/{REPO}/contents/{gh_path}',
+        headers={'Authorization': f'token {TOKEN}'})
+    with urllib.request.urlopen(req) as r:
+        sha = json.loads(r.read())['sha']
+    with open(local_path, 'rb') as f:
+        content = base64.b64encode(f.read()).decode()
+    payload = json.dumps({'message': message, 'content': content, 'sha': sha}).encode()
+    req = urllib.request.Request(f'https://api.github.com/repos/{REPO}/contents/{gh_path}',
+        data=payload, method='PUT',
+        headers={'Authorization': f'token {TOKEN}', 'Content-Type': 'application/json'})
+    with urllib.request.urlopen(req) as r:
+        print('OK', json.loads(r.read())['content']['sha'][:12])
+
+# After all file pushes, trigger dispatch:
+urllib.request.urlopen(urllib.request.Request(
+    f'https://api.github.com/repos/{REPO}/actions/workflows/283500744/dispatches',
+    data=json.dumps({'ref': 'main'}).encode(), method='POST',
+    headers={'Authorization': f'token {TOKEN}', 'Content-Type': 'application/json'}))
+```
+**Note:** Local Windows paths in Python are `/Users/mcubi/Desktop/X/...` (Python sees C: as root `/`).
+
+---
+
+## Samsung MediaStore — Date Preservation Rules (Android 13+)
+
+These rules apply to `VideoSpaceManager`, `LocalImageProcessor`, and any code inserting/replacing media:
+
+1. `contentResolver.update(DATE_TAKEN)` is **silently ignored** on files the app doesn't own.
+2. **To own a file:** insert it with `IS_PENDING=1`, write bytes, then set `IS_PENDING=0`.
+3. **Samsung resets dates during `IS_PENDING=0` transition** — always do a **second `contentResolver.update()`** with DATE_TAKEN/DATE_ADDED/DATE_MODIFIED right after.
+4. **For JPEGs:** also stamp `TAG_DATETIME_ORIGINAL` in EXIF via `ExifInterface` — MediaStore reads EXIF on publish and uses it as the authoritative date.
+5. **For videos (MP4/MOV):** no EXIF equivalent — rely on the double ContentValues update + owning the row.
+6. **Date source priority in VideoSpaceManager:** `parseDateFromName()` (filename pattern VID-YYYYMMDD or 13-digit epoch ms) → DATE_TAKEN from MediaStore → DATE_ADDED × 1000.
+
+---
+
 ## Changelog
 > Add an entry every time you make a change. Format: `YYYY-MM-DD — description`
 
@@ -244,6 +295,5 @@ $ADB = "C:\Users\mcubi\AppData\Local\Android\Sdk\platform-tools\adb.exe"
 - 2026-05-17 — Fixed OTA: both UpdateChecker files now fetch from new portal per-app endpoints (/api/version/hub and /api/version/client). Removed old Tailscale server URL (100.107.143.20:9000). Fixed remote hub gallery: added liveHubIpUpdatedAt timestamp; effectiveHubIp() uses local LAN IP when fresh (<90s), Tailscale IP when stale/off-network. Hub v1.0.96, client v1.0.98 deployed via USB + portal.
 - 2026-05-25 — Updated RemoteLogger in both hub and client: redirected from old Tailscale server (100.107.143.20:9000/log) to update portal (/api/log). Changed "device" field to "app" to match portal schema. Logs now visible in portal live stream under "hub" and "client".
 - 2026-05-17 — Fixed hub files card: UsbStorageManager.listRecentFiles() now uses stale-while-revalidate cache (always returns instantly, refreshes in background thread). invalidateRecentFilesCache() also triggers background refresh so post-sync requests are fast. Fixed client thumbsLoadedForIp guard — only set when files actually load (not on empty result), so card retries on next onResume. Hub v1.0.102, client v1.0.103 deployed.
-- 2026-05-26 — Client UpdateChecker rewritten: uses portal /api/version/client instead of old Tailscale server. Removed Gson dependency, uses org.json. Constants: UPDATE_CHECK_URL → UPDATE_PORTAL_URL. Added ShareViaHubActivity (share image/video to hub from any app). effectiveHubIp() prefers fresh LAN IP (<90s), falls back to Tailscale. Hub thumbnail retry after 15s when empty. All changes pushed to GitHub (build 113). GitHub Actions workflow created (.github/workflows/build.yml) — requires token with 'workflow' scope to push to repo; UPLOAD_KEY secret added to repo. Portal manually registered with hub v112, client v113 from Mikeyctrl/MultiAppUpdater releases.
-- 2026-05-26 — Fixed client OTA notification never showing: (1) dedup guard (notifiedPhotosync AtomicInteger) was set before download attempt — if download failed (proxy was broken on first detection), it locked to 204 forever; now resets to 0 on failure so next poll retries. (2) Removed silentInstall path — it always returned true so postInstallNotification was never called; now always shows notification after successful download. (3) Fixed InstallStatusReceiver.getParcelableExtra for Android 13+ (TIRAMISU) to avoid null return.
-- 2026-05-27 — Fixed portal APK proxy 502 for hub and client: portal rawApkUrl was stored as photosync-hub.apk / photosync-client.apk (the #label from gh release create) but actual GitHub asset filenames are hubapp-debug.apk / clientapp-debug.apk. Re-registered with correct URLs. Fixed CI workflow to remove #label from gh release create so filenames are consistent going forward. NOTE: ADB installs must use local build (gradlew :clientapp:assembleDebug), not portal APK — GitHub Actions keystore ≠ local debug keystore.
+- 2026-06-03 — Added VideoSpaceManager: old videos (>30 days) replaced by JPEG poster with play badge; recent videos transcoded to 480p MP4 in-place. Both preserve original filename, folder, and date. Poster EXIF stamped with DateTimeOriginal + Software="PhotoSync video poster" marker. imageFolderFor() maps video source folder to correct image destination (DCIM stays DCIM, WhatsApp Video → Pictures/WhatsApp Images, etc.). MediaStoreHelper.getMediaSince() filters poster names to prevent hub upload loop. repairPosterDates() one-off pass fixes existing wrong-dated posters via delete+reinsert. VideoThumbnailer.stampPosterExif() added. v326-v329 deployed.
+- 2026-06-03 — Hub: UsbStorageManager.thumbnailForFile() now generates thumbnails for MP4/MOV files using MediaMetadataRetriever (previously returned null → no thumbnail shown). Added deleteFile() method. HubHttpServer: new DELETE /hub/delete endpoint (HMAC authenticated). HubFilesClient: deleteFile() client method. HubGalleryActivity: long-press on any file shows "Delete from hub?" confirmation dialog; on confirm deletes from USB and removes from RecyclerView. Gallery thumbnail loading switched to ThumbnailCache (disk+memory, survives screen reopens). v329 deployed.
