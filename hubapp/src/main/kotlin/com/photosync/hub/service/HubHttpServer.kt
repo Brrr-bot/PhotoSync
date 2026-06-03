@@ -14,7 +14,8 @@ class HubHttpServer(
     private val onLocation: ((json: String) -> Unit)? = null,
     private val onFilesRequest: ((limit: Int) -> List<com.photosync.hub.storage.UsbStorageManager.HubFileEntry>)? = null,
     private val onThumbRequest: ((device: String, name: String) -> ByteArray?)? = null,
-    private val onFileRequest: ((device: String, name: String) -> ByteArray?)? = null
+    private val onFileRequest: ((device: String, name: String) -> ByteArray?)? = null,
+    private val onDeleteRequest: ((device: String, name: String) -> Boolean)? = null
 ) : NanoHTTPD(Constants.HUB_HTTP_PORT) {
 
     private val gson = Gson()
@@ -25,9 +26,10 @@ class HubHttpServer(
                 Constants.PATH_SYNC -> handleSync(session)
                 Constants.PATH_LOCATION -> handleLocation(session)
                 Constants.PATH_DASHBOARD -> handleDashboard(session)
-                Constants.PATH_HUB_FILES -> handleHubFiles(session)
-                Constants.PATH_HUB_THUMB -> handleHubThumb(session)
-                Constants.PATH_HUB_FILE  -> handleHubFile(session)
+                Constants.PATH_HUB_FILES  -> handleHubFiles(session)
+                Constants.PATH_HUB_THUMB  -> handleHubThumb(session)
+                Constants.PATH_HUB_FILE   -> handleHubFile(session)
+                Constants.PATH_HUB_DELETE -> handleHubDelete(session)
                 "/push" -> handlePush(session)
                 "/nudge" -> handleNudge()
                 "/", "" -> handleHtmlDashboard()
@@ -228,6 +230,22 @@ ${progressCard}${compressionCard}<div class="card">
         onLog?.invoke("Update nudge received — checking for update now")
         onNudge?.invoke()
         return newFixedLengthResponse(Response.Status.OK, MIME_PLAINTEXT, "OK")
+    }
+
+    private fun handleHubDelete(session: IHTTPSession): Response {
+        if (session.method != Method.DELETE && session.method != Method.POST)
+            return newFixedLengthResponse(Response.Status.METHOD_NOT_ALLOWED, MIME_PLAINTEXT, "DELETE required")
+        if (!verifyHmacFromHeaders(session))
+            return newFixedLengthResponse(Response.Status.UNAUTHORIZED, MIME_PLAINTEXT, "Unauthorized")
+        val device = session.parameters["device"]?.firstOrNull()
+            ?: return newFixedLengthResponse(Response.Status.BAD_REQUEST, MIME_PLAINTEXT, "Missing device")
+        val name = session.parameters["name"]?.firstOrNull()
+            ?: return newFixedLengthResponse(Response.Status.BAD_REQUEST, MIME_PLAINTEXT, "Missing name")
+        val deleted = onDeleteRequest?.invoke(device, name) ?: false
+        return if (deleted)
+            newFixedLengthResponse(Response.Status.OK, MIME_PLAINTEXT, "Deleted")
+        else
+            newFixedLengthResponse(Response.Status.NOT_FOUND, MIME_PLAINTEXT, "Not found")
     }
 
     private fun verifyHmacFromHeaders(session: IHTTPSession): Boolean {
