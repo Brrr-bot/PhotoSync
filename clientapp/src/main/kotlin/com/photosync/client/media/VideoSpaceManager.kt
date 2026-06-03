@@ -9,6 +9,7 @@ import android.provider.MediaStore
 import com.photosync.client.hub.HubFilesClient
 import com.photosync.client.service.ClientForegroundService
 import java.io.File
+import com.photosync.client.util.RemoteLogger
 
 /**
  * Frees phone space by managing local videos against the hub backup:
@@ -383,6 +384,11 @@ class VideoSpaceManager(private val context: Context) {
     private fun repairCompressedVideoDates() {
         val repaired = prefs.getStringSet(KEY_VIDEO_DATES_REPAIRED, emptySet())!!.toMutableSet()
         val videos = queryVideos()
+        val toFix = videos.count { v ->
+            v.name !in repaired &&
+            parseDateFromName(v.name).takeIf { it > 0 }?.let { kotlin.math.abs(v.takenMs - it) > 86_400_000L } == true
+        }
+        if (toFix > 0) RemoteLogger.i("VideoDateRepair: $toFix videos need date fix")
         val newRepaired = mutableSetOf<String>()
 
         for (v in videos) {
@@ -403,7 +409,7 @@ class VideoSpaceManager(private val context: Context) {
 
             // Delete Camera-owned row (requires MANAGE_EXTERNAL_STORAGE)
             val deleted = try { context.contentResolver.delete(videoUri, null, null) > 0 } catch (_: Exception) { false }
-            if (!deleted) continue
+            if (!deleted) { RemoteLogger.i("VideoDateRepair: delete failed for ${v.name}"); continue }
 
             // Re-insert as app-owned with correct date
             val values = ContentValues().apply {
@@ -437,12 +443,16 @@ class VideoSpaceManager(private val context: Context) {
                     }, null, null)
                 }
                 newRepaired.add(v.name)
-            } catch (_: Exception) {
+                val fixedDate = java.text.SimpleDateFormat("yyyy-MM-dd", java.util.Locale.US).format(java.util.Date(correctMs))
+                RemoteLogger.i("VideoDateRepair: fixed ${v.name} -> $fixedDate")
+            } catch (e: Exception) {
+                RemoteLogger.i("VideoDateRepair: error on ${v.name}: ${e.javaClass.simpleName}: ${e.message}")
                 runCatching { context.contentResolver.delete(newUri, null, null) }
             }
         }
 
         if (newRepaired.isNotEmpty()) {
+            RemoteLogger.i("VideoDateRepair: done, fixed ${newRepaired.size} videos")
             repaired.addAll(newRepaired)
             // Also mark as compressed so the main loop doesn't re-transcode repaired videos.
             val compressedNames = prefs.getStringSet(KEY_COMPRESSED_NAMES, emptySet())!!.toMutableSet()
