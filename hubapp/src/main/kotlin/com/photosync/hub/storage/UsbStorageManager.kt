@@ -549,9 +549,11 @@ class UsbStorageManager(
                 val folder = root.findFile(deviceName) ?: return null
                 findFileAnywhere(folder, displayName)?.uri ?: return null
             }
+            // SAF document URIs need FileDescriptor — setDataSource(context, uri) silently fails on many OEMs
+            val pfd = context.contentResolver.openFileDescriptor(uri, "r") ?: return null
             val mmr = MediaMetadataRetriever()
             try {
-                mmr.setDataSource(context, uri)
+                pfd.use { mmr.setDataSource(it.fileDescriptor) }
                 val durationUs = (mmr.extractMetadata(MediaMetadataRetriever.METADATA_KEY_DURATION)
                     ?.toLongOrNull() ?: 0L) * 1000L
                 val frameUs = if (durationUs > 2_000_000L) 1_000_000L else 0L
