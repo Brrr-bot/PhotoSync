@@ -42,87 +42,109 @@ class GalleryRepair(private val context: Context) {
         val port = ClientForegroundService.liveHubPort
 
         val damaged = queryDamaged()
-        if (damaged.isEmpty()) return Summary(0, 0, 0)
+        val misdatedVideos = queryMisdatedVideos()
+        if (damaged.isEmpty() && misdatedVideos.isEmpty()) return Summary(0, 0, 0)
 
         val hubFiles = try { HubFilesClient.fetchFiles(ip, port, 10_000) } catch (_: Exception) { emptyList() }
         if (hubFiles.isEmpty()) {
-            log("Repair: hub unreachable, ${damaged.size} damaged file(s) deferred")
-            return Summary(0, 0, damaged.size)
+            log("Repair: hub unreachable, ${damaged.size + misdatedVideos.size} file(s) deferred")
+            return Summary(0, 0, damaged.size + misdatedVideos.size)
         }
         val hubByName = hubFiles.associateBy { it.displayName }
 
-        log("Repair: ${damaged.size} damaged file(s) found — restoring originals from hub…")
         var restored = 0; var failed = 0
 
-        for ((index, row) in damaged.withIndex()) {
-            try {
-                // foo.jpg.webp → foo.jpg  (strip only the trailing .webp the old build appended)
-                val originalName = row.name.replace(Regex("\\.webp$", RegexOption.IGNORE_CASE), "")
-                val hubEntry = hubByName[originalName] ?: hubByName[row.name]
-                if (hubEntry == null) { failed++; continue }
+        // ── Images: restore .jpg.webp files damaged by old hub-side conversion ──
+        if (damaged.isNotEmpty()) {
+            log("Repair: ${damaged.size} damaged image(s) — restoring originals from hub…")
+            for ((index, row) in damaged.withIndex()) {
+                try {
+                    val originalName = row.name.replace(Regex("\\.webp$", RegexOption.IGNORE_CASE), "")
+                    val hubEntry = hubByName[originalName] ?: hubByName[row.name]
+                    if (hubEntry == null) { failed++; continue }
+                    val orig = HubFilesClient.fetchFile(ip, port, hubEntry.deviceName, originalName)
+                    if (orig == null || orig.size < 100) { failed++; continue }
+                    if (restoreOriginal(row, originalName, orig, isVideo = false)) {
+                        restored++
+                        if (restored % 10 == 0 || index == damaged.lastIndex)
+                            log("↺ Restored image ${index + 1}/${damaged.size}")
+                    } else failed++
+                } catch (_: Throwable) { failed++ }
+            }
+        }
 
-                val orig = HubFilesClient.fetchFile(ip, port, hubEntry.deviceName, originalName)
-                if (orig == null || orig.size < 100) { failed++; continue }
-
-                if (restoreOriginal(row, originalName, orig)) {
-                    restored++
-                    if (restored % 10 == 0 || index == damaged.lastIndex)
-                        log("↺ Restored ${index + 1}/${damaged.size} from hub")
-                } else failed++
-            } catch (_: Throwable) { failed++ }
+        // ── Videos: restore originals whose DATE_TAKEN was wrongly stamped (the wrong date
+        //    is baked into the transcoded MP4's internal creation_time, so only the pristine
+        //    hub original — with the correct internal date — fixes it permanently). ──
+        if (misdatedVideos.isNotEmpty()) {
+            log("Repair: ${misdatedVideos.size} misdated video(s) — restoring originals from hub…")
+            for ((index, row) in misdatedVideos.withIndex()) {
+                try {
+                    val hubEntry = hubByName[row.name] ?: run { failed++; continue }
+                    val orig = HubFilesClient.fetchFile(ip, port, hubEntry.deviceName, row.name)
+                    if (orig == null || orig.size < 100) { failed++; continue }
+                    if (restoreOriginal(row, row.name, orig, isVideo = true)) {
+                        restored++
+                        log("↺ Restored video ${index + 1}/${misdatedVideos.size}: ${row.name}")
+                    } else failed++
+                } catch (_: Throwable) { failed++ }
+            }
         }
 
         log("Repair: restored $restored, failed $failed")
-        return Summary(restored, failed, queryDamaged().size)
+        return Summary(restored, failed, queryDamaged().size + queryMisdatedVideos().size)
     }
 
-    /** Deletes the damaged row and re-inserts the hub original under the clean name. */
-    private fun restoreOriginal(row: Row, originalName: String, bytes: ByteArray): Boolean {
-        val oldUri = ContentUris.withAppendedId(MediaStore.Images.Media.EXTERNAL_CONTENT_URI, row.id)
+    /** Deletes the damaged/misdated row and re-inserts the hub original under the clean name. */
+    private fun restoreOriginal(row: Row, originalName: String, bytes: ByteArray, isVideo: Boolean): Boolean {
+        val collection = if (isVideo) MediaStore.Video.Media.EXTERNAL_CONTENT_URI
+                         else MediaStore.Images.Media.EXTERNAL_CONTENT_URI
+        val mime = if (isVideo) "video/mp4" else "image/jpeg"
+        val oldUri = ContentUris.withAppendedId(collection, row.id)
 
-        // Correct date: original's EXIF → filename timestamp → DATE_ADDED.
-        // Filename fallback matters because some hub originals (WhatsApp, edited images)
-        // carry no EXIF date, but their name does (e.g. 20250610_093115.jpg).
-        val dateMs = readExifDate(bytes).takeIf { it > 0 }
+        // Correct date: original's EXIF (images) → filename timestamp → DATE_ADDED.
+        // For videos the restored original carries the correct internal creation_time, so the
+        // media scanner keeps the date; we set DATE_TAKEN from the filename for immediacy too.
+        val dateMs = (if (isVideo) 0L else readExifDate(bytes)).takeIf { it > 0 }
             ?: parseDateFromName(originalName).takeIf { it > 0 }
             ?: (row.dateAddedSec * 1000L)
         val dateSec = if (dateMs > 0) dateMs / 1000L else 0L
 
-        // Delete the damaged file first so the insert can reuse the clean name without "(1)".
+        // Delete first so the insert can reuse the clean name without a "(1)" suffix.
         val deleted = try { context.contentResolver.delete(oldUri, null, null) > 0 }
                       catch (_: Exception) { false }
         if (!deleted) return false
 
         val values = ContentValues().apply {
-            put(MediaStore.Images.Media.DISPLAY_NAME, originalName)
-            put(MediaStore.Images.Media.MIME_TYPE, "image/jpeg")
-            put(MediaStore.Images.Media.RELATIVE_PATH, row.relativePath.ifEmpty { "DCIM/" })
-            if (dateMs > 0) put(MediaStore.Images.Media.DATE_TAKEN, dateMs)
+            put(MediaStore.MediaColumns.DISPLAY_NAME, originalName)
+            put(MediaStore.MediaColumns.MIME_TYPE, mime)
+            put(MediaStore.MediaColumns.RELATIVE_PATH, row.relativePath.ifEmpty { if (isVideo) "DCIM/Camera/" else "DCIM/" })
+            if (dateMs > 0) put(MediaStore.MediaColumns.DATE_TAKEN, dateMs)
             if (dateSec > 0) {
-                put(MediaStore.Images.Media.DATE_ADDED, dateSec)
-                put(MediaStore.Images.Media.DATE_MODIFIED, dateSec)
+                put(MediaStore.MediaColumns.DATE_ADDED, dateSec)
+                put(MediaStore.MediaColumns.DATE_MODIFIED, dateSec)
             }
-            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) put(MediaStore.Images.Media.IS_PENDING, 1)
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) put(MediaStore.MediaColumns.IS_PENDING, 1)
         }
         val newUri = try {
-            context.contentResolver.insert(MediaStore.Images.Media.EXTERNAL_CONTENT_URI, values)
+            context.contentResolver.insert(collection, values)
         } catch (_: Exception) { null } ?: return false
 
         return try {
             context.contentResolver.openOutputStream(newUri)?.use { it.write(bytes) } ?: return false
             if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
                 context.contentResolver.update(newUri, ContentValues().apply {
-                    put(MediaStore.Images.Media.IS_PENDING, 0)
-                    put(MediaStore.Images.Media.SIZE, bytes.size.toLong())
-                    if (dateMs > 0) put(MediaStore.Images.Media.DATE_TAKEN, dateMs)
-                    if (dateSec > 0) { put(MediaStore.Images.Media.DATE_ADDED, dateSec)
-                                       put(MediaStore.Images.Media.DATE_MODIFIED, dateSec) }
+                    put(MediaStore.MediaColumns.IS_PENDING, 0)
+                    put(MediaStore.MediaColumns.SIZE, bytes.size.toLong())
+                    if (dateMs > 0) put(MediaStore.MediaColumns.DATE_TAKEN, dateMs)
+                    if (dateSec > 0) { put(MediaStore.MediaColumns.DATE_ADDED, dateSec)
+                                       put(MediaStore.MediaColumns.DATE_MODIFIED, dateSec) }
                 }, null, null)
                 // Second update — Samsung resets dates during the IS_PENDING transition.
                 if (dateMs > 0) context.contentResolver.update(newUri, ContentValues().apply {
-                    put(MediaStore.Images.Media.DATE_TAKEN, dateMs)
-                    if (dateSec > 0) { put(MediaStore.Images.Media.DATE_ADDED, dateSec)
-                                       put(MediaStore.Images.Media.DATE_MODIFIED, dateSec) }
+                    put(MediaStore.MediaColumns.DATE_TAKEN, dateMs)
+                    if (dateSec > 0) { put(MediaStore.MediaColumns.DATE_ADDED, dateSec)
+                                       put(MediaStore.MediaColumns.DATE_MODIFIED, dateSec) }
                 }, null, null)
             }
             true
@@ -130,6 +152,38 @@ class GalleryRepair(private val context: Context) {
             runCatching { context.contentResolver.delete(newUri, null, null) }
             false
         }
+    }
+
+    /** Videos whose DATE_TAKEN is >24h off the filename date (wrongly stamped by old build). */
+    private fun queryMisdatedVideos(): List<Row> {
+        val out = ArrayList<Row>()
+        val proj = arrayOf(
+            MediaStore.MediaColumns._ID,
+            MediaStore.MediaColumns.DISPLAY_NAME,
+            MediaStore.MediaColumns.RELATIVE_PATH,
+            MediaStore.MediaColumns.DATE_ADDED,
+            MediaStore.MediaColumns.DATE_TAKEN
+        )
+        val sel = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q)
+            "${MediaStore.MediaColumns.IS_PENDING} = 0" else null
+        context.contentResolver.query(
+            MediaStore.Video.Media.EXTERNAL_CONTENT_URI, proj, sel, null, null
+        )?.use { c ->
+            val iId = c.getColumnIndexOrThrow(MediaStore.MediaColumns._ID)
+            val iNm = c.getColumnIndexOrThrow(MediaStore.MediaColumns.DISPLAY_NAME)
+            val iRp = c.getColumnIndexOrThrow(MediaStore.MediaColumns.RELATIVE_PATH)
+            val iDa = c.getColumnIndexOrThrow(MediaStore.MediaColumns.DATE_ADDED)
+            val iDt = c.getColumnIndexOrThrow(MediaStore.MediaColumns.DATE_TAKEN)
+            while (c.moveToNext()) {
+                val name = c.getString(iNm) ?: continue
+                val nameDate = parseDateFromName(name)
+                if (nameDate <= 0) continue              // no reliable date in name → leave it
+                val taken = c.getLong(iDt)               // ms
+                if (taken > 0 && Math.abs(taken - nameDate) <= 24 * 60 * 60 * 1000L) continue
+                out += Row(c.getLong(iId), name, c.getString(iRp) ?: "DCIM/Camera/", c.getLong(iDa))
+            }
+        }
+        return out
     }
 
     /** Date from filename: YYYYMMDD_HHMMSS (full) → YYYYMMDD (midnight) → 13-digit epoch ms. */
