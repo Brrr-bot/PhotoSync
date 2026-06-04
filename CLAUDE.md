@@ -5,6 +5,76 @@
 
 ---
 
+## 🚀 AGENT QUICK-START — read this first (updated 2026-06-04)
+
+> OTA, compression, and gallery-repair are all **implemented and working**. The "IMPLEMENT THIS FIRST" section further down is historical — ignore it. This block is the current source of truth.
+
+### Repos & build pipeline
+- **Source repo:** `Brrr-bot/PhotoSync` (private). Modules: `hubapp` (`com.photosync.hub`), `clientapp` (`com.photosync.client`), `shared`.
+- **CI:** GitHub Actions workflow id `283500744` (`.github/workflows/build.yml`). On push to `main` it builds both APKs, makes a GitHub Release tagged `vNNN`, uploads `hubapp-debug.apk` + `clientapp-debug.apk`, and registers both with the update portal.
+- **Versioning:** `versionCode = github.run_number + 300` (run #113 → v413).
+- **Update portal:** `https://app-updates.mcubittbuilders.workers.dev` — app keys `hub`, `client`. Current version: `GET /api/version/client` / `/api/version/hub`.
+- **GitHub token:** in the `project_github_tokens` memory (Brrr-bot account, `repo`+`workflow` scopes). NEVER commit it to the repo.
+
+### Pushing a code change & building (PowerShell — there is NO local git remote to PhotoSync)
+The working copy is `C:\Users\mcubi\Desktop\X\MultiAppUpdater\client-hub\`, but its git `origin` is **MultiAppUpdater, not PhotoSync**. Push files to PhotoSync via the Contents API:
+
+```powershell
+$token = "<see project_github_tokens memory>"
+$headers = @{Authorization = "token $token"}
+function Push-File($local, $gh, $msg) {
+    $bytes = [System.IO.File]::ReadAllBytes($local)
+    $f = Invoke-RestMethod -Uri "https://api.github.com/repos/Brrr-bot/PhotoSync/contents/$gh" -Headers $headers -ErrorAction SilentlyContinue
+    $b = @{message=$msg; content=[System.Convert]::ToBase64String($bytes)}
+    if ($f -and $f.sha) { $b['sha'] = $f.sha }   # OMIT sha for brand-new files (GET 404s)
+    Invoke-RestMethod -Uri "https://api.github.com/repos/Brrr-bot/PhotoSync/contents/$gh" -Method PUT -Headers $headers -Body ($b | ConvertTo-Json)
+}
+# AFTER all file pushes, trigger ONE dispatch (each push starts its own CI run; the dispatch run
+# registers the final version and avoids the portal race where an older run wins):
+Invoke-RestMethod -Uri "https://api.github.com/repos/Brrr-bot/PhotoSync/actions/workflows/283500744/dispatches" -Method POST -Headers @{Authorization="token $token";"Content-Type"="application/json"} -Body '{"ref":"main"}'
+```
+- **Reading a file back from GitHub:** strip newlines before decoding or you get an empty string (this once blanked a source file):
+  `[Text.Encoding]::UTF8.GetString([Convert]::FromBase64String(($f.content -replace "` + "`" + `n","" -replace "` + "`" + `r","")))`
+- **Wait for build:** poll `GET /actions/runs?per_page=4` until no `"status": "in_progress"`, then confirm `"conclusion": "success"`.
+- **Cancel duplicate/stuck runs:** `POST /actions/runs/{id}/cancel`.
+
+### Installing builds on devices (to skip the OTA wait)
+OTA serves the **latest** portal version and silent-installs within ~30s on network. To install now, pull the release APK and `adb install -r`:
+```powershell
+$ADB = "C:\Users\mcubi\AppData\Local\Android\Sdk\platform-tools\adb.exe"
+$ver = (Invoke-RestMethod "https://app-updates.mcubittbuilders.workers.dev/api/version/client").versionCode
+$rel = Invoke-RestMethod "https://api.github.com/repos/Brrr-bot/PhotoSync/releases/tags/v$ver" -Headers $headers
+$asset = $rel.assets | ? { $_.name -like "clientapp*" }   # hubapp* for the hub
+Invoke-RestMethod "https://api.github.com/repos/Brrr-bot/PhotoSync/releases/assets/$($asset.id)" -Headers @{Authorization="token $token";Accept="application/octet-stream"} -OutFile "$env:TEMP\c.apk"
+& $ADB -s <serial> install -r "$env:TEMP\c.apk"
+```
+- **Devices:** client phone = `R3CR608VP2P` (Samsung SM-G998B, **Android 13**); hub tablet = `R52N70K3BRL` (Samsung SM-T510, **Android < 12**). ADB: `C:\Users\mcubi\AppData\Local\Android\Sdk\platform-tools\adb.exe`.
+- **Hub-side fixes must be installed on the tablet** — installing the client on the phone does NOT update the hub.
+
+### Inspecting on-device
+- App log: `adb -s <serial> shell run-as com.photosync.client tail -50 files/teaching_log.txt` (RemoteLogger writes here and also POSTs to the portal `/api/log`).
+- Media dates: `adb shell content query --uri content://media/external/video/media --projection _display_name:datetaken:date_added`. Gotchas: use `datetaken` (not `date_taken`), `--sort '_display_name'` ASC works but `... DESC` errors; `--where "datetaken>=<ms>"`.
+
+### Architecture decisions — DO NOT regress these
+- **Images: ONE client-side WebP pass. Hub = backup only (no hub compression).** The hub tablet is Android <12 where ExifInterface can't write EXIF to WebP, and compressing on the lossy hub then re-compressing on the phone loses quality twice. `ImageSpaceManager` + `WebPConverter` convert each hub-confirmed image to WebP 92% on the phone (Android 13) copying ALL EXIF.
+- **Keep the original filename when replacing bytes, and do NOT change MediaStore MIME_TYPE.** `foo.jpg` stays `foo.jpg` even though its bytes become WebP. Renaming to `.webp` OR updating MIME_TYPE makes Samsung rename the file → the hub sees a "new" file → infinite re-download/re-compress loop. Viewers detect the real format from magic bytes, so the `.jpg` name is harmless.
+- **Videos:** H.265 720p transcode is client-side (`VideoSpaceManager`/`VideoTranscoder`). Hub = backup only.
+- **Bandwidth rule:** images may sync over mobile data; **videos sync over WiFi only** (`MediaHttpServer.handleList` filters videos when on cellular).
+- **Stream large files; never buffer a whole video into a ByteArray (it OOMs the hub).** Hub: `UsbStorageManager.openFileStream` + `HubHttpServer` `newFixedLengthResponse(stream,len)`. Client: `HubFilesClient.fetchFileToFile` (download streamed to a temp file).
+
+### Gallery date/orientation repair — why it kept "reverting"
+- **Samsung reads the MP4's INTERNAL `creation_time` (mvhd/tkhd/mdhd atoms) and overrides MediaStore DATE_TAKEN on every media scan.** Fixing only the database reverts. `Mp4DateEditor` patches those atoms in place via the content URI's `rw` file descriptor (the `DATA` path column is null on Android 13, so don't rely on it). `VideoSpaceManager.repairCompressedVideoDates` runs on startup and fixes any video whose DATE_TAKEN is **>2h off the filename timestamp** (`YYYYMMDD_HHMMSS`), then updates MediaStore + triggers a rescan. Uses the filename time as the only source (never DATE_ADDED, which can differ for downloads). Self-terminating.
+- **Damaged `foo.jpg.webp` images** (double extension, zero EXIF — created by an earlier broken hub-side WebP conversion) are restored from the pristine **hub originals** by `GalleryRepair` on hub-connect (recovers correct date, orientation, GPS). Falls back to filename date when the original has no EXIF.
+- **`LocalImageProcessor`** fixes wrong/null image DATE_TAKEN from EXIF→filename, preferring those over the possibly-corrupt MediaStore value (fixes WRONG dates, not just null). Auto-rotation stays DISABLED (baking rotation double-rotates Samsung photos that are already correct via their EXIF orientation tag).
+- Repairs run from `ClientForegroundService` on startup and in `runOnHubConnect`, are self-terminating (only touch still-wrong items), and log to the live card.
+
+### Progress / live-log conventions
+- The client "upload" card = the hub downloading FROM the phone (`/media/file`). The hub sends `dl_index`/`dl_total` so the bar shows the real transfer count, not the whole library.
+- Live-log markers: `⬆ Uploading` (phone→hub backup), `◇ WebP N/total` (client WebP convert), `↺ Restored` (hub→phone repair), `VideoDateRepair:` (in-place MP4 date fix).
+
+---
+
+
 ## ⚠️ OTA UPDATE SYSTEM — IMPLEMENT THIS FIRST BEFORE ANY OTHER CHANGES
 
 This project has two apps: **hub** (`com.photosync.hub`) and **client** (`com.photosync.client`). Neither has a working OTA update system yet. Implement it in both before making any other changes.
