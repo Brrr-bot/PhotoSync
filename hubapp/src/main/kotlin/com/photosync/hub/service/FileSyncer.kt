@@ -479,7 +479,7 @@ class FileSyncer(
 
     companion object {
         /** Bump this to force a one-time clear of the compressed-files cache on all devices. */
-        private const val COMPRESS_RESET_V = 6  // bump → forces re-compression of all images to WebP
+        private const val COMPRESS_RESET_V = 7  // bump → re-compress all images: full EXIF copy + correct paths
     }
 
     /**
