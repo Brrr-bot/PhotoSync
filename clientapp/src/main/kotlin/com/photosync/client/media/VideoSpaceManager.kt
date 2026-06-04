@@ -108,7 +108,7 @@ class VideoSpaceManager(private val context: Context) {
 
     private data class VideoRow(
         val id: Long, val name: String, val size: Long, val takenMs: Long, val relativePath: String,
-        val dateAddedSec: Long, val dateModifiedSec: Long
+        val dateAddedSec: Long, val dateModifiedSec: Long, val dataPath: String? = null
     )
 
     private fun queryVideos(): List<VideoRow> {
@@ -120,7 +120,8 @@ class VideoSpaceManager(private val context: Context) {
             MediaStore.Video.Media.DATE_ADDED,
             MediaStore.Video.Media.DATE_TAKEN,
             MediaStore.Video.Media.DATE_MODIFIED,
-            MediaStore.Video.Media.RELATIVE_PATH
+            MediaStore.Video.Media.RELATIVE_PATH,
+            MediaStore.Video.Media.DATA
         )
         context.contentResolver.query(
             MediaStore.Video.Media.EXTERNAL_CONTENT_URI, proj,
@@ -134,12 +135,14 @@ class VideoSpaceManager(private val context: Context) {
             val iDt = c.getColumnIndexOrThrow(MediaStore.Video.Media.DATE_TAKEN)
             val iDm = c.getColumnIndexOrThrow(MediaStore.Video.Media.DATE_MODIFIED)
             val iRp = c.getColumnIndexOrThrow(MediaStore.Video.Media.RELATIVE_PATH)
+            val iDataCol = c.getColumnIndex(MediaStore.Video.Media.DATA)
             while (c.moveToNext()) {
                 val name = c.getString(iNm) ?: continue
                 val da = c.getLong(iDa)
                 val takenMs = c.getLong(iDt).takeIf { it > 0 } ?: (da * 1000L)
+                val data = if (iDataCol >= 0) c.getString(iDataCol) else null
                 out.add(VideoRow(c.getLong(iId), name, c.getLong(iSz), takenMs,
-                    c.getString(iRp) ?: "DCIM/", da, c.getLong(iDm)))
+                    c.getString(iRp) ?: "DCIM/", da, c.getLong(iDm), data))
             }
         }
         return out
@@ -416,10 +419,10 @@ class VideoSpaceManager(private val context: Context) {
      */
     internal fun repairCompressedVideoDates() {
         val videos = queryVideos()
-        // Authoritative date = filename timestamp → DATE_ADDED. No permanent skip-set: the
-        // check is self-terminating because once DATE_TAKEN matches, the >24h test is false.
-        // (A buggy old build stamped DATE_TAKEN to its processing time, clustering many videos
-        // on one wrong day; this re-derives the true date from the filename / DATE_ADDED.)
+        // The wrong date is baked into the MP4's internal creation_time (mvhd/tkhd/mdhd) by an
+        // old transcode. Samsung reads that and overrides DATE_TAKEN, so a MediaStore-only fix
+        // reverts. We edit the atoms in place (fast, local, no network) then sync MediaStore +
+        // rescan. Self-terminating: once the internal date is correct, the >24h test is false.
         val toFix = videos.count { v ->
             val correct = videoCorrectDate(v)
             correct > 0 && kotlin.math.abs(v.takenMs - correct) > 86_400_000L
@@ -429,65 +432,36 @@ class VideoSpaceManager(private val context: Context) {
 
         for (v in videos) {
             val correctMs = videoCorrectDate(v).takeIf { it > 0 } ?: continue
-            // Only repair if the stored date is wrong by more than 24 hours
             if (kotlin.math.abs(v.takenMs - correctMs) < 86_400_000L) continue
-            val videoUri = ContentUris.withAppendedId(MediaStore.Video.Media.EXTERNAL_CONTENT_URI, v.id)
+            val path = v.dataPath ?: continue
 
-            // Read compressed bytes before deleting
-            val bytes = try {
-                context.contentResolver.openInputStream(videoUri)?.use { it.readBytes() }
-            } catch (_: Exception) { null }
-            if (bytes == null || bytes.isEmpty()) continue
+            // 1. Patch the MP4's internal creation_time/modification_time atoms.
+            val patched = try { Mp4DateEditor.setCreationTime(path, correctMs) } catch (_: Throwable) { false }
+            if (!patched) { RemoteLogger.i("VideoDateRepair: atom patch failed for ${v.name}"); continue }
 
-            // Delete Camera-owned row (requires MANAGE_EXTERNAL_STORAGE)
-            val deleted = try { context.contentResolver.delete(videoUri, null, null) > 0 } catch (_: Exception) { false }
-            if (!deleted) { RemoteLogger.i("VideoDateRepair: delete failed for ${v.name}"); continue }
-
-            // Re-insert as app-owned with correct date. DATE_MODIFIED is forced to the correct
-            // date too — it had been bumped to "today" by the rewrite, which skews gallery sort.
+            // 2. Sync MediaStore date so the gallery updates immediately.
             val correctSec = correctMs / 1000L
-            val values = ContentValues().apply {
-                put(MediaStore.Video.Media.DISPLAY_NAME, v.name)
-                put(MediaStore.Video.Media.MIME_TYPE, "video/mp4")
-                put(MediaStore.Video.Media.RELATIVE_PATH, v.relativePath)
-                put(MediaStore.Video.Media.DATE_TAKEN, correctMs)
-                put(MediaStore.Video.Media.DATE_ADDED, if (v.dateAddedSec > 0) v.dateAddedSec else correctSec)
-                put(MediaStore.Video.Media.DATE_MODIFIED, correctSec)
-                if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) put(MediaStore.Video.Media.IS_PENDING, 1)
-            }
-            val newUri = try {
-                context.contentResolver.insert(MediaStore.Video.Media.EXTERNAL_CONTENT_URI, values)
-            } catch (_: Exception) { null } ?: continue
-
+            val uri = ContentUris.withAppendedId(MediaStore.Video.Media.EXTERNAL_CONTENT_URI, v.id)
             try {
-                context.contentResolver.openOutputStream(newUri)?.use { it.write(bytes) }
-                if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
-                    context.contentResolver.update(newUri, ContentValues().apply {
-                        put(MediaStore.Video.Media.IS_PENDING, 0)
-                        put(MediaStore.Video.Media.SIZE, bytes.size.toLong())
-                        put(MediaStore.Video.Media.DATE_TAKEN, correctMs)
-                        put(MediaStore.Video.Media.DATE_ADDED, if (v.dateAddedSec > 0) v.dateAddedSec else correctSec)
-                        put(MediaStore.Video.Media.DATE_MODIFIED, correctSec)
-                    }, null, null)
-                    // Second update — Samsung resets dates during IS_PENDING transition.
-                    context.contentResolver.update(newUri, ContentValues().apply {
-                        put(MediaStore.Video.Media.DATE_TAKEN, correctMs)
-                        put(MediaStore.Video.Media.DATE_ADDED, if (v.dateAddedSec > 0) v.dateAddedSec else correctSec)
-                        put(MediaStore.Video.Media.DATE_MODIFIED, correctSec)
-                    }, null, null)
-                }
-                newRepaired.add(v.name)
-                val fixedDate = java.text.SimpleDateFormat("yyyy-MM-dd HH:mm", java.util.Locale.US).format(java.util.Date(correctMs))
-                RemoteLogger.i("VideoDateRepair: fixed ${v.name} -> $fixedDate")
-            } catch (e: Exception) {
-                RemoteLogger.i("VideoDateRepair: error on ${v.name}: ${e.javaClass.simpleName}: ${e.message}")
-                runCatching { context.contentResolver.delete(newUri, null, null) }
-            }
+                context.contentResolver.update(uri, ContentValues().apply {
+                    put(MediaStore.Video.Media.DATE_TAKEN, correctMs)
+                    put(MediaStore.Video.Media.DATE_ADDED, if (v.dateAddedSec > 0) v.dateAddedSec else correctSec)
+                    put(MediaStore.Video.Media.DATE_MODIFIED, correctSec)
+                }, null, null)
+            } catch (_: Exception) {}
+
+            // 3. Rescan the file so the media DB re-reads the now-correct internal date.
+            try {
+                android.media.MediaScannerConnection.scanFile(context, arrayOf(path), arrayOf("video/mp4"), null)
+            } catch (_: Exception) {}
+
+            newRepaired.add(v.name)
+            val fixedDate = java.text.SimpleDateFormat("yyyy-MM-dd HH:mm", java.util.Locale.US).format(java.util.Date(correctMs))
+            RemoteLogger.i("VideoDateRepair: fixed ${v.name} -> $fixedDate")
         }
 
         if (newRepaired.isNotEmpty()) {
             RemoteLogger.i("VideoDateRepair: done, fixed ${newRepaired.size} videos")
-            // Mark repaired videos as compressed so the main loop doesn't re-transcode them.
             val compressedNames = prefs.getStringSet(KEY_COMPRESSED_NAMES, emptySet())!!.toMutableSet()
             compressedNames.addAll(newRepaired)
             prefs.edit().putStringSet(KEY_COMPRESSED_NAMES, compressedNames).apply()
