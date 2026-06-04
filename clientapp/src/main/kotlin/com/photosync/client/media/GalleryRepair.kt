@@ -79,15 +79,19 @@ class GalleryRepair(private val context: Context) {
         if (misdatedVideos.isNotEmpty()) {
             log("Repair: ${misdatedVideos.size} misdated video(s) — restoring originals from hub…")
             for ((index, row) in misdatedVideos.withIndex()) {
+                val tmp = java.io.File(context.cacheDir, "vrestore_${row.id}.mp4")
                 try {
                     val hubEntry = hubByName[row.name] ?: run { failed++; continue }
-                    val orig = HubFilesClient.fetchFile(ip, port, hubEntry.deviceName, row.name)
-                    if (orig == null || orig.size < 100) { failed++; continue }
-                    if (restoreOriginal(row, row.name, orig, isVideo = true)) {
+                    // Stream the original to a temp file (no full-video ByteArray → no OOM).
+                    if (!HubFilesClient.fetchFileToFile(ip, port, hubEntry.deviceName, row.name, tmp)) {
+                        failed++; continue
+                    }
+                    if (restoreVideoFromFile(row, tmp)) {
                         restored++
                         log("↺ Restored video ${index + 1}/${misdatedVideos.size}: ${row.name}")
                     } else failed++
                 } catch (_: Throwable) { failed++ }
+                finally { runCatching { tmp.delete() } }
             }
         }
 
@@ -141,6 +145,54 @@ class GalleryRepair(private val context: Context) {
                                        put(MediaStore.MediaColumns.DATE_MODIFIED, dateSec) }
                 }, null, null)
                 // Second update — Samsung resets dates during the IS_PENDING transition.
+                if (dateMs > 0) context.contentResolver.update(newUri, ContentValues().apply {
+                    put(MediaStore.MediaColumns.DATE_TAKEN, dateMs)
+                    if (dateSec > 0) { put(MediaStore.MediaColumns.DATE_ADDED, dateSec)
+                                       put(MediaStore.MediaColumns.DATE_MODIFIED, dateSec) }
+                }, null, null)
+            }
+            true
+        } catch (_: Exception) {
+            runCatching { context.contentResolver.delete(newUri, null, null) }
+            false
+        }
+    }
+
+    /** Restores a video from a temp file (streamed copy, no full ByteArray) into MediaStore. */
+    private fun restoreVideoFromFile(row: Row, src: java.io.File): Boolean {
+        val oldUri = ContentUris.withAppendedId(MediaStore.Video.Media.EXTERNAL_CONTENT_URI, row.id)
+        val dateMs = parseDateFromName(row.name).takeIf { it > 0 } ?: (row.dateAddedSec * 1000L)
+        val dateSec = if (dateMs > 0) dateMs / 1000L else 0L
+
+        val deleted = try { context.contentResolver.delete(oldUri, null, null) > 0 }
+                      catch (_: Exception) { false }
+        if (!deleted) return false
+
+        val values = ContentValues().apply {
+            put(MediaStore.MediaColumns.DISPLAY_NAME, row.name)
+            put(MediaStore.MediaColumns.MIME_TYPE, "video/mp4")
+            put(MediaStore.MediaColumns.RELATIVE_PATH, row.relativePath.ifEmpty { "DCIM/Camera/" })
+            if (dateMs > 0) put(MediaStore.MediaColumns.DATE_TAKEN, dateMs)
+            if (dateSec > 0) { put(MediaStore.MediaColumns.DATE_ADDED, dateSec)
+                               put(MediaStore.MediaColumns.DATE_MODIFIED, dateSec) }
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) put(MediaStore.MediaColumns.IS_PENDING, 1)
+        }
+        val newUri = try {
+            context.contentResolver.insert(MediaStore.Video.Media.EXTERNAL_CONTENT_URI, values)
+        } catch (_: Exception) { null } ?: return false
+
+        return try {
+            context.contentResolver.openOutputStream(newUri)?.use { out ->
+                src.inputStream().use { it.copyTo(out, 64 * 1024) }
+            } ?: return false
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
+                context.contentResolver.update(newUri, ContentValues().apply {
+                    put(MediaStore.MediaColumns.IS_PENDING, 0)
+                    put(MediaStore.MediaColumns.SIZE, src.length())
+                    if (dateMs > 0) put(MediaStore.MediaColumns.DATE_TAKEN, dateMs)
+                    if (dateSec > 0) { put(MediaStore.MediaColumns.DATE_ADDED, dateSec)
+                                       put(MediaStore.MediaColumns.DATE_MODIFIED, dateSec) }
+                }, null, null)
                 if (dateMs > 0) context.contentResolver.update(newUri, ContentValues().apply {
                     put(MediaStore.MediaColumns.DATE_TAKEN, dateMs)
                     if (dateSec > 0) { put(MediaStore.MediaColumns.DATE_ADDED, dateSec)
