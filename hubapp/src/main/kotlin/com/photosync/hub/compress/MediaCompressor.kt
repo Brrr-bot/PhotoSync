@@ -16,9 +16,15 @@ object MediaCompressor {
 
     private const val MAX_DIMENSION = 1920
     private const val WEBP_QUALITY  = 85
+    private const val JPEG_QUALITY  = 85
 
-    /** MIME type of the compressed output — callers must send this to /replace. */
-    const val OUTPUT_MIME_TYPE = "image/webp"
+    /**
+     * MIME type of the compressed output — WebP on API 31+ (ExifInterface can write EXIF to
+     * WebP there), JPEG on older (ExifInterface supports JPEG EXIF on all versions).
+     * Callers must send this exact value to /replace so the phone stores the right MIME type.
+     */
+    val OUTPUT_MIME_TYPE: String get() =
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) "image/webp" else "image/jpeg"
 
     /**
      * Compresses [originalBytes] to WebP at [WEBP_QUALITY]%, scaled so the longest side is
@@ -52,10 +58,16 @@ object MediaCompressor {
             val scaled = scaleTo(sampled, MAX_DIMENSION)
 
             val out = ByteArrayOutputStream()
-            val fmt = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R)
-                @Suppress("DEPRECATION") Bitmap.CompressFormat.WEBP_LOSSY
-                else @Suppress("DEPRECATION") Bitmap.CompressFormat.WEBP
-            scaled.compress(fmt, WEBP_QUALITY, out)
+            val useWebP = Build.VERSION.SDK_INT >= Build.VERSION_CODES.S  // API 31+ = ExifInterface WebP write
+            val (fmt, quality) = if (useWebP) {
+                val f = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R)
+                    @Suppress("DEPRECATION") Bitmap.CompressFormat.WEBP_LOSSY
+                    else @Suppress("DEPRECATION") Bitmap.CompressFormat.WEBP
+                Pair(f, WEBP_QUALITY)
+            } else {
+                Pair(Bitmap.CompressFormat.JPEG, JPEG_QUALITY)
+            }
+            scaled.compress(fmt, quality, out)
 
             if (scaled !== sampled) scaled.recycle()
             sampled.recycle()
@@ -63,11 +75,12 @@ object MediaCompressor {
             val compressed = out.toByteArray()
             if (compressed.size >= originalBytes.size) return null
 
-            // Copy ALL EXIF from original into the WebP output.
-            // ExifInterface can write to WebP on API 31+; on older we return without EXIF
-            // (the client still sets DATE_TAKEN via ContentValues so gallery ordering is correct).
-            if (cacheDir != null && Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
-                copyExif(originalBytes, compressed, dateTakenMs, cacheDir)?.let { return it }
+            // Copy ALL EXIF from original into the output.
+            // ExifInterface supports EXIF write for JPEG on all versions, WebP on API 31+.
+            // Since we only output WebP on API 31+, this check always passes for our chosen format.
+            if (cacheDir != null) {
+                val ext = if (useWebP) ".webp" else ".jpg"
+                copyExif(originalBytes, compressed, dateTakenMs, cacheDir, ext)?.let { return it }
             }
             compressed
         } catch (e: Exception) {
@@ -85,13 +98,14 @@ object MediaCompressor {
         originalBytes: ByteArray,
         compressedBytes: ByteArray,
         dateTakenMs: Long,
-        cacheDir: File
+        cacheDir: File,
+        ext: String = ".jpg"
     ): ByteArray? {
         var tmp: File? = null
         return try {
             val srcExif = ExifInterface(ByteArrayInputStream(originalBytes))
 
-            tmp = File.createTempFile("ps_exif_", ".webp", cacheDir)
+            tmp = File.createTempFile("ps_exif_", ext, cacheDir)
             tmp.writeBytes(compressedBytes)
 
             ExifInterface(tmp.absolutePath).apply {
@@ -112,6 +126,12 @@ object MediaCompressor {
                     setAttribute(ExifInterface.TAG_DATETIME,           dateStr)
                     setAttribute(ExifInterface.TAG_DATETIME_DIGITIZED,  dateStr)
                 }
+
+                // BitmapFactory.decodeByteArray auto-applies EXIF orientation into pixels,
+                // so the output WebP pixels are already correctly oriented. Copying the
+                // original orientation tag would cause viewers to double-rotate. Clear it.
+                setAttribute(ExifInterface.TAG_ORIENTATION,
+                    ExifInterface.ORIENTATION_NORMAL.toString())
 
                 saveAttributes()
             }
