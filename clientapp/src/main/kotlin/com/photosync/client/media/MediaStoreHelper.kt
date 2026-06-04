@@ -309,6 +309,7 @@ class MediaStoreHelper(private val context: Context) {
             // DATE_TAKEN drives gallery sort; preserve original DATE_ADDED/MODIFIED.
             context.contentResolver.update(origUri, ContentValues().apply {
                 put(MediaStore.MediaColumns.SIZE,       compressedBytes.size.toLong())
+                put(MediaStore.MediaColumns.MIME_TYPE,  mimeType)
                 put(MediaStore.MediaColumns.DATE_TAKEN, effectiveDateTaken)
                 if (dateAdded > 0)    put(MediaStore.MediaColumns.DATE_ADDED, dateAdded)
                 if (dateModified > 0) put(MediaStore.MediaColumns.DATE_MODIFIED, dateModified)
@@ -346,9 +347,10 @@ class MediaStoreHelper(private val context: Context) {
             if (dateAdded > 0) put(MediaStore.MediaColumns.DATE_ADDED, dateAdded)
         }
 
-        val newUri = context.contentResolver.insert(
-            MediaStore.Images.Media.EXTERNAL_CONTENT_URI, newValues
-        ) ?: throw IllegalStateException("MediaStore insert failed")
+        val collection = if (isVideo) MediaStore.Video.Media.EXTERNAL_CONTENT_URI
+                        else MediaStore.Images.Media.EXTERNAL_CONTENT_URI
+        val newUri = context.contentResolver.insert(collection, newValues)
+            ?: throw IllegalStateException("MediaStore insert failed")
 
         try {
             // Write compressed bytes — always succeeds because this app owns newUri
