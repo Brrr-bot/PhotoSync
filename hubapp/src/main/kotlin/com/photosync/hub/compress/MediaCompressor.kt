@@ -2,9 +2,9 @@ package com.photosync.hub.compress
 
 import android.graphics.Bitmap
 import android.graphics.BitmapFactory
-import android.media.ExifInterface
 import android.os.Build
 import android.util.Log
+import androidx.exifinterface.media.ExifInterface
 import java.io.ByteArrayInputStream
 import java.io.ByteArrayOutputStream
 import java.io.File
@@ -172,7 +172,7 @@ object MediaCompressor {
         ExifInterface.TAG_EXPOSURE_MODE,
         ExifInterface.TAG_SENSITIVITY_TYPE,
         ExifInterface.TAG_ISO_SPEED_RATINGS,
-        ExifInterface.TAG_ISO_SPEED,
+        ExifInterface.TAG_ISO_SPEED_RATINGS,
         ExifInterface.TAG_RECOMMENDED_EXPOSURE_INDEX,
         ExifInterface.TAG_WHITE_BALANCE,
         ExifInterface.TAG_LIGHT_SOURCE,
