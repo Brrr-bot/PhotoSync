@@ -367,16 +367,28 @@ class VideoSpaceManager(private val context: Context) {
             }
         } catch (_: Exception) { null }
     }
-    /** Best-effort date from a media filename: VID-20220606-*, IMG_20230101_*, or 13-digit epoch ms. */
+    /** Best-effort date from a media filename. Prefers full timestamp (YYYYMMDD_HHMMSS),
+     *  falls back to date-only (midnight), then a 13-digit epoch-ms substring. */
     private fun parseDateFromName(name: String): Long {
-        Regex("(20\\d{2})(\\d{2})(\\d{2})").find(name)?.let { m ->
+        val stem = name.substringBeforeLast('.')
+        // Full timestamp: 20260504_141510 / 20260504-141510 → 2026-05-04 14:15:10
+        Regex("(20\\d{2})(\\d{2})(\\d{2})[_\\-](\\d{2})(\\d{2})(\\d{2})").find(stem)?.let { m ->
+            val (y, mo, d, h, mi, s) = m.destructured
+            try {
+                return java.time.LocalDateTime.of(y.toInt(), mo.toInt(), d.toInt(),
+                        h.toInt(), mi.toInt(), s.toInt())
+                    .atZone(java.time.ZoneId.systemDefault()).toInstant().toEpochMilli()
+            } catch (_: Exception) {}
+        }
+        // Date only → midnight
+        Regex("(20\\d{2})(\\d{2})(\\d{2})").find(stem)?.let { m ->
             val (y, mo, d) = m.destructured
             try {
                 return java.time.LocalDate.of(y.toInt(), mo.toInt(), d.toInt())
                     .atStartOfDay(java.time.ZoneId.systemDefault()).toInstant().toEpochMilli()
             } catch (_: Exception) {}
         }
-        name.substringBeforeLast('.').toLongOrNull()?.let {
+        stem.toLongOrNull()?.let {
             if (it in 1_000_000_000_000L..9_999_999_999_999L) return it
         }
         return 0L
@@ -403,23 +415,22 @@ class VideoSpaceManager(private val context: Context) {
      * so each video is only attempted once.
      */
     internal fun repairCompressedVideoDates() {
-        val repaired = prefs.getStringSet(KEY_VIDEO_DATES_REPAIRED, emptySet())!!.toMutableSet()
         val videos = queryVideos()
+        // Authoritative date = filename timestamp → DATE_ADDED. No permanent skip-set: the
+        // check is self-terminating because once DATE_TAKEN matches, the >24h test is false.
+        // (A buggy old build stamped DATE_TAKEN to its processing time, clustering many videos
+        // on one wrong day; this re-derives the true date from the filename / DATE_ADDED.)
         val toFix = videos.count { v ->
-            v.name !in repaired &&
-            parseDateFromName(v.name).takeIf { it > 0 }?.let { kotlin.math.abs(v.takenMs - it) > 86_400_000L } == true
+            val correct = videoCorrectDate(v)
+            correct > 0 && kotlin.math.abs(v.takenMs - correct) > 86_400_000L
         }
         if (toFix > 0) RemoteLogger.i("VideoDateRepair: $toFix videos need date fix")
         val newRepaired = mutableSetOf<String>()
 
         for (v in videos) {
-            if (v.name in repaired) continue
-            val correctMs = parseDateFromName(v.name).takeIf { it > 0 } ?: continue
+            val correctMs = videoCorrectDate(v).takeIf { it > 0 } ?: continue
             // Only repair if the stored date is wrong by more than 24 hours
-            if (kotlin.math.abs(v.takenMs - correctMs) < 86_400_000L) {
-                newRepaired.add(v.name)   // already correct — mark done
-                continue
-            }
+            if (kotlin.math.abs(v.takenMs - correctMs) < 86_400_000L) continue
             val videoUri = ContentUris.withAppendedId(MediaStore.Video.Media.EXTERNAL_CONTENT_URI, v.id)
 
             // Read compressed bytes before deleting
@@ -432,14 +443,16 @@ class VideoSpaceManager(private val context: Context) {
             val deleted = try { context.contentResolver.delete(videoUri, null, null) > 0 } catch (_: Exception) { false }
             if (!deleted) { RemoteLogger.i("VideoDateRepair: delete failed for ${v.name}"); continue }
 
-            // Re-insert as app-owned with correct date
+            // Re-insert as app-owned with correct date. DATE_MODIFIED is forced to the correct
+            // date too — it had been bumped to "today" by the rewrite, which skews gallery sort.
+            val correctSec = correctMs / 1000L
             val values = ContentValues().apply {
                 put(MediaStore.Video.Media.DISPLAY_NAME, v.name)
                 put(MediaStore.Video.Media.MIME_TYPE, "video/mp4")
                 put(MediaStore.Video.Media.RELATIVE_PATH, v.relativePath)
                 put(MediaStore.Video.Media.DATE_TAKEN, correctMs)
-                if (v.dateAddedSec > 0)    put(MediaStore.Video.Media.DATE_ADDED, v.dateAddedSec)
-                if (v.dateModifiedSec > 0) put(MediaStore.Video.Media.DATE_MODIFIED, v.dateModifiedSec)
+                put(MediaStore.Video.Media.DATE_ADDED, if (v.dateAddedSec > 0) v.dateAddedSec else correctSec)
+                put(MediaStore.Video.Media.DATE_MODIFIED, correctSec)
                 if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) put(MediaStore.Video.Media.IS_PENDING, 1)
             }
             val newUri = try {
@@ -453,18 +466,18 @@ class VideoSpaceManager(private val context: Context) {
                         put(MediaStore.Video.Media.IS_PENDING, 0)
                         put(MediaStore.Video.Media.SIZE, bytes.size.toLong())
                         put(MediaStore.Video.Media.DATE_TAKEN, correctMs)
-                        if (v.dateAddedSec > 0)    put(MediaStore.Video.Media.DATE_ADDED, v.dateAddedSec)
-                        if (v.dateModifiedSec > 0) put(MediaStore.Video.Media.DATE_MODIFIED, v.dateModifiedSec)
+                        put(MediaStore.Video.Media.DATE_ADDED, if (v.dateAddedSec > 0) v.dateAddedSec else correctSec)
+                        put(MediaStore.Video.Media.DATE_MODIFIED, correctSec)
                     }, null, null)
                     // Second update — Samsung resets dates during IS_PENDING transition.
                     context.contentResolver.update(newUri, ContentValues().apply {
                         put(MediaStore.Video.Media.DATE_TAKEN, correctMs)
-                        if (v.dateAddedSec > 0)    put(MediaStore.Video.Media.DATE_ADDED, v.dateAddedSec)
-                        if (v.dateModifiedSec > 0) put(MediaStore.Video.Media.DATE_MODIFIED, v.dateModifiedSec)
+                        put(MediaStore.Video.Media.DATE_ADDED, if (v.dateAddedSec > 0) v.dateAddedSec else correctSec)
+                        put(MediaStore.Video.Media.DATE_MODIFIED, correctSec)
                     }, null, null)
                 }
                 newRepaired.add(v.name)
-                val fixedDate = java.text.SimpleDateFormat("yyyy-MM-dd", java.util.Locale.US).format(java.util.Date(correctMs))
+                val fixedDate = java.text.SimpleDateFormat("yyyy-MM-dd HH:mm", java.util.Locale.US).format(java.util.Date(correctMs))
                 RemoteLogger.i("VideoDateRepair: fixed ${v.name} -> $fixedDate")
             } catch (e: Exception) {
                 RemoteLogger.i("VideoDateRepair: error on ${v.name}: ${e.javaClass.simpleName}: ${e.message}")
@@ -474,15 +487,17 @@ class VideoSpaceManager(private val context: Context) {
 
         if (newRepaired.isNotEmpty()) {
             RemoteLogger.i("VideoDateRepair: done, fixed ${newRepaired.size} videos")
-            repaired.addAll(newRepaired)
-            // Also mark as compressed so the main loop doesn't re-transcode repaired videos.
+            // Mark repaired videos as compressed so the main loop doesn't re-transcode them.
             val compressedNames = prefs.getStringSet(KEY_COMPRESSED_NAMES, emptySet())!!.toMutableSet()
             compressedNames.addAll(newRepaired)
-            prefs.edit()
-                .putStringSet(KEY_VIDEO_DATES_REPAIRED, repaired)
-                .putStringSet(KEY_COMPRESSED_NAMES, compressedNames)
-                .apply()
+            prefs.edit().putStringSet(KEY_COMPRESSED_NAMES, compressedNames).apply()
         }
+    }
+
+    /** Authoritative capture date for a video: filename timestamp → DATE_ADDED (sec→ms). */
+    private fun videoCorrectDate(v: VideoRow): Long {
+        parseDateFromName(v.name).takeIf { it > 0 }?.let { return it }
+        return if (v.dateAddedSec > 0) v.dateAddedSec * 1000L else 0L
     }
     companion object {
         private const val OLD_AGE_MS           = 30L * 24 * 60 * 60 * 1000
