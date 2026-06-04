@@ -97,11 +97,22 @@ class LocalImageProcessor(private val context: Context) {
                 if (diffMs > 24 * 60 * 60 * 1000L) null else filenameDateMs
             } else filenameDateMs
 
-            val effectiveDateTaken = when {
-                image.dateTaken > 0    -> image.dateTaken
-                exifDateMs != null     -> exifDateMs
+            // Authoritative capture date — what the gallery SHOULD sort by.
+            // Trust the file's own EXIF first, then the filename. We deliberately do NOT
+            // trust the existing MediaStore DATE_TAKEN here: files damaged by the old
+            // hub-side WebP conversion lost their EXIF and ended up with a null/today date,
+            // and we want to overwrite those wrong values.
+            val authoritativeDate = when {
+                exifDateMs != null         -> exifDateMs
                 safeFilenameDateMs != null -> safeFilenameDateMs
-                dateAddedMs > 0        -> dateAddedMs   // actual download/copy time
+                else                       -> 0L
+            }
+            // Value to write if a fix is needed: authoritative source, else fall back to
+            // the existing date or DATE_ADDED so we never write a zero.
+            val effectiveDateTaken = when {
+                authoritativeDate > 0  -> authoritativeDate
+                image.dateTaken > 0    -> image.dateTaken
+                dateAddedMs > 0        -> dateAddedMs
                 else                   -> 0L
             }
 
@@ -137,7 +148,11 @@ class LocalImageProcessor(private val context: Context) {
             // on devices where the camera sets ROTATE_90 for portrait but pixels are correct.
             // Rotation is still available via the manual Fix Orientation menu action.
             val needsRotation = false
-            val needsDateFix  = effectiveDateTaken > 0 && image.dateTaken == 0L
+            // Fix when DATE_TAKEN is missing OR disagrees with the authoritative date by >24h
+            // (the latter catches files wrongly stamped with "today" by old buggy builds).
+            val needsDateFix = authoritativeDate > 0 &&
+                (image.dateTaken == 0L ||
+                 Math.abs(image.dateTaken - authoritativeDate) > 24 * 60 * 60 * 1000L)
 
             when {
                 needsRotation -> {
