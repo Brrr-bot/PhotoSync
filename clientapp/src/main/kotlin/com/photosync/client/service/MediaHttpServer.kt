@@ -17,6 +17,7 @@ import java.io.InputStream
 class MediaHttpServer(
     private val mediaStore: MediaStoreHelper,
     private val cacheDir: java.io.File,
+    private val isOnMobileData: () -> Boolean = { false },
     private val onLog: ((String) -> Unit)? = null,
     private val onPendingDeletes: (() -> Unit)? = null,
     /** Called with the hub's Tailscale IP whenever a handshake carries one. */
@@ -347,7 +348,9 @@ tick(); setInterval(tick, 1500);
         if (!verifyHmacFromHeaders(session)) return unauthorized()
 
         val sinceSeconds = session.parameters["since"]?.firstOrNull()?.toLongOrNull() ?: 0L
-        val files = mediaStore.getMediaSince(sinceSeconds)
+        val allFiles = mediaStore.getMediaSince(sinceSeconds)
+        // Videos only sync over WiFi — filter them out when on mobile data
+        val files = if (isOnMobileData()) allFiles.filter { it.mimeType.startsWith("image/") } else allFiles
 
         if (sinceSeconds > 0L) {
             // Download scan — reset upload session state
