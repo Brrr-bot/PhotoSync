@@ -5,6 +5,7 @@ import com.google.gson.Gson
 import com.google.gson.reflect.TypeToken
 import com.photosync.client.media.MediaStoreHelper
 import com.photosync.client.media.ReplaceResult
+import com.photosync.client.media.WebPConverter
 import com.photosync.shared.Constants
 import com.photosync.shared.crypto.HmacAuth
 import com.photosync.shared.model.DateCorrection
@@ -15,6 +16,7 @@ import java.io.InputStream
 
 class MediaHttpServer(
     private val mediaStore: MediaStoreHelper,
+    private val cacheDir: java.io.File,
     private val onLog: ((String) -> Unit)? = null,
     private val onPendingDeletes: (() -> Unit)? = null,
     /** Called with the hub's Tailscale IP whenever a handshake carries one. */
@@ -445,7 +447,15 @@ tick(); setInterval(tick, 1500);
                 if (stateCompressionDone >= stateCompressionTotal) stateCompressionTotal++
                 stateCompressionDone++
             }
-            val result = mediaStore.replaceFile(id, mime, bytes, dateTaken)
+            // If the hub sent a JPEG, re-encode to WebP on the client (Android 13 supports
+            // ExifInterface WebP write). Copies all EXIF so nothing is lost.
+            // Falls back to the hub bytes unchanged if conversion fails or API < 31.
+            val (finalBytes, finalMime) = if (mime.startsWith("image/") && mime != "image/webp") {
+                val webp = WebPConverter.convert(bytes, cacheDir)
+                if (webp != null) Pair(webp, "image/webp") else Pair(bytes, mime)
+            } else Pair(bytes, mime)
+
+            val result = mediaStore.replaceFile(id, finalMime, finalBytes, dateTaken)
             stateCompressionLifetime++
             if (batchTotal == 0) { /* legacy: already incremented above */ }
             when (result) {
