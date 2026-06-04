@@ -224,6 +224,24 @@ class UsbStorageManager(
     }
 
     /**
+     * Opens a file for streaming (no full read into memory) — returns the InputStream and its
+     * byte length, or null if not found. Use this to serve large files (videos) without OOM.
+     * Caller owns the stream and must close it.
+     */
+    fun openFileStream(deviceName: String, displayName: String): Pair<InputStream, Long>? {
+        return try {
+            val root = DocumentFile.fromTreeUri(context, treeUri ?: return null) ?: return null
+            val folder = root.findFile(deviceName) ?: return null
+            val file = findFileAnywhere(folder, displayName) ?: return null
+            val len = file.length()
+            val stream = context.contentResolver.openInputStream(file.uri) ?: return null
+            Pair(stream, len)
+        } catch (e: Exception) {
+            null
+        }
+    }
+
+    /**
      * Overwrites an existing file on the USB drive with [bytes].
      * Used to replace an original image with its compressed version in-place.
      * Searches flat folder and date subfolders.
@@ -549,11 +567,9 @@ class UsbStorageManager(
                 val folder = root.findFile(deviceName) ?: return null
                 findFileAnywhere(folder, displayName)?.uri ?: return null
             }
-            // SAF document URIs need FileDescriptor — setDataSource(context, uri) silently fails on many OEMs
-            val pfd = context.contentResolver.openFileDescriptor(uri, "r") ?: return null
             val mmr = MediaMetadataRetriever()
             try {
-                pfd.use { mmr.setDataSource(it.fileDescriptor) }
+                mmr.setDataSource(context, uri)
                 val durationUs = (mmr.extractMetadata(MediaMetadataRetriever.METADATA_KEY_DURATION)
                     ?.toLongOrNull() ?: 0L) * 1000L
                 val frameUs = if (durationUs > 2_000_000L) 1_000_000L else 0L
