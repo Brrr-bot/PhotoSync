@@ -74,8 +74,6 @@ class ImageSpaceManager(private val context: Context) {
                 freedBytes += (originalBytes.size - webpBytes.size).toLong()
                 compressedNames.add(image.displayName)
                 compressed++
-                RemoteLogger.i("ImageSpace: ${image.displayName} " +
-                    "${originalBytes.size / 1024}KB → ${webpBytes.size / 1024}KB")
             } catch (t: Throwable) {
                 RemoteLogger.i("ImageSpace error ${image.displayName}: ${t.javaClass.simpleName}: ${t.message}")
                 skipped++
