@@ -294,9 +294,17 @@ class FileSyncer(
                         onProgress("✗ ${file.displayName}: bad read (${bytes.size}B vs phone ${phoneSize}B) — will retry")
                         continue
                     }
-                    val dateTakenMs = if (file.dateTaken > 0) file.dateTaken
-                                     else if (file.dateAdded > 0) file.dateAdded * 1000L
-                                     else 0L
+                    // Date priority: USB EXIF (read from the original on-disk file) →
+                    // phone MediaStore DATE_TAKEN → phone DATE_ADDED.
+                    // USB EXIF is the most reliable — it's the original unmodified metadata.
+                    // Phone MediaStore values can be corrupted by Samsung's IS_PENDING reset.
+                    val usbDate = usbName?.let { usbExifDates[it] } ?: 0L
+                    val dateTakenMs = when {
+                        usbDate > 0          -> usbDate
+                        file.dateTaken > 0   -> file.dateTaken
+                        file.dateAdded > 0   -> file.dateAdded * 1000L
+                        else                 -> 0L
+                    }
                     val compressedBytes = MediaCompressor.compressImage(bytes, dateTakenMs, context.cacheDir)
                     if (compressedBytes == null) {
                         // Compress returned null. Two cases:
