@@ -263,13 +263,10 @@ class MediaStoreHelper(private val context: Context) {
             null, null, null
         )?.use { c ->
             if (c.moveToFirst()) {
-                // Update extension to match the incoming MIME type so we don't get .jpg.webp
-                val rawName = c.getString(0) ?: displayName
-                displayName = when (mimeType) {
-                    "image/webp" -> rawName.replaceFirst(Regex("\\.(jpe?g|png|heic|heif)$", RegexOption.IGNORE_CASE), ".webp")
-                    "image/jpeg" -> rawName.replaceFirst(Regex("\\.(webp|png|heic|heif)$", RegexOption.IGNORE_CASE), ".jpg")
-                    else -> rawName
-                }
+                // Keep the original display name unchanged — the hub deduplicates by filename,
+                // so renaming foo.jpg → foo.webp would cause the hub to treat it as a new file
+                // and re-download it. The file bytes are WebP but the name stays foo.jpg.
+                displayName  = c.getString(0) ?: displayName
                 relativePath = c.getString(1) ?: relativePath
                 dateTaken    = c.getLong(2)
                 dateAdded    = c.getLong(3)
@@ -335,20 +332,16 @@ class MediaStoreHelper(private val context: Context) {
           catch (_: Exception) {}
 
         if (wroteBytes) {
-            // Bytes are in place — update metadata. Failures here are non-fatal; the file
-            // content is correct. Do NOT fall through to Strategy B on metadata failure.
+            // Bytes are in place. Update size and dates only — do NOT update MIME_TYPE
+            // because Samsung auto-renames foo.jpg → foo.webp when MIME_TYPE changes,
+            // which the hub would then treat as a brand-new file and re-download.
+            // The filename stays foo.jpg; the file bytes are WebP. Viewers read magic bytes.
             try {
                 context.contentResolver.update(origUri, ContentValues().apply {
                     put(MediaStore.MediaColumns.SIZE,       compressedBytes.size.toLong())
                     put(MediaStore.MediaColumns.DATE_TAKEN, effectiveDateTaken)
                     if (dateAdded > 0)    put(MediaStore.MediaColumns.DATE_ADDED, dateAdded)
                     if (dateModified > 0) put(MediaStore.MediaColumns.DATE_MODIFIED, dateModified)
-                }, null, null)
-            } catch (_: Exception) {}
-            // Update MIME_TYPE separately — Samsung may block this but it's non-fatal
-            try {
-                context.contentResolver.update(origUri, ContentValues().apply {
-                    put(MediaStore.MediaColumns.MIME_TYPE, mimeType)
                 }, null, null)
             } catch (_: Exception) {}
             markReplaced(originalId, originalId, displayName)
