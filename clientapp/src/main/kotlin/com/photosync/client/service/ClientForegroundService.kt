@@ -232,12 +232,23 @@ class ClientForegroundService : LifecycleService() {
     private suspend fun runOnHubConnect() {
         try {
             log("Hub connected — running pre-sync cleanup…")
+
+            // 1. Restore files damaged by the old hub-side WebP conversion (no EXIF, wrong
+            //    rotation, .jpg.webp double extension) from their pristine hub originals.
+            try {
+                val repair = com.photosync.client.media.GalleryRepair(this)
+                val r = repair.repair { msg -> log(msg) }
+                if (r.restored > 0 || r.failed > 0)
+                    log("Repair done: ${r.restored} restored, ${r.failed} failed, ${r.damagedRemaining} remaining")
+            } catch (t: Throwable) { log("Repair error: ${t.javaClass.simpleName}: ${t.message}") }
+
+            // 2. Fix dates/orientation on the rest from each file's own EXIF/filename.
             val processor = com.photosync.client.media.LocalImageProcessor(this)
             val fixed = processor.processUnfixed { done, total, msg ->
                 if (done % 20 == 0 || done == total) updateNotification("Cleanup: $done/$total")
             }
-            if (fixed > 0) log("Pre-sync cleanup: fixed $fixed image(s)")
-            else log("Pre-sync cleanup: all dates/EXIF OK")
+            if (fixed > 0) log("Pre-sync cleanup: fixed $fixed image date(s)")
+            else log("Pre-sync cleanup: dates OK")
             updateNotification("Ready — announcing on network")
         } catch (t: Throwable) { log("Pre-sync cleanup error: ${t.javaClass.simpleName}: ${t.message}") }
     }
@@ -424,7 +435,7 @@ class ClientForegroundService : LifecycleService() {
         private const val SYNC_INTERVAL_MS      = 5 * 60 * 1000L
         private const val LOCAL_FIX_INTERVAL_MS  = 60 * 60 * 1000L
         private const val KEY_LOCAL_FIX_VERSION  = "local_fix_version"
-        private const val LOCAL_FIX_CODE         = 10 // bump when scan logic changes to force rescan
+        private const val LOCAL_FIX_CODE         = 11 // bump when scan logic changes to force rescan
 
         private val recentLogs = ArrayDeque<String>(100)
 
