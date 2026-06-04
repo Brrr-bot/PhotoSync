@@ -7,9 +7,13 @@ import android.content.SharedPreferences
 import android.net.Uri
 import android.os.Build
 import android.provider.MediaStore
+import androidx.exifinterface.media.ExifInterface
 import com.photosync.shared.model.DateCorrection
 import com.photosync.shared.model.MediaFileInfo
+import java.io.ByteArrayInputStream
 import java.io.InputStream
+import java.text.SimpleDateFormat
+import java.util.Locale
 
 /** Result of [MediaStoreHelper.replaceFile]. */
 enum class ReplaceResult {
@@ -281,12 +285,21 @@ class MediaStoreHelper(private val context: Context) {
                            Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q
         val safeRelativePath = relativePath  // always try to preserve the exact original path
 
-        // DATE_TAKEN (ms) drives gallery sort order; prefer the hub-supplied value as it
-        // comes from EXIF on the USB copy and is the most reliable source.
+        // Read DATE_TAKEN directly from EXIF embedded in the compressed bytes.
+        // This is the most reliable source — MediaCompressor copies it from the USB original,
+        // so it bypasses any MediaStore DATE_TAKEN corruption on the phone.
+        val exifDateTaken = try {
+            val exif = ExifInterface(ByteArrayInputStream(compressedBytes))
+            val raw = exif.getAttribute(ExifInterface.TAG_DATETIME_ORIGINAL)
+                ?: exif.getAttribute(ExifInterface.TAG_DATETIME)
+            raw?.let { parseExifDateStr(it) } ?: 0L
+        } catch (_: Exception) { 0L }
+
         val effectiveDateTaken = when {
-            providedDateTaken > 0 -> providedDateTaken  // hub-supplied from USB EXIF — most reliable
+            exifDateTaken > 0     -> exifDateTaken      // from EXIF in the file — most reliable
+            providedDateTaken > 0 -> providedDateTaken  // hub-supplied fallback
             dateTaken > 0         -> dateTaken
-            dateAdded > 0         -> dateAdded * 1000L  // convert seconds → milliseconds
+            dateAdded > 0         -> dateAdded * 1000L
             else                  -> System.currentTimeMillis()
         }
 
@@ -477,6 +490,11 @@ class MediaStoreHelper(private val context: Context) {
         }
         return updated
     }
+
+    /** Parses an EXIF date string ("yyyy:MM:dd HH:mm:ss") into epoch ms. Returns 0 on failure. */
+    private fun parseExifDateStr(raw: String): Long = try {
+        SimpleDateFormat("yyyy:MM:dd HH:mm:ss", Locale.US).parse(raw.trim())?.time ?: 0L
+    } catch (_: Exception) { 0L }
 
     /** Resolves the absolute /storage path for a MediaStore URI. Null if unavailable. */
     private fun resolveRealPath(uri: Uri): String? {
