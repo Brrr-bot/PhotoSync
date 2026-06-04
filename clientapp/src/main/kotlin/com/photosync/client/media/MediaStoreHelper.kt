@@ -310,40 +310,49 @@ class MediaStoreHelper(private val context: Context) {
         }
 
         // ── Strategy A: TRUE in-place overwrite (preferred) ──────────────────────
-        // With MANAGE_EXTERNAL_STORAGE granted, we can write directly to the file
-        // path on /storage. With only MANAGE_MEDIA we try openFileDescriptor("wt")
-        // first — it works on some OEMs even without all-files access. Either way:
-        // same MediaStore ID, same display name, no insert, no delete, no "(1)".
+        // Write bytes directly to the existing file — same ID, same name, no duplicates.
+        // CRITICAL: separate byte-write from metadata-update so a metadata failure (Samsung
+        // blocks MIME_TYPE update on camera-owned files) doesn't fall through to Strategy B,
+        // which would delete the correctly-written file and re-insert as "(2)".
+        var wroteBytes = false
         try {
-            // Try direct file path write first (works with MANAGE_EXTERNAL_STORAGE)
             val realPath = resolveRealPath(origUri)
-            val wrote = if (realPath != null && Build.VERSION.SDK_INT >= Build.VERSION_CODES.R
+            wroteBytes = if (realPath != null && Build.VERSION.SDK_INT >= Build.VERSION_CODES.R
                     && android.os.Environment.isExternalStorageManager()) {
                 try {
                     java.io.FileOutputStream(java.io.File(realPath)).use { it.write(compressedBytes) }
                     true
                 } catch (_: Exception) { false }
             } else false
-            if (!wrote) {
+
+            if (!wroteBytes) {
                 context.contentResolver.openFileDescriptor(origUri, "wt")?.use { pfd ->
                     java.io.FileOutputStream(pfd.fileDescriptor).use { it.write(compressedBytes) }
-                } ?: throw IllegalStateException("openFileDescriptor returned null")
+                    wroteBytes = true
+                }
             }
-            // Update size + dates so MediaStore reflects the new file.
-            // DATE_TAKEN drives gallery sort; preserve original DATE_ADDED/MODIFIED.
-            context.contentResolver.update(origUri, ContentValues().apply {
-                put(MediaStore.MediaColumns.SIZE,       compressedBytes.size.toLong())
-                put(MediaStore.MediaColumns.MIME_TYPE,  mimeType)
-                put(MediaStore.MediaColumns.DATE_TAKEN, effectiveDateTaken)
-                if (dateAdded > 0)    put(MediaStore.MediaColumns.DATE_ADDED, dateAdded)
-                if (dateModified > 0) put(MediaStore.MediaColumns.DATE_MODIFIED, dateModified)
-            }, null, null)
-            markReplaced(originalId, originalId, displayName)  // newId == originalId for in-place
+        } catch (_: SecurityException) {}
+          catch (_: Exception) {}
+
+        if (wroteBytes) {
+            // Bytes are in place — update metadata. Failures here are non-fatal; the file
+            // content is correct. Do NOT fall through to Strategy B on metadata failure.
+            try {
+                context.contentResolver.update(origUri, ContentValues().apply {
+                    put(MediaStore.MediaColumns.SIZE,       compressedBytes.size.toLong())
+                    put(MediaStore.MediaColumns.DATE_TAKEN, effectiveDateTaken)
+                    if (dateAdded > 0)    put(MediaStore.MediaColumns.DATE_ADDED, dateAdded)
+                    if (dateModified > 0) put(MediaStore.MediaColumns.DATE_MODIFIED, dateModified)
+                }, null, null)
+            } catch (_: Exception) {}
+            // Update MIME_TYPE separately — Samsung may block this but it's non-fatal
+            try {
+                context.contentResolver.update(origUri, ContentValues().apply {
+                    put(MediaStore.MediaColumns.MIME_TYPE, mimeType)
+                }, null, null)
+            } catch (_: Exception) {}
+            markReplaced(originalId, originalId, displayName)
             return ReplaceResult.REPLACED
-        } catch (_: SecurityException) {
-            // No MANAGE_MEDIA — fall through to insert-then-delete path
-        } catch (_: Exception) {
-            // Any other failure — fall through to insert-then-delete path
         }
 
         // ── Strategy B: insert-then-delete (fallback for no MANAGE_MEDIA) ────────
