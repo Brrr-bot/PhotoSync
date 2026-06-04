@@ -42,13 +42,13 @@ class GalleryRepair(private val context: Context) {
         val port = ClientForegroundService.liveHubPort
 
         val damaged = queryDamaged()
-        val misdatedVideos = queryMisdatedVideos()
-        if (damaged.isEmpty() && misdatedVideos.isEmpty()) return Summary(0, 0, 0)
+        // Misdated videos are fixed locally by Mp4DateEditor (VideoSpaceManager) — no hub needed.
+        if (damaged.isEmpty()) return Summary(0, 0, 0)
 
         val hubFiles = try { HubFilesClient.fetchFiles(ip, port, 10_000) } catch (_: Exception) { emptyList() }
         if (hubFiles.isEmpty()) {
-            log("Repair: hub unreachable, ${damaged.size + misdatedVideos.size} file(s) deferred")
-            return Summary(0, 0, damaged.size + misdatedVideos.size)
+            log("Repair: hub unreachable, ${damaged.size} image(s) deferred")
+            return Summary(0, 0, damaged.size)
         }
         val hubByName = hubFiles.associateBy { it.displayName }
 
@@ -73,30 +73,8 @@ class GalleryRepair(private val context: Context) {
             }
         }
 
-        // ── Videos: restore originals whose DATE_TAKEN was wrongly stamped (the wrong date
-        //    is baked into the transcoded MP4's internal creation_time, so only the pristine
-        //    hub original — with the correct internal date — fixes it permanently). ──
-        if (misdatedVideos.isNotEmpty()) {
-            log("Repair: ${misdatedVideos.size} misdated video(s) — restoring originals from hub…")
-            for ((index, row) in misdatedVideos.withIndex()) {
-                val tmp = java.io.File(context.cacheDir, "vrestore_${row.id}.mp4")
-                try {
-                    val hubEntry = hubByName[row.name] ?: run { failed++; continue }
-                    // Stream the original to a temp file (no full-video ByteArray → no OOM).
-                    if (!HubFilesClient.fetchFileToFile(ip, port, hubEntry.deviceName, row.name, tmp)) {
-                        failed++; continue
-                    }
-                    if (restoreVideoFromFile(row, tmp)) {
-                        restored++
-                        log("↺ Restored video ${index + 1}/${misdatedVideos.size}: ${row.name}")
-                    } else failed++
-                } catch (_: Throwable) { failed++ }
-                finally { runCatching { tmp.delete() } }
-            }
-        }
-
         log("Repair: restored $restored, failed $failed")
-        return Summary(restored, failed, queryDamaged().size + queryMisdatedVideos().size)
+        return Summary(restored, failed, queryDamaged().size)
     }
 
     /** Deletes the damaged/misdated row and re-inserts the hub original under the clean name. */
