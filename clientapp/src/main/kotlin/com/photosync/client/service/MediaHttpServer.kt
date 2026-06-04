@@ -353,16 +353,17 @@ tick(); setInterval(tick, 1500);
         val files = if (isOnMobileData()) allFiles.filter { it.mimeType.startsWith("image/") } else allFiles
 
         if (sinceSeconds > 0L) {
-            // Download scan — reset upload session state
-            stateSessionTotal = files.size
-            stateSessionCurrent = 0
+            // Metadata scan — the hub fetches the full list to compare against USB, then
+            // requests only the missing files via /media/file with dl_index/dl_total.
+            // Do NOT set stateSessionTotal here (it's the whole library, not the upload set);
+            // handleFile sets the real total from dl_total when actual uploads begin.
             stateCurrentFile = ""
             stateCurrentBytesRead = 0L
             stateCurrentFileTotal = 0L
-            stateActive = files.isNotEmpty()
             sessionFileSizes = files.associate { it.id to it.size }
-            if (files.isNotEmpty())
-                onLog?.invoke("Hub listed ${files.size} file(s) for sync check")
+            val imgCount = files.count { it.mimeType.startsWith("image/") }
+            val vidCount = files.size - imgCount
+            onLog?.invoke("Hub checking ${files.size} files ($imgCount photos, $vidCount videos)…")
         } else {
             // since=0 happens on every sync cycle (date-check pass). Do NOT reset the
             // compression counter here — it would flash back to 0/N on every cycle.
@@ -387,11 +388,25 @@ tick(); setInterval(tick, 1500);
         val fileSize = sessionFileSizes[id] ?: 0L
         val name = mediaStore.getDisplayName(id) ?: id.toString()
 
-        // Update session state immediately so UI shows the file name at once
-        stateSessionCurrent++
+        // The hub tells us the real download set size via dl_index/dl_total, so the card
+        // shows "K / N" of files actually being uploaded — not the full library count.
+        val dlTotal = session.parameters["dl_total"]?.firstOrNull()?.toIntOrNull() ?: 0
+        val dlIndex = session.parameters["dl_index"]?.firstOrNull()?.toIntOrNull() ?: 0
+        if (dlTotal > 0) {
+            stateSessionTotal = dlTotal
+            stateSessionCurrent = dlIndex
+        } else {
+            stateSessionCurrent++
+        }
         stateCurrentFile = name
         stateCurrentFileTotal = fileSize
         stateCurrentBytesRead = 0L
+        stateActive = true
+
+        val sizeStr = if (fileSize >= 1_048_576L) "%.1fMB".format(fileSize / 1_048_576.0)
+                      else "${fileSize / 1024}KB"
+        val counter = if (dlTotal > 0) " ($dlIndex/$dlTotal)" else ""
+        onLog?.invoke("⬆ Uploading$counter $name · $sizeStr")
 
         val countingStream = CountingInputStream(stream, fileSize)
         return newChunkedResponse(Response.Status.OK, mimeType, countingStream)
