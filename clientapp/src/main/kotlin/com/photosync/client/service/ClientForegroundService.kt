@@ -200,11 +200,12 @@ class ClientForegroundService : LifecycleService() {
                 // Single compression step on the phone (no lossy hub pass first).
                 try {
                     val ism = com.photosync.client.media.ImageSpaceManager(this@ClientForegroundService)
-                    val is2 = ism.process { done, total, _ ->
-                        if (done % 10 == 0 || done == total) updateNotification("WebP: $done/$total")
+                    val is2 = ism.process { done, total, name ->
+                        log("◇ WebP $done/$total: $name")
+                        updateNotification("Compressing to WebP: $done/$total")
                     }
                     if (is2.compressed > 0)
-                        log("ImageSpace: ${is2.compressed} → WebP, ${is2.freedBytes / 1_048_576}MB freed (${is2.skipped} skipped)")
+                        log("✓ WebP done — ${is2.compressed} converted, ${is2.freedBytes / 1_048_576}MB freed (${is2.skipped} skipped)")
                 } catch (t: Throwable) { log("ImageSpace error: ${t.javaClass.simpleName}: ${t.message}") }
 
                 updateNotification("Ready — announcing on network")
