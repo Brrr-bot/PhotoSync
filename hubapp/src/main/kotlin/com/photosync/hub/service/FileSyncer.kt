@@ -93,6 +93,24 @@ class FileSyncer(
         val existing = usbStorage.getExistingFileNames(clientInfo.deviceName)
         val alreadyCompressed = syncState.getCompressedFiles(clientInfo.deviceName).toMutableSet()
 
+        // Build a set of lowercase stems for every VIDEO on USB (e.g. "vid_20231201_143210"
+        // from "VID_20231201_143210.mp4").  Any phone image whose stem matches one of these
+        // is a VideoSpaceManager poster — the JPEG thumbnail that replaced the video locally.
+        // We must NEVER upload posters to USB (the full video is already there) and must
+        // NEVER compress-and-replace them back to the phone, or we get an infinite loop.
+        val videoExtensions = setOf("mp4", "mov", "avi", "mkv", "3gp", "webm", "m4v")
+        val usbVideoStems = existing
+            .filter { it.substringAfterLast('.').lowercase() in videoExtensions }
+            .map    { it.substringBeforeLast('.').lowercase() }
+            .toHashSet()
+
+        fun isPosterImage(displayName: String): Boolean {
+            if (usbVideoStems.isEmpty()) return false
+            val ext = displayName.substringAfterLast('.').lowercase()
+            if (ext !in setOf("jpg", "jpeg", "webp", "png")) return false
+            return displayName.substringBeforeLast('.').lowercase() in usbVideoStems
+        }
+
         // Always fetch the complete file list from the phone (since=1 so client treats
         // this as a download scan, not a compression scan).  The list is just metadata
         // (filenames / sizes — no bytes), so fetching all files every cycle is cheap.
@@ -111,6 +129,7 @@ class FileSyncer(
         // ── Integrity check: find every phone file not yet on USB ─────────────
         val toProcess = allFiles.filter { file ->
             val strippedName = stripReplacementSuffixes(file.displayName)
+            !isPosterImage(file.displayName) &&
             file.displayName !in existing &&
             file.displayName.substringBeforeLast('.') !in existing &&
             strippedName !in existing
@@ -222,7 +241,7 @@ class FileSyncer(
         // Uses a single batch write for the compressed-cache to avoid the async
         // race condition that plagued per-file markCompressed() calls.
         val legacyCompressed = syncState.getCompressedFiles(clientInfo.deviceName).toMutableSet()
-        val phoneImages = allFiles.filter { MediaCompressor.canCompress(it.mimeType) }
+        val phoneImages = allFiles.filter { MediaCompressor.canCompress(it.mimeType) && !isPosterImage(it.displayName) }
         val sizeThreshold = 600_000L
         // Cache is authoritative: once we've attempted compression, do NOT retry
         // even if the file still looks big on the phone. Reasons it can stay big:
