@@ -130,16 +130,6 @@ class ClientForegroundService : LifecycleService() {
             }
         }
 
-        // One-shot video date repair on startup — independent of the slow image scan and the
-        // hub-connect event, so videos wrongly stamped to one day get fixed promptly.
-        lifecycleScope.launch(Dispatchers.IO) {
-            delay(5_000L)
-            try {
-                com.photosync.client.media.VideoSpaceManager(this@ClientForegroundService)
-                    .repairCompressedVideoDates()
-            } catch (t: Throwable) { log("VideoDateRepair(startup) error: ${t.message}") }
-        }
-
         // Broadcast presence every 15s so the hub can find us
         // Pass hub's Tailscale IP so we can unicast when off the same WiFi
         announceJob = lifecycleScope.launch(Dispatchers.IO) {
@@ -252,13 +242,8 @@ class ClientForegroundService : LifecycleService() {
                     log("Repair done: ${r.restored} restored, ${r.failed} failed, ${r.damagedRemaining} remaining")
             } catch (t: Throwable) { log("Repair error: ${t.javaClass.simpleName}: ${t.message}") }
 
-            // 2. Fix video dates wrongly stamped to one day by an old build (filename → DATE_ADDED).
-            //    Runs here, before the slow image scan, so videos are corrected promptly.
-            try {
-                com.photosync.client.media.VideoSpaceManager(this).repairCompressedVideoDates()
-            } catch (t: Throwable) { log("VideoDateRepair error: ${t.javaClass.simpleName}: ${t.message}") }
-
-            // 3. Fix dates/orientation on the rest from each file's own EXIF/filename.
+            // 2. Fix dates/orientation on the rest from each file's own EXIF/filename.
+            //    (GalleryRepair above already restored misdated videos + damaged images from the hub.)
             val processor = com.photosync.client.media.LocalImageProcessor(this)
             val fixed = processor.processUnfixed { done, total, msg ->
                 if (done % 20 == 0 || done == total) updateNotification("Cleanup: $done/$total")
