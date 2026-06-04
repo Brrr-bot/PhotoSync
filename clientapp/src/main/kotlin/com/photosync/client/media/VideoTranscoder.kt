@@ -22,18 +22,15 @@ import java.util.concurrent.CountDownLatch
 import java.util.concurrent.TimeUnit
 
 /**
- * Transcodes a video to a smaller, lower-quality MP4 using Media3 Transformer.
- * Downscales to ~480p and caps the bitrate so recent clips stay watchable but small.
+ * Transcodes a video to H.265 HEVC at 720p/2 Mbps using Media3 Transformer.
+ * H.265 delivers significantly better quality-per-bit than H.264 at the same bitrate,
+ * so 720p/2 Mbps HEVC looks noticeably better than the old 480p/1.5 Mbps H.264.
  */
 object VideoTranscoder {
 
-    /**
-     * Transcodes [inputUri] into [outputPath] (an app-private temp file path).
-     * Blocks the calling (background) thread until done. Returns true on success.
-     */
     @OptIn(UnstableApi::class)
     fun transcode(context: Context, inputUri: Uri, outputPath: String,
-                  targetHeight: Int = 480, bitrate: Int = 1_500_000): Boolean {
+                  targetHeight: Int = 720, bitrate: Int = 2_000_000): Boolean {
         val latch = CountDownLatch(1)
         val ok = java.util.concurrent.atomic.AtomicBoolean(false)
 
@@ -46,7 +43,7 @@ object VideoTranscoder {
                     .build()
 
                 val transformer = Transformer.Builder(context)
-                    .setVideoMimeType(MimeTypes.VIDEO_H264)
+                    .setVideoMimeType(MimeTypes.VIDEO_H265)
                     .setAudioMimeType(MimeTypes.AUDIO_AAC)
                     .setEncoderFactory(encoderFactory)
                     .addListener(object : Transformer.Listener {
@@ -61,7 +58,7 @@ object VideoTranscoder {
 
                 val effects: List<Effect> = listOf(Presentation.createForHeight(targetHeight))
                 val edited = EditedMediaItem.Builder(MediaItem.fromUri(inputUri))
-                    .setEffects(Effects(/* audioProcessors = */ emptyList(), /* videoEffects = */ effects))
+                    .setEffects(Effects(emptyList(), effects))
                     .build()
 
                 transformer.start(edited, outputPath)
@@ -70,7 +67,6 @@ object VideoTranscoder {
             }
         }
 
-        // Cap how long any single video may take.
         if (!latch.await(15, TimeUnit.MINUTES)) return false
         return ok.get()
     }
