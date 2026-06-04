@@ -419,6 +419,7 @@ class VideoSpaceManager(private val context: Context) {
      */
     internal fun repairCompressedVideoDates() {
         val videos = queryVideos()
+        RemoteLogger.i("VideoDateRepair: scanning ${videos.size} videos")
         // The wrong date is baked into the MP4's internal creation_time (mvhd/tkhd/mdhd) by an
         // old transcode. Samsung reads that and overrides DATE_TAKEN, so a MediaStore-only fix
         // reverts. We edit the atoms in place (fast, local, no network) then sync MediaStore +
@@ -433,15 +434,15 @@ class VideoSpaceManager(private val context: Context) {
         for (v in videos) {
             val correctMs = videoCorrectDate(v).takeIf { it > 0 } ?: continue
             if (kotlin.math.abs(v.takenMs - correctMs) < 86_400_000L) continue
-            val path = v.dataPath ?: continue
+            val uri = ContentUris.withAppendedId(MediaStore.Video.Media.EXTERNAL_CONTENT_URI, v.id)
 
-            // 1. Patch the MP4's internal creation_time/modification_time atoms.
-            val patched = try { Mp4DateEditor.setCreationTime(path, correctMs) } catch (_: Throwable) { false }
+            // 1. Patch the MP4's internal creation_time/modification_time atoms (via the URI's fd).
+            val patched = try { Mp4DateEditor.setCreationTime(context, uri, correctMs) } catch (_: Throwable) { false }
             if (!patched) { RemoteLogger.i("VideoDateRepair: atom patch failed for ${v.name}"); continue }
 
             // 2. Sync MediaStore date so the gallery updates immediately.
             val correctSec = correctMs / 1000L
-            val uri = ContentUris.withAppendedId(MediaStore.Video.Media.EXTERNAL_CONTENT_URI, v.id)
+            val path = v.dataPath
             try {
                 context.contentResolver.update(uri, ContentValues().apply {
                     put(MediaStore.Video.Media.DATE_TAKEN, correctMs)
@@ -451,7 +452,7 @@ class VideoSpaceManager(private val context: Context) {
             } catch (_: Exception) {}
 
             // 3. Rescan the file so the media DB re-reads the now-correct internal date.
-            try {
+            if (path != null) try {
                 android.media.MediaScannerConnection.scanFile(context, arrayOf(path), arrayOf("video/mp4"), null)
             } catch (_: Exception) {}
 
