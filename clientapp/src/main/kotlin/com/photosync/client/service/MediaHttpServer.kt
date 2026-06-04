@@ -412,7 +412,7 @@ tick(); setInterval(tick, 1500);
 
         val contentLength = session.headers["content-length"]?.toLongOrNull() ?: 0L
         if (contentLength <= 0L)           return badRequest("Missing or zero Content-Length")
-        if (contentLength > 50 * 1024 * 1024L) return badRequest("Body too large (max 50 MB)")
+        if (contentLength > 100 * 1024 * 1024L) return badRequest("Body too large (max 100 MB)")
 
         // readNBytes(int) requires API 33+; use a manual loop so we work on Android 10-12.
         // Catch Throwable so OutOfMemoryError can't escape to the thread boundary.
