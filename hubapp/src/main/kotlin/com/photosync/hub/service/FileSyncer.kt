@@ -158,50 +158,15 @@ class FileSyncer(
                     onTransferProgress?.invoke(
                         index + 1, toProcess.size, file.displayName, file.size, remaining
                     )
+                    onProgress("⬇ ${index + 1}/${toProcess.size}: ${file.displayName} (${file.size / 1024}KB)")
 
-                    if (MediaCompressor.canCompress(file.mimeType)) {
-                        // ── Image: download → save to USB → compress → replace ──────────
-                        val bytes = downloadBytes(clientInfo.ip, file.id)
-                        usbStorage.writeFile(clientInfo.deviceName, file, ByteArrayInputStream(bytes))
-                        onFileBytes?.invoke(bytes.size.toLong(), bytes.size.toLong(), file.displayName)
-
-                        if (file.displayName !in alreadyCompressed &&
-                            stripReplacementSuffixes(file.displayName) !in alreadyCompressed) {
-                            val dateTakenMs = if (file.dateTaken > 0) file.dateTaken
-                                             else if (file.dateAdded > 0) file.dateAdded * 1000L
-                                             else 0L
-                            val compressed = MediaCompressor.compressImage(bytes, dateTakenMs, context.cacheDir)
-                            if (compressed != null) {
-                                // Signal compression phase to hub UI (fileSizeBytes = 0 is the flag)
-                                onTransferProgress?.invoke(
-                                    index + 1, toProcess.size, file.displayName, 0L, 0L
-                                )
-                                val ok = postReplace(clientInfo.ip, file.id, MediaCompressor.OUTPUT_MIME_TYPE, compressed, dateTakenMs)
-                                if (ok) {
-                                    syncState.markCompressed(clientInfo.deviceName, file.displayName)
-                                    alreadyCompressed += file.displayName
-                                    onProgress(
-                                        "✓ ${file.displayName}  " +
-                                        "${bytes.size / 1024}KB → ${compressed.size / 1024}KB"
-                                    )
-                                } else {
-                                    onProgress("✓ ${file.displayName} saved (replace failed — will retry)")
-                                }
-                            } else {
-                                // Already at optimal size — no point replacing
-                                syncState.markCompressed(clientInfo.deviceName, file.displayName)
-                                alreadyCompressed += file.displayName
-                                onProgress("✓ ${file.displayName} saved (already optimal)")
-                            }
-                        } else {
-                            onProgress("✓ ${file.displayName} saved")
-                        }
-
-                    } else {
-                        // ── Video / other: stream directly to USB, no compression ────────
-                        downloadStream(clientInfo.ip, file.id, clientInfo.deviceName, file)
-                        onProgress("✓ ${file.displayName} saved")
-                    }
+                    // Backup only — stream every file straight to USB. No hub-side compression:
+                    // the hub is lossy JPEG, so compressing here then re-compressing to WebP on
+                    // the phone would lose quality twice. The phone does the single WebP pass.
+                    // dl_index/dl_total drive the phone's upload-progress card.
+                    downloadStream(clientInfo.ip, file.id, clientInfo.deviceName, file,
+                        index + 1, toProcess.size)
+                    onProgress("✓ ${index + 1}/${toProcess.size}: ${file.displayName} saved to USB")
 
                     syncState.markDownloaded(clientInfo.deviceName, file.id)
                     synced++
@@ -262,14 +227,18 @@ class FileSyncer(
         }
     }
 
-    /** Streams a file directly to USB — never loads it fully into memory. Use for videos. */
-    private fun downloadStream(ip: String, id: Long, deviceName: String, file: MediaFileInfo) {
+    /** Streams a file directly to USB — never loads it fully into memory.
+     *  dlIndex/dlTotal are forwarded to the phone so its upload card shows real progress. */
+    private fun downloadStream(ip: String, id: Long, deviceName: String, file: MediaFileInfo,
+                               dlIndex: Int = 0, dlTotal: Int = 0) {
         val timestamp = System.currentTimeMillis()
         val payload = HmacAuth.buildPayload(timestamp, myDeviceName)
         val signature = HmacAuth.sign(payload)
 
+        val urlBuilder = StringBuilder("http://$ip:${Constants.CLIENT_PORT}${Constants.PATH_MEDIA_FILE}?id=$id")
+        if (dlTotal > 0) urlBuilder.append("&dl_index=$dlIndex&dl_total=$dlTotal")
         val request = Request.Builder()
-            .url("http://$ip:${Constants.CLIENT_PORT}${Constants.PATH_MEDIA_FILE}?id=$id")
+            .url(urlBuilder.toString())
             .get()
             .addHeader(Constants.HEADER_HMAC, signature)
             .addHeader(Constants.HEADER_TIMESTAMP, timestamp.toString())
