@@ -267,14 +267,19 @@ class MediaStoreHelper(private val context: Context) {
             }
         }
 
-        // MediaStore.Images.Media only allows inserts into DCIM/ or Pictures/.
-        // Files from WhatsApp, Telegram, screenshots etc. live under Android/media/...
-        // or other restricted paths — inserting there throws "Primary directory X not allowed".
-        // Preserve the original path when it's allowed; otherwise fall back to DCIM/.
-        val safeRelativePath = if (
-            relativePath.startsWith("DCIM", ignoreCase = true) ||
-            relativePath.startsWith("Pictures", ignoreCase = true)
-        ) relativePath else "DCIM/"
+        // Pick the right MediaStore collection and a path it will accept.
+        //
+        // Images collection only allows DCIM/ and Pictures/.
+        // Screenshots live in DCIM/Screenshots/ → Images ✓
+        // WhatsApp/Telegram live in Pictures/... → Images ✓
+        // Files in Download/, Movies/, or anything else go to the Downloads collection
+        // (API 29+) so they stay in their original folder instead of being forced to DCIM/.
+        // Videos always use the Video collection regardless of path.
+        val inImageCollection = relativePath.startsWith("DCIM", ignoreCase = true) ||
+                                relativePath.startsWith("Pictures", ignoreCase = true)
+        val useDownloads = !isVideo && !inImageCollection &&
+                           Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q
+        val safeRelativePath = relativePath  // always try to preserve the exact original path
 
         // DATE_TAKEN (ms) drives gallery sort order; prefer the hub-supplied value as it
         // comes from EXIF on the USB copy and is the most reliable source.
@@ -347,9 +352,18 @@ class MediaStoreHelper(private val context: Context) {
             if (dateAdded > 0) put(MediaStore.MediaColumns.DATE_ADDED, dateAdded)
         }
 
-        val collection = if (isVideo) MediaStore.Video.Media.EXTERNAL_CONTENT_URI
-                        else MediaStore.Images.Media.EXTERNAL_CONTENT_URI
-        val newUri = context.contentResolver.insert(collection, newValues)
+        val collection = when {
+            isVideo -> MediaStore.Video.Media.EXTERNAL_CONTENT_URI
+            useDownloads -> MediaStore.Downloads.EXTERNAL_CONTENT_URI
+            else -> MediaStore.Images.Media.EXTERNAL_CONTENT_URI
+        }
+        // If inserting into Images collection and path isn't allowed, fall back to DCIM/
+        val insertValues = if (!isVideo && !useDownloads && !inImageCollection) {
+            ContentValues(newValues).apply {
+                put(MediaStore.MediaColumns.RELATIVE_PATH, "DCIM/")
+            }
+        } else newValues
+        val newUri = context.contentResolver.insert(collection, insertValues)
             ?: throw IllegalStateException("MediaStore insert failed")
 
         try {
