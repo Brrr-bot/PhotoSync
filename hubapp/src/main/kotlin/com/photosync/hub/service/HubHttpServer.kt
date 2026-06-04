@@ -15,6 +15,7 @@ class HubHttpServer(
     private val onFilesRequest: ((limit: Int) -> List<com.photosync.hub.storage.UsbStorageManager.HubFileEntry>)? = null,
     private val onThumbRequest: ((device: String, name: String) -> ByteArray?)? = null,
     private val onFileRequest: ((device: String, name: String) -> ByteArray?)? = null,
+    private val onFileStreamRequest: ((device: String, name: String) -> Pair<java.io.InputStream, Long>?)? = null,
     private val onDeleteRequest: ((device: String, name: String) -> Boolean)? = null
 ) : NanoHTTPD(Constants.HUB_HTTP_PORT) {
 
@@ -144,8 +145,6 @@ class HubHttpServer(
             ?: return newFixedLengthResponse(Response.Status.BAD_REQUEST, MIME_PLAINTEXT, "Missing device")
         val name = session.parameters["name"]?.firstOrNull()
             ?: return newFixedLengthResponse(Response.Status.BAD_REQUEST, MIME_PLAINTEXT, "Missing name")
-        val bytes = onFileRequest?.invoke(device, name)
-            ?: return newFixedLengthResponse(Response.Status.NOT_FOUND, MIME_PLAINTEXT, "Not found")
         val mime = when (name.substringAfterLast('.').lowercase()) {
             "jpg", "jpeg" -> "image/jpeg"
             "png"  -> "image/png"
@@ -154,6 +153,13 @@ class HubHttpServer(
             "mov"  -> "video/quicktime"
             else   -> "application/octet-stream"
         }
+        // Stream from USB without loading the whole file into memory (large videos OOM'd).
+        onFileStreamRequest?.invoke(device, name)?.let { (stream, len) ->
+            return newFixedLengthResponse(Response.Status.OK, mime, stream, len)
+        }
+        // Fallback to in-memory read (small files / older path)
+        val bytes = onFileRequest?.invoke(device, name)
+            ?: return newFixedLengthResponse(Response.Status.NOT_FOUND, MIME_PLAINTEXT, "Not found")
         return newFixedLengthResponse(Response.Status.OK, mime,
             java.io.ByteArrayInputStream(bytes), bytes.size.toLong())
     }
