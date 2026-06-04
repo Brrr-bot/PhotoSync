@@ -246,7 +246,7 @@ class MediaStoreHelper(private val context: Context) {
         val isVideo = origUri.toString().contains("video", ignoreCase = true)
 
         // Read metadata from the original so the new file looks identical in the gallery
-        var displayName  = "img_${originalId}.jpg"
+        var displayName  = "img_${originalId}.${if (mimeType == "image/webp") "webp" else "jpg"}"
         var relativePath = "DCIM/"
         var dateTaken    = 0L   // milliseconds
         var dateAdded    = 0L   // seconds
@@ -263,7 +263,13 @@ class MediaStoreHelper(private val context: Context) {
             null, null, null
         )?.use { c ->
             if (c.moveToFirst()) {
-                displayName  = c.getString(0) ?: displayName
+                // Update extension to match the incoming MIME type so we don't get .jpg.webp
+                val rawName = c.getString(0) ?: displayName
+                displayName = when (mimeType) {
+                    "image/webp" -> rawName.replaceFirst(Regex("\\.(jpe?g|png|heic|heif)$", RegexOption.IGNORE_CASE), ".webp")
+                    "image/jpeg" -> rawName.replaceFirst(Regex("\\.(webp|png|heic|heif)$", RegexOption.IGNORE_CASE), ".jpg")
+                    else -> rawName
+                }
                 relativePath = c.getString(1) ?: relativePath
                 dateTaken    = c.getLong(2)
                 dateAdded    = c.getLong(3)
