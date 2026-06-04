@@ -130,6 +130,16 @@ class ClientForegroundService : LifecycleService() {
             }
         }
 
+        // One-shot video date repair on startup — patches MP4 internal dates locally (no hub
+        // needed), so videos wrongly stamped to one day get their real date back promptly.
+        lifecycleScope.launch(Dispatchers.IO) {
+            delay(5_000L)
+            try {
+                com.photosync.client.media.VideoSpaceManager(this@ClientForegroundService)
+                    .repairCompressedVideoDates()
+            } catch (t: Throwable) { log("VideoDateRepair(startup) error: ${t.message}") }
+        }
+
         // Broadcast presence every 15s so the hub can find us
         // Pass hub's Tailscale IP so we can unicast when off the same WiFi
         announceJob = lifecycleScope.launch(Dispatchers.IO) {
