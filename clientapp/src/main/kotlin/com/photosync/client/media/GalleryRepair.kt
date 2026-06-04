@@ -80,8 +80,11 @@ class GalleryRepair(private val context: Context) {
     private fun restoreOriginal(row: Row, originalName: String, bytes: ByteArray): Boolean {
         val oldUri = ContentUris.withAppendedId(MediaStore.Images.Media.EXTERNAL_CONTENT_URI, row.id)
 
-        // Correct date comes from the original's own EXIF (the whole point of restoring).
+        // Correct date: original's EXIF → filename timestamp → DATE_ADDED.
+        // Filename fallback matters because some hub originals (WhatsApp, edited images)
+        // carry no EXIF date, but their name does (e.g. 20250610_093115.jpg).
         val dateMs = readExifDate(bytes).takeIf { it > 0 }
+            ?: parseDateFromName(originalName).takeIf { it > 0 }
             ?: (row.dateAddedSec * 1000L)
         val dateSec = if (dateMs > 0) dateMs / 1000L else 0L
 
@@ -127,6 +130,28 @@ class GalleryRepair(private val context: Context) {
             runCatching { context.contentResolver.delete(newUri, null, null) }
             false
         }
+    }
+
+    /** Date from filename: YYYYMMDD_HHMMSS (full) → YYYYMMDD (midnight) → 13-digit epoch ms. */
+    private fun parseDateFromName(name: String): Long {
+        val stem = name.substringBeforeLast('.')
+        Regex("(20\\d{2})(\\d{2})(\\d{2})[_\\-](\\d{2})(\\d{2})(\\d{2})").find(stem)?.let { m ->
+            val (y, mo, d, h, mi, s) = m.destructured
+            try {
+                return java.time.LocalDateTime.of(y.toInt(), mo.toInt(), d.toInt(),
+                        h.toInt(), mi.toInt(), s.toInt())
+                    .atZone(java.time.ZoneId.systemDefault()).toInstant().toEpochMilli()
+            } catch (_: Exception) {}
+        }
+        Regex("(20\\d{2})(\\d{2})(\\d{2})").find(stem)?.let { m ->
+            val (y, mo, d) = m.destructured
+            try {
+                return java.time.LocalDate.of(y.toInt(), mo.toInt(), d.toInt())
+                    .atStartOfDay(java.time.ZoneId.systemDefault()).toInstant().toEpochMilli()
+            } catch (_: Exception) {}
+        }
+        stem.toLongOrNull()?.let { if (it in 1_000_000_000_000L..9_999_999_999_999L) return it }
+        return 0L
     }
 
     private fun readExifDate(bytes: ByteArray): Long {
