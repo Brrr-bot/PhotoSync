@@ -157,7 +157,7 @@ class FileSyncer(
                                 onTransferProgress?.invoke(
                                     index + 1, toProcess.size, file.displayName, 0L, 0L
                                 )
-                                val ok = postReplace(clientInfo.ip, file.id, "image/jpeg", compressed, dateTakenMs)
+                                val ok = postReplace(clientInfo.ip, file.id, MediaCompressor.OUTPUT_MIME_TYPE, compressed, dateTakenMs)
                                 if (ok) {
                                     syncState.markCompressed(clientInfo.deviceName, file.displayName)
                                     alreadyCompressed += file.displayName
@@ -295,7 +295,7 @@ class FileSyncer(
                         }
                         continue
                     }
-                    val ok = postReplace(clientInfo.ip, file.id, "image/jpeg", compressedBytes, dateTakenMs,
+                    val ok = postReplace(clientInfo.ip, file.id, MediaCompressor.OUTPUT_MIME_TYPE, compressedBytes, dateTakenMs,
                         batchIndex = index + 1, batchTotal = toCompress.size)
                     if (ok) {
                         compressed++
@@ -479,7 +479,7 @@ class FileSyncer(
 
     companion object {
         /** Bump this to force a one-time clear of the compressed-files cache on all devices. */
-        private const val COMPRESS_RESET_V = 5
+        private const val COMPRESS_RESET_V = 6  // bump → forces re-compression of all images to WebP
     }
 
     /**
