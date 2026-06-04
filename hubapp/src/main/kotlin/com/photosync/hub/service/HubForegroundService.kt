@@ -97,6 +97,7 @@ class HubForegroundService : LifecycleService() {
             onFilesRequest  = { limit -> usbStorage.listRecentFiles(limit) },
             onThumbRequest  = { device, name -> usbStorage.thumbnailForFile(device, name) },
             onFileRequest   = { device, name -> usbStorage.readAnyFile(device, name) },
+            onFileStreamRequest = { device, name -> usbStorage.openFileStream(device, name) },
             onDeleteRequest = { device, name ->
                 val ok = usbStorage.deleteFile(device, name)
                 if (ok) log("Deleted from hub: $device/$name")
