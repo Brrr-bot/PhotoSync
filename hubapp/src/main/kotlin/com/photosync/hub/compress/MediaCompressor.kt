@@ -3,6 +3,7 @@ package com.photosync.hub.compress
 import android.graphics.Bitmap
 import android.graphics.BitmapFactory
 import android.media.ExifInterface
+import android.os.Build
 import android.util.Log
 import java.io.ByteArrayInputStream
 import java.io.ByteArrayOutputStream
@@ -14,7 +15,10 @@ import java.util.Locale
 object MediaCompressor {
 
     private const val MAX_DIMENSION = 1920
-    private const val JPEG_QUALITY = 82
+    private const val WEBP_QUALITY  = 85
+
+    /** MIME type of the compressed output — callers must send this to /replace. */
+    const val OUTPUT_MIME_TYPE = "image/webp"
 
     /**
      * Compresses [originalBytes] to JPEG at [JPEG_QUALITY]%, scaled so the longest side is
@@ -63,7 +67,10 @@ object MediaCompressor {
             val scaled = scaleTo(sampled, MAX_DIMENSION)
 
             val out = ByteArrayOutputStream()
-            scaled.compress(Bitmap.CompressFormat.JPEG, JPEG_QUALITY, out)
+            val fmt = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R)
+                @Suppress("DEPRECATION") Bitmap.CompressFormat.WEBP_LOSSY
+                else @Suppress("DEPRECATION") Bitmap.CompressFormat.WEBP
+            scaled.compress(fmt, WEBP_QUALITY, out)
 
             // Recycle intermediate bitmaps
             if (scaled !== sampled) scaled.recycle()
@@ -77,7 +84,7 @@ object MediaCompressor {
                 stampExifDate(compressed, dateTakenMs, orientation, cacheDir)?.let { return it }
             }
             compressed
-        } catch (e: Throwable) {   // incl. OutOfMemoryError on pathological images
+        } catch (e: Exception) {
             Log.w("MediaCompressor", "compress threw: ${e.javaClass.simpleName}: ${e.message}")
             null
         }
@@ -96,7 +103,9 @@ object MediaCompressor {
     ): ByteArray? {
         var tmp: File? = null
         return try {
-            tmp = File.createTempFile("ps_exif_", ".jpg", cacheDir)
+            // ExifInterface can write to WebP on API 31+; skip EXIF stamp on older.
+            if (Build.VERSION.SDK_INT < Build.VERSION_CODES.S) return null
+            tmp = File.createTempFile("ps_exif_", ".webp", cacheDir)
             tmp.writeBytes(jpegBytes)
             ExifInterface(tmp.absolutePath).apply {
                 if (dateTakenMs > 0L) {
@@ -123,12 +132,9 @@ object MediaCompressor {
             mimeType != "image/gif" && mimeType != "image/svg+xml"
 
     private fun calcSampleSize(width: Int, height: Int, target: Int): Int {
-        // Downsample until the long side is within 2x of target AND total decoded pixels
-        // stay under ~16M px. Using long-side / total-pixel limits (not an AND of both
-        // dims) avoids a full-res decode + OOM on extreme aspect ratios.
         var size = 1
-        val w = width.toLong(); val h = height.toLong()
-        while (maxOf(w, h) / size > target.toLong() * 2 || (w / size) * (h / size) > 16_000_000L) size *= 2
+        var w = width; var h = height
+        while (w / 2 >= target && h / 2 >= target) { w /= 2; h /= 2; size *= 2 }
         return size
     }
 
