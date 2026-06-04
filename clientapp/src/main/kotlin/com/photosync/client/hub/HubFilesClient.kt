@@ -63,6 +63,27 @@ object HubFilesClient {
         } catch (_: Exception) { null }
     }
 
+    /**
+     * Streams [name] from the hub directly into [dest] without buffering the whole file in
+     * memory — use for large files (videos) to avoid OutOfMemoryError. Returns true on success.
+     */
+    fun fetchFileToFile(ip: String, port: Int, device: String, name: String, dest: java.io.File): Boolean {
+        return try {
+            val enc = java.net.URLEncoder.encode(name, "UTF-8")
+            val devEnc = java.net.URLEncoder.encode(device, "UTF-8")
+            val conn = openGet(
+                "http://$ip:$port${Constants.PATH_HUB_FILE}?device=$devEnc&name=$enc",
+                timeoutMs = 120_000
+            )
+            if (conn.responseCode != 200) { conn.disconnect(); return false }
+            conn.inputStream.use { input ->
+                dest.outputStream().use { out -> input.copyTo(out, 64 * 1024) }
+            }
+            conn.disconnect()
+            dest.length() > 0
+        } catch (_: Exception) { false }
+    }
+
     /** Deletes [name] for [device] from the hub's USB drive. Returns true if the hub confirmed deletion. */
     fun deleteFile(ip: String, port: Int, device: String, name: String): Boolean {
         return try {
