@@ -424,16 +424,23 @@ class VideoSpaceManager(private val context: Context) {
         // old transcode. Samsung reads that and overrides DATE_TAKEN, so a MediaStore-only fix
         // reverts. We edit the atoms in place (fast, local, no network) then sync MediaStore +
         // rescan. Self-terminating: once the internal date is correct, the >24h test is false.
+        // 2h tolerance: a filename timestamp (YYYYMMDD_HHMMSS) matches a correctly-dated video
+        // to within seconds, so anything off by >2h is genuinely wrong. (24h was too loose — it
+        // missed videos shifted by ~1 day, e.g. a June-1 clip stamped June-2.)
+        // Only repair videos whose filename carries an exact timestamp — that's the reliable
+        // source. We never overwrite a date based on DATE_ADDED (which can legitimately differ
+        // from capture time for downloaded clips), avoiding false "fixes".
+        val tolMs = 2 * 60 * 60 * 1000L
         val toFix = videos.count { v ->
-            val correct = videoCorrectDate(v)
-            correct > 0 && kotlin.math.abs(v.takenMs - correct) > 86_400_000L
+            val correct = parseDateFromName(v.name)
+            correct > 0 && kotlin.math.abs(v.takenMs - correct) > tolMs
         }
         if (toFix > 0) RemoteLogger.i("VideoDateRepair: $toFix videos need date fix")
         val newRepaired = mutableSetOf<String>()
 
         for (v in videos) {
-            val correctMs = videoCorrectDate(v).takeIf { it > 0 } ?: continue
-            if (kotlin.math.abs(v.takenMs - correctMs) < 86_400_000L) continue
+            val correctMs = parseDateFromName(v.name).takeIf { it > 0 } ?: continue
+            if (kotlin.math.abs(v.takenMs - correctMs) < tolMs) continue
             val uri = ContentUris.withAppendedId(MediaStore.Video.Media.EXTERNAL_CONTENT_URI, v.id)
 
             // 1. Patch the MP4's internal creation_time/modification_time atoms (via the URI's fd).
