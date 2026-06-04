@@ -48,6 +48,10 @@ class VideoSpaceManager(private val context: Context) {
 
         repairPosterDates(hubByName)
 
+        // Clear stale H.264 compressed-names so everything is re-transcoded to H.265.
+        if (prefs.getInt(KEY_COMPRESS_VERSION, 0) < COMPRESS_VERSION) {
+            prefs.edit().remove(KEY_COMPRESSED_NAMES).putInt(KEY_COMPRESS_VERSION, COMPRESS_VERSION).apply()
+        }
         // Legacy ID-based tracking (pre-v316) — still respected to avoid re-compressing.
         val compressedIds = prefs.getStringSet(KEY_COMPRESSED, emptySet())!!
         // Name-based tracking (v316+) — used going forward.
@@ -471,5 +475,7 @@ class VideoSpaceManager(private val context: Context) {
         private const val KEY_REPAIRED         = "poster_repaired_set"
         internal const val KEY_POSTER_NAMES    = "poster_names"
         private const val KEY_VIDEO_DATES_REPAIRED = "compressed_video_dates_repaired"
+        private const val KEY_COMPRESS_VERSION  = "compress_version"
+        private const val COMPRESS_VERSION      = 2  // bump → clears compressed_video_names so H.265 re-runs
     }
 }
