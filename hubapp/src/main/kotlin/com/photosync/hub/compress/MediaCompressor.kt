@@ -113,12 +113,6 @@ object MediaCompressor {
                     setAttribute(ExifInterface.TAG_DATETIME_DIGITIZED,  dateStr)
                 }
 
-                // BitmapFactory.decodeByteArray auto-applies EXIF orientation into pixels,
-                // so the output WebP pixels are already correctly oriented. Copying the
-                // original orientation tag would cause viewers to double-rotate. Clear it.
-                setAttribute(ExifInterface.TAG_ORIENTATION,
-                    ExifInterface.ORIENTATION_NORMAL.toString())
-
                 saveAttributes()
             }
             tmp.readBytes()
