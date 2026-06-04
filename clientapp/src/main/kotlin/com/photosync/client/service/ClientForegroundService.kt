@@ -81,6 +81,7 @@ class ClientForegroundService : LifecycleService() {
         server = MediaHttpServer(
             MediaStoreHelper(this),
             cacheDir = cacheDir,
+            isOnMobileData = { isMobileData() },
             onLog = { msg ->
                 log(msg)
                 updateNotification(msg)
@@ -138,15 +139,19 @@ class ClientForegroundService : LifecycleService() {
 
         // Listen for hub announcements so we know hub's IP for phone-initiated sync
         hubDiscovery = HubDiscovery { ip, port, deviceName, tailscaleIp ->
+            val wasStale = System.currentTimeMillis() - liveHubIpUpdatedAt > 90_000L
             liveHubIp = ip
             liveHubIpUpdatedAt = System.currentTimeMillis()
             liveHubPort = port
             liveHubName = deviceName
             if (tailscaleIp != null) {
-                // Persist hub's Tailscale IP so remote sync works after leaving local network
                 getSharedPreferences(PREFS_NAME, MODE_PRIVATE).edit()
                     .putString(KEY_HUB_TAILSCALE_IP, tailscaleIp).apply()
                 liveHubTailscaleIp = tailscaleIp
+            }
+            // Hub just reconnected — run cleanup immediately so gallery is tidy before sync
+            if (wasStale) {
+                lifecycleScope.launch(Dispatchers.IO) { runOnHubConnect() }
             }
         }.also { discovery ->
             hubDiscoveryJob = lifecycleScope.launch(Dispatchers.IO) {
@@ -190,6 +195,18 @@ class ClientForegroundService : LifecycleService() {
                     }
                 }
                 if (fixed > 0) log("LocalFix complete — fixed $fixed image(s)")
+
+                // Compress backed-up images to WebP — hub already confirmed these on USB.
+                // Single compression step on the phone (no lossy hub pass first).
+                try {
+                    val ism = com.photosync.client.media.ImageSpaceManager(this@ClientForegroundService)
+                    val is2 = ism.process { done, total, _ ->
+                        if (done % 10 == 0 || done == total) updateNotification("WebP: $done/$total")
+                    }
+                    if (is2.compressed > 0)
+                        log("ImageSpace: ${is2.compressed} → WebP, ${is2.freedBytes / 1_048_576}MB freed (${is2.skipped} skipped)")
+                } catch (t: Throwable) { log("ImageSpace error: ${t.javaClass.simpleName}: ${t.message}") }
+
                 updateNotification("Ready — announcing on network")
                 delay(LOCAL_FIX_INTERVAL_MS)
             }
@@ -205,6 +222,23 @@ class ClientForegroundService : LifecycleService() {
         }
 
         updateNotification("Ready — announcing on network")
+    }
+
+    /**
+     * Runs immediately when the hub reconnects (was stale > 90s).
+     * Fixes dates and EXIF before any sync so the gallery is tidy before files move.
+     */
+    private suspend fun runOnHubConnect() {
+        try {
+            log("Hub connected — running pre-sync cleanup…")
+            val processor = com.photosync.client.media.LocalImageProcessor(this)
+            val fixed = processor.processUnfixed { done, total, msg ->
+                if (done % 20 == 0 || done == total) updateNotification("Cleanup: $done/$total")
+            }
+            if (fixed > 0) log("Pre-sync cleanup: fixed $fixed image(s)")
+            else log("Pre-sync cleanup: all dates/EXIF OK")
+            updateNotification("Ready — announcing on network")
+        } catch (t: Throwable) { log("Pre-sync cleanup error: ${t.javaClass.simpleName}: ${t.message}") }
     }
 
     private fun postTailscaleNotification() {
