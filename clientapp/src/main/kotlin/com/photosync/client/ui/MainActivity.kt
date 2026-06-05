@@ -288,8 +288,8 @@ class MainActivity : AppCompatActivity() {
                     cleanupDuplicateOriginals()
                     true
                 }
-                R.id.action_fix_orientation -> {
-                    fixOrientationNow()
+                R.id.action_run_fix -> {
+                    runFixSequenceNow()
                     true
                 }
                 R.id.action_battery -> {
@@ -539,40 +539,58 @@ class MainActivity : AppCompatActivity() {
         }.start()
     }
 
-    // ── Fix orientation / dates ───────────────────────────────────────────────
+    // ── Fix & check sequence ──────────────────────────────────────────────────
 
-    private fun fixOrientationNow() {
-        Toast.makeText(this, "Scanning images for orientation/date issues…", Toast.LENGTH_SHORT).show()
+    /**
+     * Manually triggers the full repair+compression sequence:
+     *  1. LocalFix — date/orientation scan with hub-date fallback (clears cache for full rescan)
+     *  2. ImageSpace — WebP compression for hub-confirmed images
+     *  3. VideoDateRepair — MP4 atom date fix
+     */
+    private fun runFixSequenceNow() {
+        Toast.makeText(this, "Running fix & check sequence…", Toast.LENGTH_SHORT).show()
         Thread {
-            val processor = LocalImageProcessor(this)
-            processor.clearCheckedIds()  // force full rescan when triggered manually
-            val fixed = processor.processUnfixed { done, total, msg ->
-                if (done % 20 == 0 || done == total) {
-                    runOnUiThread { Toast.makeText(this, "$done/$total: $msg", Toast.LENGTH_SHORT).show() }
-                }
-            }
-            runOnUiThread {
-                Toast.makeText(this,
-                    if (fixed > 0) "Fixed $fixed image(s) — orientation and dates corrected"
-                    else "All images already correct",
-                    Toast.LENGTH_LONG).show()
-            }
-            // Also run the video space pass (replace old videos with posters, compress recent).
-            try {
-                val vsm = com.photosync.client.media.VideoSpaceManager(this)
-                val vs = vsm.process { done, total, _ ->
-                    if (done % 3 == 0 || done == total) runOnUiThread {
-                        Toast.makeText(this, "Video space: $done/$total", Toast.LENGTH_SHORT).show()
+            // 1. Fetch hub files for date fallback
+            val ip   = effectiveHubIp()
+            val port = ClientForegroundService.liveHubPort
+            val hubFiles = if (ip != null) {
+                try { HubFilesClient.fetchFiles(ip, port, limit = 5000) }
+                catch (_: Exception) { emptyList() }
+            } else emptyList()
+
+            val hubNote = if (hubFiles.isNotEmpty()) " (${hubFiles.size} hub files)" else " (hub offline)"
+
+            // 2. LocalFix — force full rescan
+            val processor = com.photosync.client.media.LocalImageProcessor(this)
+            processor.clearCheckedIds()
+            val fixed = processor.processUnfixed(
+                hubFiles = hubFiles,
+                onProgress = { done, total, _ ->
+                    if (done % 50 == 0 || done == total) {
+                        runOnUiThread { Toast.makeText(this, "LocalFix $done/$total", Toast.LENGTH_SHORT).show() }
                     }
                 }
-                runOnUiThread {
-                    Toast.makeText(this,
-                        "Videos: ${vs.thumbed} → poster, ${vs.compressed} compressed, " +
-                        "${vs.freedBytes / 1_048_576}MB freed (${vs.skipped} skipped)",
-                        Toast.LENGTH_LONG).show()
-                }
-            } catch (t: Throwable) {
-                runOnUiThread { Toast.makeText(this, "Video space error: ${t.message}", Toast.LENGTH_LONG).show() }
+            )
+
+            // 3. ImageSpace — WebP compress hub-confirmed images
+            val compSummary = try {
+                com.photosync.client.media.ImageSpaceManager(this).process()
+            } catch (_: Exception) { null }
+
+            // 4. VideoDateRepair
+            try {
+                com.photosync.client.media.VideoSpaceManager(this).repairCompressedVideoDates()
+            } catch (_: Exception) {}
+
+            runOnUiThread {
+                val sb = StringBuilder()
+                sb.append("Fix sequence done$hubNote\n")
+                if (fixed > 0) sb.append("• $fixed date/orientation fixed\n")
+                else sb.append("• Dates OK\n")
+                if (compSummary != null && compSummary.compressed > 0)
+                    sb.append("• ${compSummary.compressed} compressed to WebP (${compSummary.freedBytes / 1_048_576}MB freed)\n")
+                else sb.append("• No new images to compress\n")
+                Toast.makeText(this, sb.toString().trim(), Toast.LENGTH_LONG).show()
             }
         }.start()
     }
@@ -609,54 +627,33 @@ class MainActivity : AppCompatActivity() {
     }
 
     private fun loadHubThumbnails() {
-        // 1) Instantly show the last-known 5 thumbnails from the disk cache — no blank cards,
-        //    no waiting for the network. They stay until a newer file replaces one.
-        val cardPrefs = getSharedPreferences("hub_card", MODE_PRIVATE)
-        val lastKeys = cardPrefs.getString("last5", "")!!.split("\n").filter { it.isNotBlank() }
-        lastKeys.forEachIndexed { i, key ->
-            if (i < hubThumbViews.size) ThumbnailCache.get(this, key)?.let { hubThumbViews[i]?.setImageBitmap(it) }
-        }
-        if (lastKeys.isNotEmpty()) tvHubFilesStatus.visibility = View.GONE
-
         val ip   = effectiveHubIp()
         val port = ClientForegroundService.liveHubPort
         if (ip == null) {
-            if (lastKeys.isEmpty()) {
-                tvHubFilesStatus.text = "Connect to hub to see recent files"
-                tvHubFilesStatus.visibility = View.VISIBLE
-            }
+            tvHubFilesStatus.text = "Connect to hub to see recent files"
+            tvHubFilesStatus.visibility = View.VISIBLE
             return
         }
-        if (ip == thumbsLoadedForIp) return   // file list already refreshed for this hub this session
-
+        if (ip == thumbsLoadedForIp) return   // already loaded for this hub
+        tvHubFilesStatus.text = "Loading…"
+        tvHubFilesStatus.visibility = View.VISIBLE
         Thread {
             val files = HubFilesClient.fetchFiles(ip, port, limit = 5)
             runOnUiThread {
                 if (files.isEmpty()) {
-                    if (lastKeys.isEmpty()) {
-                        tvHubFilesStatus.text = "No files on hub yet"
-                        pollHandler.postDelayed({ loadHubThumbnails() }, 15_000L)
-                    }
+                    tvHubFilesStatus.text = "No files on hub yet"
+                    // Retry after 15s — hub cache may still be warming after a restart
+                    pollHandler.postDelayed({ loadHubThumbnails() }, 15_000L)
                 } else {
                     thumbsLoadedForIp = ip
                     tvHubFilesStatus.visibility = View.GONE
                 }
             }
-            val keys = ArrayList<String>()
             files.take(5).forEachIndexed { i, entry ->
-                val key = "${entry.deviceName}/${entry.displayName}"
-                keys.add(key)
-                // Cached → use it; only download thumbnails for files we haven't seen before.
-                val cached = ThumbnailCache.get(this, key)
-                if (cached != null) {
-                    runOnUiThread { hubThumbViews[i]?.setImageBitmap(cached) }
-                } else {
-                    val bytes = HubFilesClient.fetchThumbnail(ip, port, entry.deviceName, entry.displayName)
-                    val bmp = bytes?.let { ThumbnailCache.put(this, key, it) }
-                    runOnUiThread { if (bmp != null) hubThumbViews[i]?.setImageBitmap(bmp) }
-                }
+                val bytes = HubFilesClient.fetchThumbnail(ip, port, entry.deviceName, entry.displayName)
+                val bmp = bytes?.let { BitmapFactory.decodeByteArray(it, 0, it.size) }
+                runOnUiThread { if (bmp != null) hubThumbViews[i]?.setImageBitmap(bmp) }
             }
-            if (keys.isNotEmpty()) cardPrefs.edit().putString("last5", keys.joinToString("\n")).apply()
         }.start()
     }
 
@@ -666,12 +663,10 @@ class MainActivity : AppCompatActivity() {
         Toast.makeText(this, "Checking for updates…", Toast.LENGTH_SHORT).show()
         Thread {
             val checker = UpdateChecker(this)
-            checker.checkAndNotify()
+            val status = checker.checkManual()
             checker.checkTimesheetUpdate()
             runOnUiThread {
-                Toast.makeText(this,
-                    "Update check complete — you'll get a notification if a new version is available",
-                    Toast.LENGTH_LONG).show()
+                Toast.makeText(this, status, Toast.LENGTH_LONG).show()
             }
         }.start()
     }
