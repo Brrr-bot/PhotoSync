@@ -240,7 +240,11 @@ class LocalImageProcessor(private val context: Context) {
             if (image.id.toString() !in ownedIds) continue
             if (image.dateTaken > 0) continue          // already correct
             val date = parseDateFromFilename(image.displayName) ?: continue
-            if (stampFileDate(image.id, date)) fixed++
+            // Owned files are WebP bytes stored in .jpg-named files. Using the IS_PENDING trick
+            // here triggers a Samsung media rescan; Samsung reads the file as JPEG (based on MIME),
+            // finds no JPEG EXIF date in the WebP content, and resets DATE_TAKEN to today.
+            // Direct update works because the app owns these files — no IS_PENDING needed.
+            if (tryUpdateDateTaken(image.id, date)) fixed++
         }
         return fixed
     }
