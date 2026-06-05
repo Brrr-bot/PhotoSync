@@ -451,17 +451,26 @@ class LocalImageProcessor(private val context: Context) {
     private fun stampExif(jpegBytes: ByteArray, dateTakenMs: Long): ByteArray? {
         var tmp: File? = null
         return try {
-            // Use the correct extension so ExifInterface handles the format properly.
-            // WebP bytes: RIFF....WEBP → use .webp so API 31+ ExifInterface writes a WebP EXIF chunk.
-            // JPEG bytes: FFD8FF → use .jpg.
+            // If the bytes are actually WebP (RIFF....WEBP magic) but the MediaStore row has
+            // MIME_TYPE=image/jpeg, Samsung's scanner ignores the WebP EXIF and resets DATE_TAKEN.
+            // Fix: decode WebP → re-encode as JPEG 92% so the file and MIME agree, then stamp
+            // JPEG EXIF. This is only needed for WebP-in-JPEG rows with no original EXIF date.
             val isWebP = jpegBytes.size >= 12 &&
                 jpegBytes[0] == 'R'.code.toByte() && jpegBytes[1] == 'I'.code.toByte() &&
                 jpegBytes[2] == 'F'.code.toByte() && jpegBytes[3] == 'F'.code.toByte() &&
                 jpegBytes[8] == 'W'.code.toByte() && jpegBytes[9] == 'E'.code.toByte() &&
                 jpegBytes[10] == 'B'.code.toByte() && jpegBytes[11] == 'P'.code.toByte()
-            val ext = if (isWebP) ".webp" else ".jpg"
-            tmp = File.createTempFile("ps_fix_", ext, context.cacheDir)
-            tmp.writeBytes(jpegBytes)
+            val srcBytes = if (isWebP) {
+                val bmp = android.graphics.BitmapFactory.decodeByteArray(jpegBytes, 0, jpegBytes.size)
+                if (bmp != null) {
+                    val out = java.io.ByteArrayOutputStream()
+                    bmp.compress(android.graphics.Bitmap.CompressFormat.JPEG, 92, out)
+                    bmp.recycle()
+                    out.toByteArray()
+                } else jpegBytes
+            } else jpegBytes
+            tmp = File.createTempFile("ps_fix_", ".jpg", context.cacheDir)
+            tmp.writeBytes(srcBytes)
             ExifInterface(tmp.absolutePath).apply {
                 setAttribute(ExifInterface.TAG_ORIENTATION,
                     ExifInterface.ORIENTATION_NORMAL.toString())
