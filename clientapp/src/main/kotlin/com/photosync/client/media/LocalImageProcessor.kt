@@ -266,46 +266,29 @@ class LocalImageProcessor(private val context: Context) {
             if (image.dateTaken > 0 &&
                 Math.abs(image.dateTaken - date) <= 24 * 60 * 60 * 1000L) continue
 
-            // Strategy 1: IS_PENDING trick + ContentValues update (fast path for owned rows).
-            // Strategy 2: Direct file-path ExifInterface write (requires MANAGE_EXTERNAL_STORAGE,
-            //             bypasses ContentResolver ownership check, stamps EXIF so Samsung
-            //             reads it on rescan and can't reset DATE_TAKEN).
-            // Strategy 3: Plain ContentValues DATE_TAKEN update (last resort).
-            val uri = android.content.ContentUris.withAppendedId(
-                android.provider.MediaStore.Images.Media.EXTERNAL_CONTENT_URI, image.id)
-            val stamped = stampFileDate(image.id, date)
-            if (stamped) {
-                fixed++
+            // For owned files: use fast ContentValues-only update first (app owns the row
+            // so MANAGE_MEDIA makes this reliable). Only fall back to byte-write stamp for
+            // files that have NO EXIF date — those need the date baked into the file so
+            // Samsung can't reset it on the next media rescan.
+            val hasExifDate = parseDateFromFilename(image.displayName) != null ||
+                try {
+                    val uri2 = android.content.ContentUris.withAppendedId(
+                        android.provider.MediaStore.Images.Media.EXTERNAL_CONTENT_URI, image.id)
+                    context.contentResolver.openInputStream(uri2)?.use { ins ->
+                        val bytes = ins.readBytes()
+                        val exif = ExifInterface(ByteArrayInputStream(bytes))
+                        exif.getAttribute(ExifInterface.TAG_DATETIME_ORIGINAL) != null ||
+                        exif.getAttribute(ExifInterface.TAG_DATETIME) != null
+                    } ?: false
+                } catch (_: Exception) { false }
+
+            if (hasExifDate) {
+                // EXIF carries the date — just update MediaStore; Samsung will keep it from EXIF.
+                if (tryUpdateDateTaken(image.id, date)) fixed++
             } else {
-                // Try writing EXIF directly via the absolute file path with MANAGE_EXTERNAL_STORAGE.
-                val absPath = "/storage/emulated/0/${image.relativePath.trimEnd('/')}/${image.displayName}"
-                val fileFixed = try {
-                    val f = java.io.File(absPath)
-                    if (f.exists() && f.canWrite()) {
-                        val fmt = java.text.SimpleDateFormat("yyyy:MM:dd HH:mm:ss", java.util.Locale.US)
-                            .format(java.util.Date(date))
-                        val exif = android.media.ExifInterface(absPath)
-                        exif.setAttribute(android.media.ExifInterface.TAG_DATETIME_ORIGINAL, fmt)
-                        exif.setAttribute(android.media.ExifInterface.TAG_DATETIME, fmt)
-                        exif.saveAttributes()
-                        // Also update MediaStore so gallery reflects it immediately.
-                        context.contentResolver.update(uri, android.content.ContentValues().apply {
-                            put(android.provider.MediaStore.MediaColumns.DATE_TAKEN, date)
-                        }, null, null)
-                        com.photosync.client.util.RemoteLogger.i(
-                            "LocalFix: EXIF stamped via path for ${image.displayName} → ${java.util.Date(date)}")
-                        true
-                    } else {
-                        com.photosync.client.util.RemoteLogger.i(
-                            "LocalFix: path not writable for ${image.displayName} (exists=${f.exists()} write=${f.canWrite()})")
-                        false
-                    }
-                } catch (e: Exception) {
-                    com.photosync.client.util.RemoteLogger.i(
-                        "LocalFix: path EXIF failed for ${image.displayName}: ${e.javaClass.simpleName}: ${e.message}")
-                    false
-                }
-                if (fileFixed || tryUpdateDateTaken(image.id, date)) fixed++
+                // No EXIF date — stamp it into the file so Samsung reads it on rescan.
+                if (stampFileDate(image.id, date)) fixed++
+                else if (tryUpdateDateTaken(image.id, date)) fixed++
             }
         }
         return fixed
