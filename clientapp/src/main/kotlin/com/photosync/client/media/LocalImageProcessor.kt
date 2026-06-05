@@ -182,29 +182,51 @@ class LocalImageProcessor(private val context: Context) {
                 }
 
                 needsDateFix -> {
-                    // Use IS_PENDING trick: re-hide → stamp EXIF → publish with DATE_TAKEN.
-                    // Falls back to direct update, then last resort: delete+reinsert to take
-                    // MediaStore row ownership (needed for media-scanner-inserted rows where
-                    // both IS_PENDING and ContentValues updates are rejected).
-                    val stamped = stampFileDate(image.id, effectiveDateTaken)
+                    // For files with no EXIF date (authoritativeDate came from hub/filename only),
+                    // Samsung can reset DATE_TAKEN on every rescan because there's nothing in the
+                    // file itself to anchor the date. We must bake the date into the file's EXIF.
+                    //
+                    // Strategy A: IS_PENDING trick — only works if this app owns the MediaStore row.
+                    // Strategy B: Direct file-path write via MANAGE_EXTERNAL_STORAGE — works on any
+                    //             file; also converts WebP-in-JPEG to real JPEG so Samsung reads
+                    //             JPEG EXIF from a MIME=image/jpeg row and keeps DATE_TAKEN.
+                    // Strategy C: ContentValues DATE_TAKEN update — last resort; Samsung may reset.
                     var dateFixed = false
-                    if (stamped) {
-                        onProgress?.invoke(done, total, "Date fixed: ${image.displayName}")
-                        fixed++; dateFixed = true
-                    } else if (tryUpdateDateTaken(image.id, effectiveDateTaken)) {
-                        onProgress?.invoke(done, total, "Date updated: ${image.displayName}")
-                        fixed++; dateFixed = true
-                    } else if (authoritativeDate > 0 && image.dateTaken == 0L) {
-                        // Both strategies failed and date is completely missing — take ownership
-                        // via delete+reinsert so the app owns the new row and DATE_TAKEN sticks.
-                        if (reinsertWithDate(image.id, image.mimeType, image.relativePath,
-                                image.displayName, effectiveDateTaken)) {
-                            onProgress?.invoke(done, total, "Date reinserted: ${image.displayName}")
-                            fixed++; dateFixed = true
+
+                    // Try Strategy A first (fast, in-place).
+                    if (stampFileDate(image.id, effectiveDateTaken)) {
+                        // stampFileDate only truly "baked" the date if it wrote file bytes (Strategy A
+                        // IS_PENDING path). Verify by checking if the file now has an EXIF date; if not,
+                        // fall through to Strategy B which is guaranteed to write bytes.
+                        val hasExifNow = try {
+                            val uri2 = android.content.ContentUris.withAppendedId(
+                                android.provider.MediaStore.Images.Media.EXTERNAL_CONTENT_URI, image.id)
+                            context.contentResolver.openInputStream(uri2)?.use { ins ->
+                                val b = ins.readBytes()
+                                val ex = ExifInterface(ByteArrayInputStream(b))
+                                ex.getAttribute(ExifInterface.TAG_DATETIME_ORIGINAL) != null
+                            } ?: false
+                        } catch (_: Exception) { false }
+                        if (hasExifNow) { dateFixed = true }
+                    }
+
+                    // Strategy B: write JPEG bytes with EXIF directly to the file path.
+                    if (!dateFixed) {
+                        val absPath = "/storage/emulated/0/${image.relativePath.trimEnd('/')}/${image.displayName}"
+                        dateFixed = writeJpegWithExifToPath(absPath, image.id, effectiveDateTaken)
+                        if (dateFixed) {
+                            onProgress?.invoke(done, total, "Date baked: ${image.displayName}")
                         }
                     }
-                    // Only mark checked on success — if all strategies failed (e.g. hub was
-                    // offline so authoritativeDate came from hub and may change), retry next run.
+
+                    // Strategy C: plain ContentValues update (Samsung may still reset, but better than nothing).
+                    if (!dateFixed && tryUpdateDateTaken(image.id, effectiveDateTaken)) {
+                        onProgress?.invoke(done, total, "Date updated: ${image.displayName}")
+                        dateFixed = true
+                    }
+
+                    if (dateFixed) fixed++
+                    // Only mark checked on success — retry next run if all strategies failed.
                     if (dateFixed || authoritativeDate == 0L) markChecked(image.id)
                 }
 
@@ -316,6 +338,62 @@ class LocalImageProcessor(private val context: Context) {
             }
         }
         return fixed
+    }
+
+    /**
+     * Writes proper JPEG bytes with EXIF date directly to [absPath] using Java IO
+     * (bypasses ContentResolver ownership — requires MANAGE_EXTERNAL_STORAGE).
+     * If the file contains WebP bytes, decodes to bitmap and re-encodes as JPEG first
+     * so Samsung reads JPEG EXIF from a MIME=image/jpeg row and keeps DATE_TAKEN.
+     * Triggers a MediaStore rescan after writing so DATE_TAKEN is set immediately.
+     */
+    private fun writeJpegWithExifToPath(absPath: String, id: Long, dateTakenMs: Long): Boolean {
+        return try {
+            val f = java.io.File(absPath)
+            if (!f.exists()) return false
+            val src = f.readBytes()
+            if (src.isEmpty()) return false
+
+            // Detect WebP magic bytes (RIFF....WEBP)
+            val isWebP = src.size >= 12 &&
+                src[0] == 'R'.code.toByte() && src[1] == 'I'.code.toByte() &&
+                src[2] == 'F'.code.toByte() && src[3] == 'F'.code.toByte() &&
+                src[8] == 'W'.code.toByte() && src[9] == 'E'.code.toByte() &&
+                src[10] == 'B'.code.toByte() && src[11] == 'P'.code.toByte()
+
+            val jpegBytes = if (isWebP) {
+                // Decode WebP → encode JPEG 92% so MIME=image/jpeg and bytes agree.
+                val bmp = android.graphics.BitmapFactory.decodeByteArray(src, 0, src.size)
+                    ?: return false
+                val baos = java.io.ByteArrayOutputStream()
+                bmp.compress(android.graphics.Bitmap.CompressFormat.JPEG, 92, baos)
+                bmp.recycle()
+                baos.toByteArray()
+            } else src
+
+            // Stamp EXIF date into the JPEG bytes.
+            val stamped = stampExif(jpegBytes, dateTakenMs) ?: jpegBytes
+
+            // Write directly to the file (MANAGE_EXTERNAL_STORAGE required).
+            f.writeBytes(stamped)
+
+            // Update MediaStore DATE_TAKEN and trigger rescan so Samsung re-reads the EXIF.
+            val uri = android.content.ContentUris.withAppendedId(
+                android.provider.MediaStore.Images.Media.EXTERNAL_CONTENT_URI, id)
+            context.contentResolver.update(uri, android.content.ContentValues().apply {
+                put(android.provider.MediaStore.MediaColumns.DATE_TAKEN, dateTakenMs)
+                put(android.provider.MediaStore.MediaColumns.DATE_MODIFIED, dateTakenMs / 1000L)
+            }, null, null)
+            android.media.MediaScannerConnection.scanFile(
+                context, arrayOf(absPath), arrayOf("image/jpeg"), null)
+            com.photosync.client.util.RemoteLogger.i(
+                "LocalFix: wrote JPEG+EXIF via path for ${f.name} date=${java.util.Date(dateTakenMs)}")
+            true
+        } catch (e: Exception) {
+            com.photosync.client.util.RemoteLogger.i(
+                "LocalFix: path write failed for $absPath: ${e.javaClass.simpleName}: ${e.message}")
+            false
+        }
     }
 
     /** Like stampFileDate but uses the caller-supplied [bytes] instead of reading from disk.
