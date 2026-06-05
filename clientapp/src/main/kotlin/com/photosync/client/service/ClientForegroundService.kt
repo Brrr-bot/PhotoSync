@@ -130,8 +130,9 @@ class ClientForegroundService : LifecycleService() {
             }
         }
 
-        // One-shot video date repair on startup — patches MP4 internal dates locally (no hub
-        // needed), so videos wrongly stamped to one day get their real date back promptly.
+        // Video date repair runs as the first step inside VideoSpaceManager.process(),
+        // which is now called in the hourly localFixJob. Also run it once at startup
+        // (before the hub is available) so MP4 internal dates are patched immediately.
         lifecycleScope.launch(Dispatchers.IO) {
             delay(5_000L)
             try {
@@ -217,6 +218,18 @@ class ClientForegroundService : LifecycleService() {
                     if (is2.compressed > 0)
                         log("✓ WebP done — ${is2.compressed} converted, ${is2.freedBytes / 1_048_576}MB freed (${is2.skipped} skipped)")
                 } catch (t: Throwable) { log("ImageSpace error: ${t.javaClass.simpleName}: ${t.message}") }
+
+                // Compress / posterise videos — same hub-confirmed safety check as images.
+                // Only runs when hub is reachable (VideoSpaceManager checks live hub IP).
+                try {
+                    val vsm = com.photosync.client.media.VideoSpaceManager(this@ClientForegroundService)
+                    val vs = vsm.process { done, total, name ->
+                        log("▶ VideoSpace $done/$total: $name")
+                        updateNotification("Video space: $done/$total")
+                    }
+                    if (vs.thumbed > 0 || vs.compressed > 0)
+                        log("✓ VideoSpace done — ${vs.thumbed} posterised, ${vs.compressed} compressed, ${vs.freedBytes / 1_048_576}MB freed (${vs.skipped} skipped)")
+                } catch (t: Throwable) { log("VideoSpace error: ${t.javaClass.simpleName}: ${t.message}") }
 
                 updateNotification("Ready — announcing on network")
                 delay(LOCAL_FIX_INTERVAL_MS)
