@@ -187,22 +187,25 @@ class LocalImageProcessor(private val context: Context) {
                     // MediaStore row ownership (needed for media-scanner-inserted rows where
                     // both IS_PENDING and ContentValues updates are rejected).
                     val stamped = stampFileDate(image.id, effectiveDateTaken)
+                    var dateFixed = false
                     if (stamped) {
                         onProgress?.invoke(done, total, "Date fixed: ${image.displayName}")
-                        fixed++
+                        fixed++; dateFixed = true
                     } else if (tryUpdateDateTaken(image.id, effectiveDateTaken)) {
                         onProgress?.invoke(done, total, "Date updated: ${image.displayName}")
-                        fixed++
+                        fixed++; dateFixed = true
                     } else if (authoritativeDate > 0 && image.dateTaken == 0L) {
                         // Both strategies failed and date is completely missing — take ownership
                         // via delete+reinsert so the app owns the new row and DATE_TAKEN sticks.
                         if (reinsertWithDate(image.id, image.mimeType, image.relativePath,
                                 image.displayName, effectiveDateTaken)) {
                             onProgress?.invoke(done, total, "Date reinserted: ${image.displayName}")
-                            fixed++
+                            fixed++; dateFixed = true
                         }
                     }
-                    markChecked(image.id)
+                    // Only mark checked on success — if all strategies failed (e.g. hub was
+                    // offline so authoritativeDate came from hub and may change), retry next run.
+                    if (dateFixed || authoritativeDate == 0L) markChecked(image.id)
                 }
 
                 else -> markChecked(image.id)
