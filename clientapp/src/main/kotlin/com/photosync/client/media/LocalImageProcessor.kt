@@ -8,6 +8,7 @@ import android.graphics.BitmapFactory
 import android.graphics.Matrix
 import android.media.ExifInterface
 import android.provider.MediaStore
+import com.photosync.client.hub.HubFileEntry
 import com.photosync.client.util.RemoteLogger
 import com.photosync.shared.model.MediaFileInfo
 import java.io.ByteArrayInputStream
@@ -43,7 +44,10 @@ class LocalImageProcessor(private val context: Context) {
 
     // ── Public API ────────────────────────────────────────────────────────────
 
-    fun processUnfixed(onProgress: ((done: Int, total: Int, msg: String) -> Unit)? = null): Int {
+    fun processUnfixed(
+        onProgress: ((done: Int, total: Int, msg: String) -> Unit)? = null,
+        hubFiles: List<HubFileEntry> = emptyList()
+    ): Int {
         val checkedIds  = prefs.getStringSet(KEY_CHECKED, emptySet())!!
         val replacedIds = compressionPrefs.getStringSet("replaced_original_ids", emptySet())!!
         val newIds      = compressionPrefs.getStringSet("compressed_new_ids", emptySet())!!
@@ -53,6 +57,8 @@ class LocalImageProcessor(private val context: Context) {
             image.id.toString() !in skipIds &&
             !image.displayName.contains("(1)", ignoreCase = false)  // never touch replacement copies
         }
+
+        val hubByName = hubFiles.associateBy { it.displayName }
 
         val total = images.size
         if (total == 0) return 0
@@ -98,14 +104,13 @@ class LocalImageProcessor(private val context: Context) {
             } else filenameDateMs
 
             // Authoritative capture date — what the gallery SHOULD sort by.
-            // Trust the file's own EXIF first, then the filename. We deliberately do NOT
-            // trust the existing MediaStore DATE_TAKEN here: files damaged by the old
-            // hub-side WebP conversion lost their EXIF and ended up with a null/today date,
-            // and we want to overwrite those wrong values.
+            // Trust the file's own EXIF first, then the filename, then the hub's
+            // lastModifiedMs for files with no date in EXIF or name (e.g. screenshots
+            // with descriptive names like "michael and his bicycle.jpg").
             val authoritativeDate = when {
                 exifDateMs != null         -> exifDateMs
                 safeFilenameDateMs != null -> safeFilenameDateMs
-                else                       -> 0L
+                else -> hubByName[image.displayName]?.lastModifiedMs?.takeIf { it > 0 } ?: 0L
             }
             // Value to write if a fix is needed: authoritative source, else fall back to
             // the existing date or DATE_ADDED so we never write a zero.
