@@ -286,12 +286,66 @@ class LocalImageProcessor(private val context: Context) {
                 // EXIF carries the date — just update MediaStore; Samsung will keep it from EXIF.
                 if (tryUpdateDateTaken(image.id, date)) fixed++
             } else {
-                // No EXIF date — stamp it into the file so Samsung reads it on rescan.
-                if (stampFileDate(image.id, date)) fixed++
-                else if (tryUpdateDateTaken(image.id, date)) fixed++
+                // No EXIF date — file may be WebP bytes in a .jpg-named row. Samsung ignores
+                // WebP EXIF when MIME_TYPE="image/jpeg". Fix: decode WebP → re-encode as real
+                // JPEG with the date in EXIF. Samsung then reads JPEG EXIF and keeps DATE_TAKEN.
+                val uri2 = android.content.ContentUris.withAppendedId(
+                    android.provider.MediaStore.Images.Media.EXTERNAL_CONTENT_URI, image.id)
+                val jpegBytes = try {
+                    context.contentResolver.openInputStream(uri2)?.use { ins ->
+                        val src = ins.readBytes()
+                        val bmp = android.graphics.BitmapFactory.decodeByteArray(src, 0, src.size)
+                        if (bmp != null) {
+                            val out = java.io.ByteArrayOutputStream()
+                            bmp.compress(android.graphics.Bitmap.CompressFormat.JPEG, 92, out)
+                            bmp.recycle()
+                            stampExif(out.toByteArray(), date)  // writes JPEG EXIF with correct date
+                        } else null
+                    }
+                } catch (_: Exception) { null }
+
+                if (jpegBytes != null && stampFileDateWithBytes(image.id, jpegBytes, date)) {
+                    com.photosync.client.util.RemoteLogger.i(
+                        "LocalFix: converted WebP→JPEG+EXIF for ${image.displayName}")
+                    fixed++
+                } else if (stampFileDate(image.id, date)) {
+                    fixed++
+                } else if (tryUpdateDateTaken(image.id, date)) {
+                    fixed++
+                }
             }
         }
         return fixed
+    }
+
+    /** Like stampFileDate but uses the caller-supplied [bytes] instead of reading from disk.
+     *  Used when we've already converted the file format (e.g. WebP→JPEG) before stamping. */
+    private fun stampFileDateWithBytes(id: Long, bytes: ByteArray, dateTakenMs: Long): Boolean {
+        val uri = android.content.ContentUris.withAppendedId(
+            android.provider.MediaStore.Images.Media.EXTERNAL_CONTENT_URI, id)
+        return try {
+            val setPending = try {
+                context.contentResolver.update(uri, android.content.ContentValues().apply {
+                    put(android.provider.MediaStore.MediaColumns.IS_PENDING, 1)
+                }, null, null) > 0
+            } catch (_: Exception) { false }
+            if (!setPending) return false
+            try {
+                context.contentResolver.openOutputStream(uri, "wt")?.use { it.write(bytes) }
+                    ?: return false
+                context.contentResolver.update(uri, android.content.ContentValues().apply {
+                    put(android.provider.MediaStore.MediaColumns.IS_PENDING, 0)
+                    put(android.provider.MediaStore.MediaColumns.DATE_TAKEN, dateTakenMs)
+                }, null, null)
+                true
+            } finally {
+                runCatching {
+                    context.contentResolver.update(uri, android.content.ContentValues().apply {
+                        put(android.provider.MediaStore.MediaColumns.IS_PENDING, 0)
+                    }, null, null)
+                }
+            }
+        } catch (_: Exception) { false }
     }
 
     /**
