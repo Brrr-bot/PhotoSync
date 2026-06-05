@@ -51,14 +51,16 @@ class VideoSpaceManager(private val context: Context) {
 
         // Legacy ID-based tracking (pre-v316) — still respected to avoid re-compressing.
         val compressedIds = prefs.getStringSet(KEY_COMPRESSED, emptySet())!!
-        // Name-based tracking (v316+) — used going forward.
-        // Clear on version bump so all videos get re-transcoded at the new quality settings.
-        if (prefs.getInt(KEY_COMPRESS_VERSION, 0) < COMPRESS_VERSION) {
+        // Name-based tracking (v316+). If COMPRESS_VERSION has bumped, clear the set so all
+        // videos get re-evaluated at the new quality settings (H.265 720p/4 Mbps).
+        val storedVersion = prefs.getInt(KEY_COMPRESS_VERSION, 0)
+        if (storedVersion < COMPRESS_VERSION) {
             prefs.edit()
                 .remove(KEY_COMPRESSED_NAMES)
                 .remove(KEY_COMPRESSED)
                 .putInt(KEY_COMPRESS_VERSION, COMPRESS_VERSION)
                 .apply()
+            RemoteLogger.i("VideoSpace: quality upgrade to v$COMPRESS_VERSION — re-transcoding all videos")
         }
         val compressedNames = prefs.getStringSet(KEY_COMPRESSED_NAMES, emptySet())!!.toMutableSet()
 
@@ -93,7 +95,6 @@ class VideoSpaceManager(private val context: Context) {
                 } else if (v.name !in compressedNames && v.id.toString() !in compressedIds) {
                     // Recent video -> transcode to smaller MP4, preserve filename + original date
                     val tmp = File(context.cacheDir, "vtrans_${v.id}.mp4")
-                    var transcodeOk = false
                     try {
                         val okT = VideoTranscoder.transcode(context, videoUri, tmp.absolutePath)
                         if (okT && tmp.exists() && tmp.length() in 1 until (v.size * 9 / 10)) {
@@ -101,12 +102,10 @@ class VideoSpaceManager(private val context: Context) {
                             val savedBytes = v.size - bytes.size
                             if (replaceCompressedVideo(v, bytes)) {
                                 compressed++; freed += savedBytes.coerceAtLeast(0L)
-                                transcodeOk = true
                             }
                         }
                     } finally { tmp.delete() }
-                    // Only mark done on success — failed transcodes should retry next run.
-                    if (transcodeOk) compressedNames.add(v.name)
+                    compressedNames.add(v.name)   // mark regardless to avoid repeated transcode
                 }
             } catch (_: Throwable) { skipped++ }
         }
@@ -501,6 +500,6 @@ class VideoSpaceManager(private val context: Context) {
         internal const val KEY_POSTER_NAMES    = "poster_names"
         private const val KEY_VIDEO_DATES_REPAIRED = "compressed_video_dates_repaired"
         private const val KEY_COMPRESS_VERSION  = "compress_version"
-        private const val COMPRESS_VERSION      = 3  // bump → clears compressed_video_names so H.265 re-runs
+        private const val COMPRESS_VERSION      = 2  // bump → clears compressed_video_names so H.265 re-runs
     }
 }
