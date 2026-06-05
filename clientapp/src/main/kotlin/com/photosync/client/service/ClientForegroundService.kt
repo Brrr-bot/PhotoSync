@@ -202,8 +202,9 @@ class ClientForegroundService : LifecycleService() {
                 }
                 val hubFilesForLocalFix = try {
                     val ip = liveHubIp ?: liveHubTailscaleIp
-                    if (ip != null) HubFilesClient.fetchFiles(ip, liveHubPort, limit = 5000) else emptyList()
-                } catch (_: Exception) { emptyList() }
+                    if (ip != null) HubFilesClient.fetchFiles(ip, liveHubPort, limit = 5000)
+                    else emptyList<com.photosync.client.hub.HubFileEntry>()
+                } catch (_: Exception) { emptyList<com.photosync.client.hub.HubFileEntry>() }
                 val fixed = processor.processUnfixed(
                     onProgress = { done, total, msg ->
                         if (done % 20 == 0 || done == total) {
@@ -278,8 +279,9 @@ class ClientForegroundService : LifecycleService() {
             //    with descriptive names) can use the hub's lastModifiedMs as fallback.
             val hubFilesForFix = try {
                 val ip = liveHubIp ?: liveHubTailscaleIp
-                if (ip != null) HubFilesClient.fetchFiles(ip, liveHubPort, limit = 5000) else emptyList()
-            } catch (_: Exception) { emptyList() }
+                if (ip != null) HubFilesClient.fetchFiles(ip, liveHubPort, limit = 5000)
+                else emptyList<com.photosync.client.hub.HubFileEntry>()
+            } catch (_: Exception) { emptyList<com.photosync.client.hub.HubFileEntry>() }
             val processor = com.photosync.client.media.LocalImageProcessor(this)
             val fixed = processor.processUnfixed(
                 onProgress = { done, total, msg ->
