@@ -110,8 +110,15 @@ class UsbStorageManager(
             ?: root.createDirectory(deviceName)
             ?: throw IllegalStateException("Cannot create device folder '$deviceName'")
 
-        // Skip if already present anywhere in the device folder (flat or subfolder)
-        if (findFileAnywhere(deviceFolder, file.displayName) != null) return false
+        // Skip if already present anywhere in the device folder (flat or subfolder),
+        // UNLESS the existing file is zero-bytes (a broken partial write from a previous attempt).
+        // A zero-byte file with the right name would otherwise block retries forever.
+        val existingFile = findFileAnywhere(deviceFolder, file.displayName)
+        if (existingFile != null) {
+            if (existingFile.length() > 0) return false   // complete file present — skip
+            // Zero-byte broken file — delete and re-download
+            try { existingFile.delete() } catch (_: Exception) {}
+        }
 
         // Derive date subfolder from capture time (falls back to dateAdded)
         val dateMs = when {
@@ -128,9 +135,24 @@ class UsbStorageManager(
         val newFile = dateFolder.createFile("application/octet-stream", file.displayName)
             ?: throw IllegalStateException("Cannot create file '${file.displayName}'")
 
-        context.contentResolver.openOutputStream(newFile.uri)?.use { out ->
-            stream.copyTo(out)
-        } ?: throw IllegalStateException("Cannot open output stream")
+        // Write atomically: if the stream copy fails partway, delete the partial file so it is
+        // NOT mistaken for a complete backup on the next sync. Without this, a truncated file
+        // stays on USB with the right name; getExistingFileNames sees it; future syncs skip it
+        // permanently, leaving a broken file that can never be retried.
+        try {
+            context.contentResolver.openOutputStream(newFile.uri)?.use { out ->
+                stream.copyTo(out)
+            } ?: run {
+                try { newFile.delete() } catch (_: Exception) {}
+                throw IllegalStateException("Cannot open output stream")
+            }
+        } catch (e: Exception) {
+            // Best-effort cleanup — if delete fails the next sync will still re-download because
+            // the file size on USB (0 or partial) won't match what the phone serves, but at
+            // minimum we try to remove the incomplete entry so dedup doesn't treat it as done.
+            try { newFile.delete() } catch (_: Exception) {}
+            throw e
+        }
 
         // Stamp EXIF DateTimeOriginal so gallery apps sort by capture date.
         if (file.mimeType.startsWith("image/") && file.mimeType != "image/gif") {
