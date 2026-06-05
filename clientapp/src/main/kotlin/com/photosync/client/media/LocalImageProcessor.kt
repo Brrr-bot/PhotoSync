@@ -202,7 +202,7 @@ class LocalImageProcessor(private val context: Context) {
         }
 
         // Second pass: fix DATE_TAKEN on files we created (compressed_new_ids) via EXIF stamp.
-        val ownedFixed = fixOwnedFilesWithNullDate(newIds)
+        val ownedFixed = fixOwnedFilesWithNullDate(newIds, hubByName)
         if (ownedFixed > 0) onProgress?.invoke(total, total, "Fixed dates on $ownedFixed owned file(s)")
         fixed += ownedFixed
 
@@ -237,13 +237,20 @@ class LocalImageProcessor(private val context: Context) {
      * DATE_TAKEN set. The media scanner reads EXIF on publish and sets DATE_TAKEN correctly,
      * so it survives any subsequent scanner re-runs — unlike a plain ContentValues update.
      */
-    private fun fixOwnedFilesWithNullDate(ownedIds: Set<String>): Int {
+    private fun fixOwnedFilesWithNullDate(
+        ownedIds: Set<String>,
+        hubByName: Map<String, HubFileEntry> = emptyMap()
+    ): Int {
         if (ownedIds.isEmpty()) return 0
         var fixed = 0
         val all = queryAllImages()
         for (image in all) {
             if (image.id.toString() !in ownedIds) continue
-            val date = parseDateFromFilename(image.displayName) ?: continue
+            // Date from filename, or fall back to hub's lastModifiedMs for descriptive-name
+            // files (screenshots etc.) that carry no date in their filename.
+            val date = parseDateFromFilename(image.displayName)
+                ?: hubByName[image.displayName]?.lastModifiedMs?.takeIf { it > 0 }
+                ?: continue
             // Skip only if dateTaken is already correct (within 24 h of the filename date).
             // A previous buggy IS_PENDING run could have set dateTaken to TODAY (non-zero but
             // wrong) — that case must also be fixed, not skipped.
