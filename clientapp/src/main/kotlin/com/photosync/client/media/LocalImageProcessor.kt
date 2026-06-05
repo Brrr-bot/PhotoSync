@@ -414,7 +414,16 @@ class LocalImageProcessor(private val context: Context) {
     private fun stampExif(jpegBytes: ByteArray, dateTakenMs: Long): ByteArray? {
         var tmp: File? = null
         return try {
-            tmp = File.createTempFile("ps_fix_", ".jpg", context.cacheDir)
+            // Use the correct extension so ExifInterface handles the format properly.
+            // WebP bytes: RIFF....WEBP → use .webp so API 31+ ExifInterface writes a WebP EXIF chunk.
+            // JPEG bytes: FFD8FF → use .jpg.
+            val isWebP = jpegBytes.size >= 12 &&
+                jpegBytes[0] == 'R'.code.toByte() && jpegBytes[1] == 'I'.code.toByte() &&
+                jpegBytes[2] == 'F'.code.toByte() && jpegBytes[3] == 'F'.code.toByte() &&
+                jpegBytes[8] == 'W'.code.toByte() && jpegBytes[9] == 'E'.code.toByte() &&
+                jpegBytes[10] == 'B'.code.toByte() && jpegBytes[11] == 'P'.code.toByte()
+            val ext = if (isWebP) ".webp" else ".jpg"
+            tmp = File.createTempFile("ps_fix_", ext, context.cacheDir)
             tmp.writeBytes(jpegBytes)
             ExifInterface(tmp.absolutePath).apply {
                 setAttribute(ExifInterface.TAG_ORIENTATION,
