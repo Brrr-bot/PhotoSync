@@ -577,10 +577,15 @@ class MainActivity : AppCompatActivity() {
                 com.photosync.client.media.ImageSpaceManager(this).process()
             } catch (_: Exception) { null }
 
-            // 4. VideoDateRepair
-            try {
-                com.photosync.client.media.VideoSpaceManager(this).repairCompressedVideoDates()
-            } catch (_: Exception) {}
+            // 4. VideoSpace — transcode recent videos to H.265 720p, posterise old ones
+            //    (also runs VideoDateRepair internally before the hub check)
+            val vidSummary = try {
+                com.photosync.client.media.VideoSpaceManager(this).process { done, total, name ->
+                    if (done % 5 == 0 || done == total) {
+                        runOnUiThread { Toast.makeText(this, "Video $done/$total: $name", Toast.LENGTH_SHORT).show() }
+                    }
+                }
+            } catch (_: Exception) { null }
 
             runOnUiThread {
                 val sb = StringBuilder()
@@ -588,8 +593,11 @@ class MainActivity : AppCompatActivity() {
                 if (fixed > 0) sb.append("• $fixed date/orientation fixed\n")
                 else sb.append("• Dates OK\n")
                 if (compSummary != null && compSummary.compressed > 0)
-                    sb.append("• ${compSummary.compressed} compressed to WebP (${compSummary.freedBytes / 1_048_576}MB freed)\n")
+                    sb.append("• ${compSummary.compressed} images → WebP (${compSummary.freedBytes / 1_048_576}MB freed)\n")
                 else sb.append("• No new images to compress\n")
+                if (vidSummary != null && (vidSummary.compressed > 0 || vidSummary.thumbed > 0))
+                    sb.append("• ${vidSummary.compressed} videos → H.265, ${vidSummary.thumbed} posterised (${vidSummary.freedBytes / 1_048_576}MB freed)\n")
+                else sb.append("• No new videos to process\n")
                 Toast.makeText(this, sb.toString().trim(), Toast.LENGTH_LONG).show()
             }
         }.start()
