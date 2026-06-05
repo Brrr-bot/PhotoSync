@@ -22,15 +22,15 @@ import java.util.concurrent.CountDownLatch
 import java.util.concurrent.TimeUnit
 
 /**
- * Transcodes a video to H.265 HEVC at 720p/2 Mbps using Media3 Transformer.
+ * Transcodes a video to H.265 HEVC at 720p/4 Mbps using Media3 Transformer.
  * H.265 delivers significantly better quality-per-bit than H.264 at the same bitrate,
- * so 720p/2 Mbps HEVC looks noticeably better than the old 480p/1.5 Mbps H.264.
+ * so 720p/4 Mbps HEVC looks noticeably better than the old 480p/1.5 Mbps H.264.
  */
 object VideoTranscoder {
 
     @OptIn(UnstableApi::class)
     fun transcode(context: Context, inputUri: Uri, outputPath: String,
-                  targetHeight: Int = 720, bitrate: Int = 2_000_000): Boolean {
+                  targetHeight: Int = 720, bitrate: Int = 4_000_000): Boolean {
         val latch = CountDownLatch(1)
         val ok = java.util.concurrent.atomic.AtomicBoolean(false)
 
