@@ -48,18 +48,42 @@ class UpdateChecker(private val context: Context) {
         Log.i(TAG, "Downloading update v$versionName…")
         RemoteLogger.i("OTA: downloading client v$versionName")
         val apkFile = downloadApk(apkUrl, "client-$remoteCode.apk") ?: run {
-            Log.e(TAG, "APK download failed")
-            RemoteLogger.e("OTA: download failed, will retry next poll")
-            notifiedPhotosync.set(0)
-            return
+            Log.e(TAG, "APK download failed"); return
         }
-        RemoteLogger.i("OTA: download complete, showing notification")
-        postInstallNotification(
-            title   = "PhotoSync Client update available",
-            body    = "Version $versionName ready — tap to install",
-            apkFile = apkFile,
-            notifId = ClientApplication.UPDATE_NOTIFICATION_ID
-        )
+        val installed = silentInstall(apkFile)
+        Log.i(TAG, "silentInstall=$installed")
+        RemoteLogger.i("OTA: silentInstall=$installed")
+        if (!installed) {
+            postInstallNotification(
+                title   = "PhotoSync Client update available",
+                body    = "Version $versionName ready — tap to install",
+                apkFile = apkFile,
+                notifId = ClientApplication.UPDATE_NOTIFICATION_ID
+            )
+        }
+    }
+
+    /** Manual check — always returns a human-readable status string for display in a Toast. */
+    fun checkManual(): String {
+        val baseUrl = Constants.UPDATE_PORTAL_URL.trim()
+        if (baseUrl.isEmpty()) return "Update portal URL not configured"
+        val info = fetchVersionInfo("$baseUrl/api/version/client")
+            ?: return "Could not reach update portal"
+        val remoteCode  = info.optInt("versionCode", 0)
+        val apkUrl      = info.optString("apkUrl", "")
+        val versionName = info.optString("versionName", "?")
+        return when {
+            remoteCode <= 0          -> "Portal returned no version info"
+            remoteCode <= BuildConfig.VERSION_CODE ->
+                "Up to date  (v${BuildConfig.VERSION_CODE})"
+            apkUrl.isEmpty()         -> "Update v$versionName available but no APK URL"
+            else -> {
+                // Trigger the actual install/notification flow
+                notifiedPhotosync.set(0)   // reset so checkAndNotify fires even if seen before
+                checkAndNotify()
+                "Update v$versionName available — installing…"
+            }
+        }
     }
 
     fun checkTimesheetUpdate() {
@@ -80,9 +104,7 @@ class UpdateChecker(private val context: Context) {
         if (remoteCode <= installedCode) return
         if (notifiedTimesheet.getAndSet(remoteCode) == remoteCode) return
 
-        val apkFile = downloadApk(apkUrl, "timesheet-$remoteCode.apk") ?: run {
-            notifiedTimesheet.set(0); return
-        }
+        val apkFile = downloadApk(apkUrl, "timesheet-$remoteCode.apk") ?: return
         postInstallNotification(
             title   = "Timesheet update ready",
             body    = "v$remoteCode downloaded — tap to install",
