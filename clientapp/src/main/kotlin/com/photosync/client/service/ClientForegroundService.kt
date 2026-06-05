@@ -14,6 +14,7 @@ import androidx.lifecycle.LifecycleService
 import androidx.lifecycle.lifecycleScope
 import com.photosync.client.BuildConfig
 import com.photosync.client.ClientApplication
+import com.photosync.client.hub.HubFilesClient
 import com.photosync.client.media.LocalImageProcessor
 import com.photosync.client.media.MediaStoreHelper
 import com.photosync.client.ui.MainActivity
@@ -199,12 +200,19 @@ class ClientForegroundService : LifecycleService() {
                         .putInt(KEY_LOCAL_FIX_VERSION, LOCAL_FIX_CODE).apply()
                     log("LocalFix: cleared stale scan cache for v$LOCAL_FIX_CODE rescan")
                 }
-                val fixed = processor.processUnfixed { done, total, msg ->
-                    if (done % 20 == 0 || done == total) {
-                        log("LocalFix $done/$total: $msg")
-                        updateNotification("Fixing: $done/$total")
-                    }
-                }
+                val hubFilesForLocalFix = try {
+                    val ip = liveHubIp ?: liveHubTailscaleIp
+                    if (ip != null) HubFilesClient.fetchFiles(ip, liveHubPort, limit = 5000) else emptyList()
+                } catch (_: Exception) { emptyList() }
+                val fixed = processor.processUnfixed(
+                    onProgress = { done, total, msg ->
+                        if (done % 20 == 0 || done == total) {
+                            log("LocalFix $done/$total: $msg")
+                            updateNotification("Fixing: $done/$total")
+                        }
+                    },
+                    hubFiles = hubFilesForLocalFix
+                )
                 if (fixed > 0) log("LocalFix complete — fixed $fixed image(s)")
 
                 // Compress backed-up images to WebP — hub already confirmed these on USB.
@@ -266,11 +274,19 @@ class ClientForegroundService : LifecycleService() {
             } catch (t: Throwable) { log("Repair error: ${t.javaClass.simpleName}: ${t.message}") }
 
             // 2. Fix dates/orientation on the rest from each file's own EXIF/filename.
-            //    (GalleryRepair above already restored misdated videos + damaged images from the hub.)
+            //    Also pass hub file list so files with no EXIF/filename date (e.g. screenshots
+            //    with descriptive names) can use the hub's lastModifiedMs as fallback.
+            val hubFilesForFix = try {
+                val ip = liveHubIp ?: liveHubTailscaleIp
+                if (ip != null) HubFilesClient.fetchFiles(ip, liveHubPort, limit = 5000) else emptyList()
+            } catch (_: Exception) { emptyList() }
             val processor = com.photosync.client.media.LocalImageProcessor(this)
-            val fixed = processor.processUnfixed { done, total, msg ->
-                if (done % 20 == 0 || done == total) updateNotification("Cleanup: $done/$total")
-            }
+            val fixed = processor.processUnfixed(
+                onProgress = { done, total, msg ->
+                    if (done % 20 == 0 || done == total) updateNotification("Cleanup: $done/$total")
+                },
+                hubFiles = hubFilesForFix
+            )
             if (fixed > 0) log("Pre-sync cleanup: fixed $fixed image date(s)")
             else log("Pre-sync cleanup: dates OK")
             updateNotification("Ready — announcing on network")
@@ -459,7 +475,7 @@ class ClientForegroundService : LifecycleService() {
         private const val SYNC_INTERVAL_MS      = 5 * 60 * 1000L
         private const val LOCAL_FIX_INTERVAL_MS  = 60 * 60 * 1000L
         private const val KEY_LOCAL_FIX_VERSION  = "local_fix_version"
-        private const val LOCAL_FIX_CODE         = 11 // bump when scan logic changes to force rescan
+        private const val LOCAL_FIX_CODE         = 12 // bump when scan logic changes to force rescan
 
         private val recentLogs = ArrayDeque<String>(100)
 
