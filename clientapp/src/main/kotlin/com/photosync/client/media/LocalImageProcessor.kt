@@ -262,16 +262,16 @@ class LocalImageProcessor(private val context: Context) {
             val date = parseDateFromFilename(image.displayName)
                 ?: hubByName[image.displayName]?.lastModifiedMs?.takeIf { it > 0 }
                 ?: continue
-            // Skip only if dateTaken is already correct (within 24 h of the filename date).
-            // A previous buggy IS_PENDING run could have set dateTaken to TODAY (non-zero but
-            // wrong) — that case must also be fixed, not skipped.
+            // Skip only if dateTaken is already correct (within 24 h of the date).
             if (image.dateTaken > 0 &&
                 Math.abs(image.dateTaken - date) <= 24 * 60 * 60 * 1000L) continue
-            // Owned files are WebP bytes stored in .jpg-named files. Using the IS_PENDING trick
-            // here triggers a Samsung media rescan; Samsung reads the file as JPEG (based on MIME),
-            // finds no JPEG EXIF date in the WebP content, and resets DATE_TAKEN to today.
-            // Direct update works because the app owns these files — no IS_PENDING needed.
-            if (tryUpdateDateTaken(image.id, date)) fixed++
+
+            // For owned WebP-in-jpg files: stamp the date into the file's EXIF so Samsung
+            // reads it on rescan and doesn't reset DATE_TAKEN. ExifInterface supports WebP
+            // EXIF on API 31+ (Android 12+), which covers our target device (Android 13).
+            // IS_PENDING trick is safe here — we own the row so the update succeeds.
+            val stamped = stampFileDate(image.id, date)
+            if (stamped || tryUpdateDateTaken(image.id, date)) fixed++
         }
         return fixed
     }
