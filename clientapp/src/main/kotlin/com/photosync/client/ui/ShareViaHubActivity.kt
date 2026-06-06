@@ -273,8 +273,22 @@ class ShareViaHubActivity : AppCompatActivity() {
     // ── Helpers ───────────────────────────────────────────────────────────
 
     private fun findOnHub(ip: String, port: Int, fileName: String) =
-        try { HubFilesClient.fetchFiles(ip, port, limit = 10_000).firstOrNull { it.displayName == fileName } }
-        catch (_: Exception) { null }
+        try {
+            val files = HubFilesClient.fetchFiles(ip, port, limit = 10_000)
+            files.firstOrNull { it.displayName == fileName }
+                ?: run {
+                    // Placeholder JPEGs share a base name with the original video.
+                    // If the .jpg isn't on the hub, look for the same base name with a
+                    // video extension so the user can still download/share the original.
+                    if (fileName.endsWith(.jpg, ignoreCase = true) ||
+                        fileName.endsWith(.jpeg, ignoreCase = true)) {
+                        val base = fileName.substringBeforeLast('.')
+                        files.firstOrNull { it.displayName.substringBeforeLast('.') == base
+                            && it.displayName.substringAfterLast('.').lowercase()
+                               .let { ext -> ext == mp4 || ext == mov || ext == mkv || ext == avi } }
+                    } else null
+                }
+        } catch (_: Exception) { null }
 
     private fun saveToGallery(name: String, bytes: ByteArray, mime: String): Boolean {
         return try {
