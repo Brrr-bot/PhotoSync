@@ -93,7 +93,7 @@
 
         <activity
             android:name=".ui.ShareViaHubActivity"
-            android:label="Share via Hub"
+            android:label="Hub: Share / Download"
             android:exported="true"
             android:theme="@style/Theme.AppCompat.Translucent">
             <intent-filter>
