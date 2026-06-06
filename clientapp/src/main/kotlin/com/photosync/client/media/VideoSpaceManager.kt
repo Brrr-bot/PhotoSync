@@ -93,18 +93,25 @@ class VideoSpaceManager(private val context: Context) {
                     if (deleted) { thumbed++; freed += (v.size - stampedPoster.size).coerceAtLeast(0L) }
                     else { skipped++ }
                 } else if (v.name !in compressedNames && v.id.toString() !in compressedIds) {
-                    // Recent video -> transcode to smaller MP4, preserve filename + original date
-                    val tmp = File(context.cacheDir, "vtrans_${v.id}.mp4")
+                    // Recent video -> download original from hub, transcode from that so
+                    // re-runs at new quality settings always start from the best source.
+                    val tmpOrig = File(context.cacheDir, "vorig_${v.id}.mp4")
+                    val tmpOut  = File(context.cacheDir, "vtrans_${v.id}.mp4")
                     try {
-                        val okT = VideoTranscoder.transcode(context, videoUri, tmp.absolutePath)
-                        if (okT && tmp.exists() && tmp.length() in 1 until (v.size * 9 / 10)) {
-                            val bytes = tmp.readBytes()
-                            val savedBytes = v.size - bytes.size
+                        val srcUri = if (hubEntry != null) {
+                            val ok = HubFilesClient.fetchFileToFile(ip, port, hubEntry.device, v.name, tmpOrig)
+                            if (ok && tmpOrig.length() > 0) android.net.Uri.fromFile(tmpOrig) else videoUri
+                        } else videoUri
+                        val okT = VideoTranscoder.transcode(context, srcUri, tmpOut.absolutePath)
+                        val origSize = if (tmpOrig.exists() && tmpOrig.length() > 0) tmpOrig.length() else v.size
+                        if (okT && tmpOut.exists() && tmpOut.length() in 1 until (origSize * 9 / 10)) {
+                            val bytes = tmpOut.readBytes()
+                            val savedBytes = origSize - bytes.size
                             if (replaceCompressedVideo(v, bytes)) {
                                 compressed++; freed += savedBytes.coerceAtLeast(0L)
                             }
                         }
-                    } finally { tmp.delete() }
+                    } finally { tmpOrig.delete(); tmpOut.delete() }
                     compressedNames.add(v.name)   // mark regardless to avoid repeated transcode
                 }
             } catch (_: Throwable) { skipped++ }
