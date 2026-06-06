@@ -80,6 +80,7 @@ class ClientForegroundService : LifecycleService() {
         // Start HTTP server
         server = MediaHttpServer(
             MediaStoreHelper(this),
+            cacheDir = cacheDir,
             onLog = { msg ->
                 log(msg)
                 updateNotification(msg)
