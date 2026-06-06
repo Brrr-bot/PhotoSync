@@ -417,6 +417,12 @@ class ClientForegroundService : LifecycleService() {
 
         fun getRecentLogs(): List<String> = synchronized(recentLogs) { recentLogs.toList() }
 
+        /** Write a timestamped line to the live log without needing a service instance. */
+        fun staticLog(message: String) {
+            val time = java.text.SimpleDateFormat("HH:mm:ss", java.util.Locale.getDefault()).format(java.util.Date())
+            addLog("  ")
+        }
+
         private fun addLog(line: String) = synchronized(recentLogs) {
             if (recentLogs.size >= 100) recentLogs.removeFirst()
             recentLogs.addLast(line)
