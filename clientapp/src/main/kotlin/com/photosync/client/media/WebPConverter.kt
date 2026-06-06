@@ -9,18 +9,20 @@ import java.io.ByteArrayOutputStream
 import java.io.File
 
 /**
- * Re-encodes a hub-compressed JPEG as WebP, copying all EXIF from the source.
+ * Re-encodes a source image as WebP, copying all EXIF from the source.
  *
- * The hub already scaled the image to ≤1920px and compressed it with full EXIF, so this is
- * purely a format conversion — no further scaling or quality loss beyond the codec difference.
- * WebP at 92% gives visibly better quality than JPEG at 85% at a similar or smaller file size.
+ * Quality 72 targets roughly the same perceptual level as JPEG 75 (what most apps such as
+ * Zalo/WhatsApp use for social sharing). At this setting a typical 3–4 MB Samsung JPEG
+ * compresses to ~500–700 KB — comparable to social-app output.
+ *
+ * Callers should only keep the result when webpBytes.size < sourceBytes.size.
  *
  * Requires API 31+ for ExifInterface WebP write support. Returns null on older devices
- * so the caller falls back to the JPEG bytes the hub sent.
+ * so the caller falls back to whatever bytes it already has.
  */
 object WebPConverter {
 
-    private const val QUALITY = 92
+    private const val QUALITY = 72
 
     fun convert(sourceBytes: ByteArray, cacheDir: File): ByteArray? {
         if (Build.VERSION.SDK_INT < Build.VERSION_CODES.S) return null
