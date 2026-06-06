@@ -47,8 +47,8 @@ class VideoSpaceManager(private val context: Context) {
                 hubByName[f.displayName] = HubInfo(f.deviceName, f.sizeBytes, f.lastModifiedMs)
         }
 
-        repairPosterDates(hubByName)
         restorePostersFromHub(ip, port)
+        repairPosterDates(hubByName)
 
         // Legacy ID-based tracking (pre-v316) — still respected to avoid re-compressing.
         val compressedIds = prefs.getStringSet(KEY_COMPRESSED, emptySet())!!
@@ -312,7 +312,12 @@ class VideoSpaceManager(private val context: Context) {
             }
         }
 
-        prefs.edit().putInt(KEY_POSTER_VERSION, POSTER_VERSION).apply()
+        // Clear the repaired-set so repairPosterDates will re-stamp the correct
+        // dates on the freshly-downloaded poster bytes in the same process() run.
+        prefs.edit()
+            .putInt(KEY_POSTER_VERSION, POSTER_VERSION)
+            .remove(KEY_REPAIRED)
+            .apply()
     }
 
     private fun rememberRestore(posterName: String, device: String, videoName: String) {
