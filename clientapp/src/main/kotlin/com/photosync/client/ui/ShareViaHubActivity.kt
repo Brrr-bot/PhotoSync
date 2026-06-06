@@ -86,7 +86,13 @@ class ShareViaHubActivity : AppCompatActivity() {
                 return@Thread
             }
 
-            val tmpFile = File(cacheDir, match.displayName)
+            // share_tmp lives inside cacheDir (internal storage) — never scanned by MediaStore/Gallery
+            val shareDir = File(cacheDir, "share_tmp").also { it.mkdirs() }
+            // Clean up leftover files older than 10 min from previous share ops
+            shareDir.listFiles()?.forEach { f ->
+                if (System.currentTimeMillis() - f.lastModified() > 10 * 60 * 1000L) f.delete()
+            }
+            val tmpFile = File(shareDir, match.displayName)
             var lastShareProgressMs = 0L
             val ok = HubFilesClient.fetchFileToFile(ip, port, match.deviceName, match.displayName, tmpFile) { read, total ->
                 val now = System.currentTimeMillis()
@@ -95,7 +101,7 @@ class ShareViaHubActivity : AppCompatActivity() {
                     postProgress(fileName, read, total, isShare = true)
                 }
             }
-            if (!ok) { postError(fileName, "Download failed"); return@Thread }
+            if (!ok) { tmpFile.delete(); postError(fileName, "Download failed"); return@Thread }
 
             val mime     = mimeFor(match.displayName)
             val shareUri = FileProvider.getUriForFile(this, "${packageName}.fileprovider", tmpFile)
@@ -113,6 +119,13 @@ class ShareViaHubActivity : AppCompatActivity() {
                 PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE
             )
             postDone(fileName, "Ready — tap to share", pi, actionLabel = "Share")
+
+            // Delete the temp file 5 minutes after posting the share notification —
+            // gives any share-target app enough time to read it.
+            Thread {
+                Thread.sleep(5 * 60 * 1000L)
+                tmpFile.delete()
+            }.apply { isDaemon = true; start() }
         }.start()
     }
 
