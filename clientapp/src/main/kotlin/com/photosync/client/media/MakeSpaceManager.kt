@@ -8,6 +8,7 @@ import android.graphics.Canvas
 import android.graphics.Paint
 import android.provider.MediaStore
 import com.photosync.client.hub.HubFilesClient
+import com.photosync.client.media.VideoSpaceManager
 import com.photosync.client.service.ClientForegroundService
 import com.photosync.client.util.RemoteLogger
 import java.io.ByteArrayOutputStream
@@ -35,6 +36,7 @@ class MakeSpaceManager(private val context: Context) {
 
     private val compressionPrefs = context.getSharedPreferences("compression_state", Context.MODE_PRIVATE)
     private val spacePrefs       = context.getSharedPreferences("make_space_state",  Context.MODE_PRIVATE)
+    private val videoSpacePrefs  = context.getSharedPreferences("video_space_state", Context.MODE_PRIVATE)
 
     companion object {
         // Bump this when compression quality/algorithm changes so all photos are re-processed.
@@ -55,6 +57,9 @@ class MakeSpaceManager(private val context: Context) {
 
         val hubNames       = hubFiles.map { it.displayName }.toHashSet()
         val restoredNames  = compressionPrefs.getStringSet("restored_original_names", emptySet())!!
+        // Video poster JPEGs created by VideoSpaceManager — must never be re-posterized
+        val videoPosterNames = videoSpacePrefs.getStringSet(
+            VideoSpaceManager.KEY_POSTER_NAMES, emptySet())!!
 
         // Clear processed set when quality version has been bumped so all photos re-compress
         val storedVersion = spacePrefs.getInt(KEY_COMPRESS_VERSION, 0)
@@ -71,6 +76,7 @@ class MakeSpaceManager(private val context: Context) {
 
         val phoneImages = mediaStore.getMediaSince(0).filter { f ->
             f.mimeType.startsWith("image/") &&
+            f.displayName !in videoPosterNames &&   // skip video poster thumbnails
             f.displayName in hubNames &&
             f.displayName !in restoredNames &&
             f.displayName !in processedNames
