@@ -143,25 +143,51 @@ class HubGalleryActivity : AppCompatActivity() {
     private fun deleteSelected() {
         val toDelete = selectedItems.toList()
         val ip = hubIp ?: return
-        // Clear selection immediately so the bar and checkmarks disappear right away
+        // Clear selection immediately so bar and checkmarks disappear right away
         selectedItems.clear()
         updateSelectionBar()
         rvGallery.adapter?.notifyDataSetChanged()
         Toast.makeText(this, "Deleting ${toDelete.size} file${if (toDelete.size > 1) "s" else ""}…", Toast.LENGTH_SHORT).show()
         Thread {
-            var deleted = 0
+            var hubDeleted   = 0
+            var localDeleted = 0
+
+            // Fetch local MediaStore entries once so we can delete matching phone files
+            val localFiles = try {
+                com.photosync.client.media.MediaStoreHelper(this).getMediaSince(0)
+            } catch (_: Exception) { emptyList() }
+
             for (entry in toDelete) {
                 val ok = HubFilesClient.deleteFile(ip, hubPort, entry.deviceName, entry.displayName)
                 android.util.Log.d("HubGallery", "deleteFile ${entry.displayName} -> $ok")
-                if (ok) deleted++
+                if (ok) {
+                    hubDeleted++
+                    // Delete matching local file from the phone gallery
+                    val local = localFiles.firstOrNull { it.displayName == entry.displayName }
+                    if (local != null) {
+                        try {
+                            val isVideo = local.mimeType.startsWith("video/")
+                            val uri = android.content.ContentUris.withAppendedId(
+                                if (isVideo) android.provider.MediaStore.Video.Media.EXTERNAL_CONTENT_URI
+                                else         android.provider.MediaStore.Images.Media.EXTERNAL_CONTENT_URI,
+                                local.id)
+                            val rows = contentResolver.delete(uri, null, null)
+                            if (rows > 0) localDeleted++
+                        } catch (_: Exception) { }
+                    }
+                }
             }
-            val d = deleted
-            val total = toDelete.size
+
+            val d   = hubDeleted
+            val ld  = localDeleted
+            val tot = toDelete.size
             runOnUiThread {
-                val msg = if (d == total) "Deleted $d file${if (d > 1) "s" else ""}"
-                          else "Deleted $d / $total"
+                val msg = buildString {
+                    if (d == tot) append("Deleted $d from hub")
+                    else          append("Deleted $d / $tot from hub")
+                    if (ld > 0)   append(" + $ld from phone")
+                }
                 Toast.makeText(this, msg, Toast.LENGTH_SHORT).show()
-                // Always reload from hub so the list reflects actual hub state
                 loadFiles()
             }
         }.start()
