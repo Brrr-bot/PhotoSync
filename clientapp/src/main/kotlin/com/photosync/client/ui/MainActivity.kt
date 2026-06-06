@@ -705,29 +705,24 @@ class MainActivity : AppCompatActivity() {
     private fun runMakeSpaceNow() {
         val ip = effectiveHubIp()
         if (ip == null) {
-            Toast.makeText(this, "Hub not connected — connect first", Toast.LENGTH_SHORT).show()
+            com.photosync.client.service.ClientForegroundService.staticLog("Make Space: hub not connected")
             return
         }
-        Toast.makeText(this, "Make Space running…", Toast.LENGTH_SHORT).show()
+        com.photosync.client.service.ClientForegroundService.staticLog("Make Space starting…")
         Thread {
             val summary = com.photosync.client.media.MakeSpaceManager(this).process { done, total, name ->
-                if (done % 10 == 0 || done == total) {
-                    runOnUiThread {
-                        Toast.makeText(this, "Make Space $done/$total: $name", Toast.LENGTH_SHORT).show()
-                    }
-                }
+                com.photosync.client.service.ClientForegroundService.staticLog(
+                    "Make Space $done/$total: $name")
             }
-            runOnUiThread {
-                val mb = summary.freedBytes / 1_048_576
-                val msg = buildString {
-                    append("Make Space done  ")
-                    if (summary.compressed > 0) append("• ${summary.compressed} compressed  ")
-                    if (summary.posterized > 0)  append("• ${summary.posterized} posterized  ")
-                    append("• ${mb}MB freed")
-                    if (summary.skipped > 0) append("  (${summary.skipped} skipped)")
-                }
-                Toast.makeText(this, msg, Toast.LENGTH_LONG).show()
+            val mb = summary.freedBytes / 1_048_576
+            val msg = buildString {
+                append("Make Space done — ")
+                if (summary.compressed > 0) append("${summary.compressed} compressed  ")
+                if (summary.posterized > 0)  append("${summary.posterized} posterized  ")
+                append("${mb} MB freed")
+                if (summary.skipped > 0) append("  (${summary.skipped} skipped)")
             }
+            com.photosync.client.service.ClientForegroundService.staticLog(msg)
         }.start()
     }
 
