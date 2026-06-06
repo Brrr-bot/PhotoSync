@@ -471,12 +471,12 @@ tick(); setInterval(tick, 1500);
                 if (stateCompressionDone >= stateCompressionTotal) stateCompressionTotal++
                 stateCompressionDone++
             }
-            // If the hub sent a JPEG, re-encode to WebP on the client (Android 13 supports
-            // ExifInterface WebP write). Copies all EXIF so nothing is lost.
-            // Falls back to the hub bytes unchanged if conversion fails or API < 31.
+            // If the hub sent a JPEG, try to re-encode to WebP.
+            // Only keep the WebP when it is strictly smaller — re-encoding an already-compressed
+            // JPEG at high quality can produce a LARGER file, wasting space instead of saving it.
             val (finalBytes, finalMime) = if (mime.startsWith("image/") && mime != "image/webp") {
                 val webp = WebPConverter.convert(bytes, cacheDir)
-                if (webp != null) Pair(webp, "image/webp") else Pair(bytes, mime)
+                if (webp != null && webp.size < bytes.size) Pair(webp, "image/webp") else Pair(bytes, mime)
             } else Pair(bytes, mime)
 
             val result = mediaStore.replaceFile(id, finalMime, finalBytes, dateTaken)
