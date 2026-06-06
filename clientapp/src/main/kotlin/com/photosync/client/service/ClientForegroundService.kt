@@ -183,12 +183,12 @@ class ClientForegroundService : LifecycleService() {
                         .putInt(KEY_LOCAL_FIX_VERSION, LOCAL_FIX_CODE).apply()
                     log("LocalFix: cleared stale scan cache for v$LOCAL_FIX_CODE rescan")
                 }
-                val fixed = processor.processUnfixed { done, total, msg ->
+                val fixed = processor.processUnfixed(onProgress = { done, total, msg ->
                     if (done % 20 == 0 || done == total) {
                         log("LocalFix $done/$total: $msg")
                         updateNotification("Fixing: $done/$total")
                     }
-                }
+                })
                 if (fixed > 0) log("LocalFix complete — fixed $fixed image(s)")
 
                 // Video space management — only touches videos the hub already holds.
