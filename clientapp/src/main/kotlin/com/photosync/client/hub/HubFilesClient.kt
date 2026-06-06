@@ -67,7 +67,10 @@ object HubFilesClient {
      * Streams [name] from the hub directly into [dest] without buffering the whole file in
      * memory — use for large files (videos) to avoid OutOfMemoryError. Returns true on success.
      */
-    fun fetchFileToFile(ip: String, port: Int, device: String, name: String, dest: java.io.File): Boolean {
+    fun fetchFileToFile(
+        ip: String, port: Int, device: String, name: String, dest: java.io.File,
+        onProgress: ((bytesRead: Long, total: Long) -> Unit)? = null
+    ): Boolean {
         return try {
             val enc = java.net.URLEncoder.encode(name, "UTF-8")
             val devEnc = java.net.URLEncoder.encode(device, "UTF-8")
@@ -76,8 +79,18 @@ object HubFilesClient {
                 timeoutMs = 120_000
             )
             if (conn.responseCode != 200) { conn.disconnect(); return false }
+            val total = conn.contentLengthLong   // -1 if unknown
+            var read  = 0L
+            val buf   = ByteArray(65_536)
             conn.inputStream.use { input ->
-                dest.outputStream().use { out -> input.copyTo(out, 64 * 1024) }
+                dest.outputStream().use { out ->
+                    var n: Int
+                    while (input.read(buf).also { n = it } != -1) {
+                        out.write(buf, 0, n)
+                        read += n
+                        onProgress?.invoke(read, total)
+                    }
+                }
             }
             conn.disconnect()
             dest.length() > 0
