@@ -143,10 +143,12 @@ class HubGalleryActivity : AppCompatActivity() {
     private fun deleteSelected() {
         val toDelete = selectedItems.toList()
         val ip = hubIp ?: return
+        runOnUiThread { Toast.makeText(this, "Deleting…", Toast.LENGTH_SHORT).show() }
         Thread {
             var deleted = 0
             for (entry in toDelete) {
                 val ok = HubFilesClient.deleteFile(ip, hubPort, entry.deviceName, entry.displayName)
+                android.util.Log.d("HubGallery", "deleteFile ${entry.displayName} -> $ok")
                 if (ok) {
                     deleted++
                     runOnUiThread {
