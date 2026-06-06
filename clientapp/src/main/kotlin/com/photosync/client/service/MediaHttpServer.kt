@@ -23,7 +23,9 @@ class MediaHttpServer(
     /** Called with the hub's Tailscale IP whenever a handshake carries one. */
     private val onHubTailscaleIp: ((String) -> Unit)? = null,
     /** Called when the laptop nudges the device to check for an OTA update immediately. */
-    private val onNudge: (() -> Unit)? = null
+    private val onNudge: (() -> Unit)? = null,
+    /** Returns the set of filenames explicitly deleted by the user — excluded from /media/list. */
+    private val deletedNames: () -> Set<String> = { emptySet() }
 ) : NanoHTTPD(Constants.CLIENT_PORT) {
 
     private val gson = Gson()
@@ -350,7 +352,11 @@ tick(); setInterval(tick, 1500);
         val sinceSeconds = session.parameters["since"]?.firstOrNull()?.toLongOrNull() ?: 0L
         val allFiles = mediaStore.getMediaSince(sinceSeconds)
         // Videos only sync over WiFi — filter them out when on mobile data
-        val files = if (isOnMobileData()) allFiles.filter { it.mimeType.startsWith("image/") } else allFiles
+        val excluded = deletedNames()
+        val files = run {
+            val f = if (isOnMobileData()) allFiles.filter { it.mimeType.startsWith("image/") } else allFiles
+            if (excluded.isEmpty()) f else f.filterNot { it.displayName in excluded }
+        }
 
         if (sinceSeconds > 0L) {
             // Metadata scan — the hub fetches the full list to compare against USB, then
