@@ -272,6 +272,16 @@ class VideoSpaceManager(private val context: Context) {
                     if (v.dateAddedSec > 0)    put(MediaStore.Video.Media.DATE_ADDED, v.dateAddedSec)
                     if (v.dateModifiedSec > 0) put(MediaStore.Video.Media.DATE_MODIFIED, v.dateModifiedSec)
                 }, null, null)
+                // Set physical file mtime so a future scanner rescan cannot reset DATE_ADDED.
+                if (v.dateAddedSec > 0) {
+                    context.contentResolver.query(newUri,
+                        arrayOf(MediaStore.Video.Media.DATA), null, null, null
+                    )?.use { cur ->
+                        if (cur.moveToFirst()) cur.getString(0)?.let { path ->
+                            try { java.io.File(path).setLastModified(v.dateAddedSec * 1000L) } catch (_: Exception) {}
+                        }
+                    }
+                }
             }
             true
         } catch (_: Exception) {
