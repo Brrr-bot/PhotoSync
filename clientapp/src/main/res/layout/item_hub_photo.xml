@@ -29,6 +29,24 @@
             android:indeterminateTint="@color/neon_cyan"/>
     </FrameLayout>
 
+    <!-- Selection tint overlay -->
+    <View
+        android:id="@+id/selection_overlay"
+        android:layout_width="match_parent"
+        android:layout_height="110dp"
+        android:background="#AA0099CC"
+        android:visibility="gone"/>
+
+    <!-- Selection checkmark -->
+    <ImageView
+        android:id="@+id/iv_check"
+        android:layout_width="22dp"
+        android:layout_height="22dp"
+        android:layout_gravity="top|end"
+        android:layout_margin="5dp"
+        android:src="@drawable/ic_check_circle"
+        android:visibility="gone"/>
+
     <!-- File name -->
     <TextView
         android:id="@+id/tv_name"
