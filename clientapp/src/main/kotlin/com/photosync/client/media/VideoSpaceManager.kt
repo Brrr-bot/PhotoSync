@@ -60,7 +60,7 @@ class VideoSpaceManager(private val context: Context) {
                 .remove(KEY_COMPRESSED)
                 .putInt(KEY_COMPRESS_VERSION, COMPRESS_VERSION)
                 .apply()
-            RemoteLogger.i("VideoSpace: quality upgrade to v$COMPRESS_VERSION — re-transcoding all videos")
+            RemoteLogger.i("VideoSpace: quality upgrade to v$COMPRESS_VERSION — re-transcoding all videos at 1080p/6Mbps")
         }
         val compressedNames = prefs.getStringSet(KEY_COMPRESSED_NAMES, emptySet())!!.toMutableSet()
 
@@ -500,6 +500,6 @@ class VideoSpaceManager(private val context: Context) {
         internal const val KEY_POSTER_NAMES    = "poster_names"
         private const val KEY_VIDEO_DATES_REPAIRED = "compressed_video_dates_repaired"
         private const val KEY_COMPRESS_VERSION  = "compress_version"
-        private const val COMPRESS_VERSION      = 2  // bump → clears compressed_video_names so H.265 re-runs
+        private const val COMPRESS_VERSION      = 3  // bump → clears compressed_video_names so H.265 re-runs
     }
 }
