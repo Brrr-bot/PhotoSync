@@ -1,8 +1,9 @@
 <?xml version="1.0" encoding="utf-8"?>
 <menu xmlns:android="http://schemas.android.com/apk/res/android">
     <item android:id="@+id/action_start"            android:title="Start Client" />
-    <item android:id="@+id/action_run_fix"          android:title="Run fix &amp; check now" />
-    <item android:id="@+id/action_check_update"     android:title="Check for updates" />
+    <item android:id="@+id/action_make_space"        android:title="Make Space" />
+    <item android:id="@+id/action_run_fix"           android:title="Run fix &amp; check now" />
+    <item android:id="@+id/action_check_update"      android:title="Check for updates" />
     <item android:id="@+id/action_delete_originals"      android:title="Delete queued originals" />
     <item android:id="@+id/action_cleanup_duplicates"    android:title="Clean up duplicate originals" />
 
