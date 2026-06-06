@@ -77,7 +77,7 @@ class ShareViaHubActivity : AppCompatActivity() {
             finish(); return
         }
         val port = ClientForegroundService.liveHubPort
-        postProgress(fileName, 0, 0, done = false, isShare = true)
+        postProgress(fileName, 0, 0, isShare = true)
         finish()  // activity closes; thread keeps running, notification takes over
 
         Thread {
@@ -87,8 +87,13 @@ class ShareViaHubActivity : AppCompatActivity() {
             }
 
             val tmpFile = File(cacheDir, match.displayName)
+            var lastShareProgressMs = 0L
             val ok = HubFilesClient.fetchFileToFile(ip, port, match.deviceName, match.displayName, tmpFile) { read, total ->
-                postProgress(fileName, read, total, done = false, isShare = true)
+                val now = System.currentTimeMillis()
+                if (now - lastShareProgressMs >= 250L) {
+                    lastShareProgressMs = now
+                    postProgress(fileName, read, total, isShare = true)
+                }
             }
             if (!ok) { postError(fileName, "Download failed"); return@Thread }
 
@@ -119,7 +124,7 @@ class ShareViaHubActivity : AppCompatActivity() {
             finish(); return
         }
         val port = ClientForegroundService.liveHubPort
-        postProgress(fileName, 0, 0, done = false, isShare = false)
+        postProgress(fileName, 0, 0, isShare = false)
         finish()
 
         Thread {
@@ -129,8 +134,13 @@ class ShareViaHubActivity : AppCompatActivity() {
             }
 
             val tmpFile = File(cacheDir, "restore_${match.displayName}")
+            var lastDlProgressMs = 0L
             val ok = HubFilesClient.fetchFileToFile(ip, port, match.deviceName, match.displayName, tmpFile) { read, total ->
-                postProgress(fileName, read, total, done = false, isShare = false)
+                val now = System.currentTimeMillis()
+                if (now - lastDlProgressMs >= 250L) {
+                    lastDlProgressMs = now
+                    postProgress(fileName, read, total, isShare = false)
+                }
             }
             if (!ok || tmpFile.length() == 0L) {
                 tmpFile.delete()
@@ -196,8 +206,8 @@ class ShareViaHubActivity : AppCompatActivity() {
         else                -> "$bytes B"
     }
 
-    /** Update the in-progress notification. */
-    private fun postProgress(fileName: String, read: Long, total: Long, done: Boolean, isShare: Boolean) {
+    /** Update the in-progress notification (call at most every 250 ms). */
+    private fun postProgress(fileName: String, read: Long, total: Long, isShare: Boolean) {
         val title    = if (isShare) "Fetching: $fileName" else "Downloading: $fileName"
         val progress = if (total > 0) ((read * 100L) / total).toInt() else 0
         val text     = if (total > 0) "${formatBytes(read)} / ${formatBytes(total)}"
@@ -219,10 +229,15 @@ class ShareViaHubActivity : AppCompatActivity() {
 
     /** Final notification with an active action button. */
     private fun postDone(fileName: String, text: String, actionPi: PendingIntent, actionLabel: String) {
+        // Cancel the ongoing progress notification first — on some Android versions
+        // an ongoing:true notification won't cleanly transition to ongoing:false via
+        // a same-ID notify() call.
+        nm.cancel(notifId)
         val builder = NotificationCompat.Builder(this, CHANNEL_ID)
             .setSmallIcon(android.R.drawable.stat_sys_download_done)
             .setContentTitle(fileName)
             .setContentText(text)
+            .setOngoing(false)
             .setAutoCancel(true)
             .setProgress(0, 0, false)
             .addAction(android.R.drawable.ic_menu_share, actionLabel, actionPi)
@@ -232,10 +247,12 @@ class ShareViaHubActivity : AppCompatActivity() {
 
     /** Error notification. */
     private fun postError(fileName: String, msg: String) {
+        nm.cancel(notifId)
         val builder = NotificationCompat.Builder(this, CHANNEL_ID)
             .setSmallIcon(android.R.drawable.stat_notify_error)
             .setContentTitle(fileName)
             .setContentText(msg)
+            .setOngoing(false)
             .setAutoCancel(true)
         nm.notify(notifId, builder.build())
     }
