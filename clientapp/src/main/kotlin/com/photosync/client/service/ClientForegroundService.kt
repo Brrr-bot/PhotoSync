@@ -104,6 +104,10 @@ class ClientForegroundService : LifecycleService() {
                     checker.checkAndNotify()
                     checker.checkTimesheetUpdate()
                 }
+            },
+            deletedNames = {
+                getSharedPreferences("deletion_state", MODE_PRIVATE)
+                    .getStringSet("user_deleted_names", emptySet()) ?: emptySet()
             }
         ).also {
             try {
