@@ -1,5 +1,8 @@
 package com.photosync.client.ui
 
+import android.app.NotificationChannel
+import android.app.NotificationManager
+import android.app.PendingIntent
 import android.content.ContentValues
 import android.content.Intent
 import android.net.Uri
@@ -11,7 +14,9 @@ import android.provider.OpenableColumns
 import android.widget.Toast
 import androidx.appcompat.app.AlertDialog
 import androidx.appcompat.app.AppCompatActivity
+import androidx.core.app.NotificationCompat
 import androidx.core.content.FileProvider
+import com.photosync.client.R
 import com.photosync.client.hub.HubFilesClient
 import com.photosync.client.media.MediaStoreHelper
 import com.photosync.client.service.ClientForegroundService
@@ -20,13 +25,20 @@ import java.io.File
 /**
  * Invisible trampoline launched via ACTION_SEND share target.
  * Shows a dialog letting the user choose:
- *  - Share via Hub      — downloads original from hub and re-shares via system share sheet
- *  - Download Original  — replaces the local compressed/placeholder with the hub original
+ *  - Share via Hub      — downloads original from hub, shows progress notification,
+ *                         notification action becomes "Share" when ready
+ *  - Download Original  — replaces the local compressed/placeholder with the hub original,
+ *                         shows progress notification, marks file as restored
  */
 class ShareViaHubActivity : AppCompatActivity() {
 
+    private lateinit var nm: NotificationManager
+    private var notifId = 0
+
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
+        nm = getSystemService(NotificationManager::class.java)
+        createChannel()
 
         val incomingUri = intent?.getParcelableExtra<Uri>(Intent.EXTRA_STREAM)
         if (incomingUri == null) { finish(); return }
@@ -36,18 +48,20 @@ class ShareViaHubActivity : AppCompatActivity() {
             Toast.makeText(this, "Could not read file name", Toast.LENGTH_SHORT).show()
             finish(); return
         }
+        notifId = fileName.hashCode()
 
         AlertDialog.Builder(this)
             .setTitle(fileName)
             .setMessage("What would you like to do?")
-            .setPositiveButton("Share via Hub") { _, _ -> doShare(fileName) }
+            .setPositiveButton("Share via Hub")    { _, _ -> doShare(fileName) }
             .setNeutralButton("Download Original") { _, _ -> doDownloadOriginal(fileName) }
-            .setNegativeButton("Cancel") { _, _ -> finish() }
+            .setNegativeButton("Cancel")           { _, _ -> finish() }
             .setOnCancelListener { finish() }
             .show()
     }
 
-    /** Best hub IP: live LAN (fresh) -> live Tailscale -> stored Tailscale in prefs. */
+    // ── Hub IP resolution ─────────────────────────────────────────────────
+
     private fun resolveHubIp(): String? {
         val localFresh = System.currentTimeMillis() - ClientForegroundService.liveHubIpUpdatedAt < 90_000L
         ClientForegroundService.liveHubIp?.takeIf { localFresh }?.let { return it }
@@ -55,44 +69,49 @@ class ShareViaHubActivity : AppCompatActivity() {
         return getSharedPreferences("client_prefs", MODE_PRIVATE).getString("hub_tailscale_ip", null)
     }
 
+    // ── Share via Hub ─────────────────────────────────────────────────────
+
     private fun doShare(fileName: String) {
         val ip = resolveHubIp() ?: run {
             Toast.makeText(this, "Hub not reachable — start PhotoSync first", Toast.LENGTH_LONG).show()
             finish(); return
         }
         val port = ClientForegroundService.liveHubPort
-        Toast.makeText(this, "Fetching original from hub…", Toast.LENGTH_SHORT).show()
+        postProgress(fileName, 0, 0, done = false, isShare = true)
+        finish()  // activity closes; thread keeps running, notification takes over
 
         Thread {
             val match = findOnHub(ip, port, fileName) ?: run {
-                runOnUiThread {
-                    Toast.makeText(this, "\"$fileName\" not found on hub", Toast.LENGTH_LONG).show()
-                    finish()
-                }; return@Thread
+                postError(fileName, "\"$fileName\" not found on hub")
+                return@Thread
             }
 
             val tmpFile = File(cacheDir, match.displayName)
-            if (!HubFilesClient.fetchFileToFile(ip, port, match.deviceName, match.displayName, tmpFile)) {
-                runOnUiThread {
-                    Toast.makeText(this, "Download from hub failed", Toast.LENGTH_SHORT).show()
-                    finish()
-                }; return@Thread
+            val ok = HubFilesClient.fetchFileToFile(ip, port, match.deviceName, match.displayName, tmpFile) { read, total ->
+                postProgress(fileName, read, total, done = false, isShare = true)
             }
+            if (!ok) { postError(fileName, "Download failed"); return@Thread }
 
-            val mime = mimeFor(match.displayName)
+            val mime     = mimeFor(match.displayName)
             val shareUri = FileProvider.getUriForFile(this, "${packageName}.fileprovider", tmpFile)
-            runOnUiThread {
-                startActivity(Intent.createChooser(
-                    Intent(Intent.ACTION_SEND).apply {
-                        type = mime
-                        putExtra(Intent.EXTRA_STREAM, shareUri)
-                        addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
-                    }, "Share ${match.displayName}"
-                ))
-                finish()
-            }
+
+            val shareIntent = Intent.createChooser(
+                Intent(Intent.ACTION_SEND).apply {
+                    type = mime
+                    putExtra(Intent.EXTRA_STREAM, shareUri)
+                    addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION or Intent.FLAG_ACTIVITY_NEW_TASK)
+                }, "Share ${match.displayName}"
+            ).also { it.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK) }
+
+            val pi = PendingIntent.getActivity(
+                this, notifId, shareIntent,
+                PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE
+            )
+            postDone(fileName, "Ready — tap to share", pi, actionLabel = "Share")
         }.start()
     }
+
+    // ── Download Original ─────────────────────────────────────────────────
 
     private fun doDownloadOriginal(fileName: String) {
         val ip = resolveHubIp() ?: run {
@@ -100,24 +119,23 @@ class ShareViaHubActivity : AppCompatActivity() {
             finish(); return
         }
         val port = ClientForegroundService.liveHubPort
-        Toast.makeText(this, "Downloading original from hub…", Toast.LENGTH_SHORT).show()
+        postProgress(fileName, 0, 0, done = false, isShare = false)
+        finish()
 
         Thread {
             val match = findOnHub(ip, port, fileName) ?: run {
-                runOnUiThread {
-                    Toast.makeText(this, "\"$fileName\" not found on hub", Toast.LENGTH_LONG).show()
-                    finish()
-                }; return@Thread
+                postError(fileName, "\"$fileName\" not found on hub")
+                return@Thread
             }
 
             val tmpFile = File(cacheDir, "restore_${match.displayName}")
-            if (!HubFilesClient.fetchFileToFile(ip, port, match.deviceName, match.displayName, tmpFile)
-                    || tmpFile.length() == 0L) {
+            val ok = HubFilesClient.fetchFileToFile(ip, port, match.deviceName, match.displayName, tmpFile) { read, total ->
+                postProgress(fileName, read, total, done = false, isShare = false)
+            }
+            if (!ok || tmpFile.length() == 0L) {
                 tmpFile.delete()
-                runOnUiThread {
-                    Toast.makeText(this, "Download failed", Toast.LENGTH_SHORT).show()
-                    finish()
-                }; return@Thread
+                postError(fileName, "Download failed")
+                return@Thread
             }
 
             val bytes = tmpFile.readBytes()
@@ -135,26 +153,94 @@ class ShareViaHubActivity : AppCompatActivity() {
             }
 
             if (restored) {
-                // Mark restored so Make Space + fix sweeps skip this file
                 val prefs = getSharedPreferences("compression_state", MODE_PRIVATE)
                 val names = prefs.getStringSet("restored_original_names", emptySet())!!.toMutableSet()
                 names.add(fileName)
                 prefs.edit().putStringSet("restored_original_names", names).apply()
-                // Remove from make_space processed so it can be re-queued later
+
                 val spacePrefs = getSharedPreferences("make_space_state", MODE_PRIVATE)
                 val processed = spacePrefs.getStringSet("processed_names", emptySet())!!.toMutableSet()
                 processed.remove(fileName)
                 spacePrefs.edit().putStringSet("processed_names", processed).apply()
             }
 
-            runOnUiThread {
-                Toast.makeText(this,
-                    if (restored) "Original restored: $fileName" else "Failed to restore file",
-                    Toast.LENGTH_LONG).show()
-                finish()
+            val dismissIntent = Intent(this, MainActivity::class.java).apply {
+                flags = Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_CLEAR_TOP
             }
+            val pi = PendingIntent.getActivity(
+                this, notifId + 1, dismissIntent,
+                PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE
+            )
+            if (restored) postDone(fileName, "Original saved to phone", pi, actionLabel = "Open App")
+            else postError(fileName, "Failed to save file")
         }.start()
     }
+
+    // ── Notification helpers ──────────────────────────────────────────────
+
+    private fun createChannel() {
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+            nm.createNotificationChannel(
+                NotificationChannel(CHANNEL_ID, "Hub Downloads",
+                    NotificationManager.IMPORTANCE_LOW).apply {
+                    description = "Progress for downloads from the hub"
+                    setSound(null, null)
+                }
+            )
+        }
+    }
+
+    private fun formatBytes(bytes: Long): String = when {
+        bytes >= 1_048_576L -> "%.1f MB".format(bytes / 1_048_576.0)
+        bytes >= 1_024L     -> "%.0f KB".format(bytes / 1_024.0)
+        else                -> "$bytes B"
+    }
+
+    /** Update the in-progress notification. */
+    private fun postProgress(fileName: String, read: Long, total: Long, done: Boolean, isShare: Boolean) {
+        val title    = if (isShare) "Fetching: $fileName" else "Downloading: $fileName"
+        val progress = if (total > 0) ((read * 100L) / total).toInt() else 0
+        val text     = if (total > 0) "${formatBytes(read)} / ${formatBytes(total)}"
+                       else if (read > 0) formatBytes(read) else "Connecting…"
+
+        val builder = NotificationCompat.Builder(this, CHANNEL_ID)
+            .setSmallIcon(android.R.drawable.stat_sys_download)
+            .setContentTitle(title)
+            .setContentText(text)
+            .setOngoing(true)
+            .setOnlyAlertOnce(true)
+            .setSilent(true)
+
+        if (total > 0) builder.setProgress(100, progress, false)
+        else           builder.setProgress(0, 0, true)
+
+        nm.notify(notifId, builder.build())
+    }
+
+    /** Final notification with an active action button. */
+    private fun postDone(fileName: String, text: String, actionPi: PendingIntent, actionLabel: String) {
+        val builder = NotificationCompat.Builder(this, CHANNEL_ID)
+            .setSmallIcon(android.R.drawable.stat_sys_download_done)
+            .setContentTitle(fileName)
+            .setContentText(text)
+            .setAutoCancel(true)
+            .setProgress(0, 0, false)
+            .addAction(android.R.drawable.ic_menu_share, actionLabel, actionPi)
+            .setContentIntent(actionPi)
+        nm.notify(notifId, builder.build())
+    }
+
+    /** Error notification. */
+    private fun postError(fileName: String, msg: String) {
+        val builder = NotificationCompat.Builder(this, CHANNEL_ID)
+            .setSmallIcon(android.R.drawable.stat_notify_error)
+            .setContentTitle(fileName)
+            .setContentText(msg)
+            .setAutoCancel(true)
+        nm.notify(notifId, builder.build())
+    }
+
+    // ── Helpers ───────────────────────────────────────────────────────────
 
     private fun findOnHub(ip: String, port: Int, fileName: String) =
         try { HubFilesClient.fetchFiles(ip, port, limit = 10_000).firstOrNull { it.displayName == fileName } }
@@ -206,5 +292,9 @@ class ShareViaHubActivity : AppCompatActivity() {
         "mp4"         -> "video/mp4"
         "mov"         -> "video/quicktime"
         else          -> "image/jpeg"
+    }
+
+    companion object {
+        const val CHANNEL_ID = "hub_download_channel"
     }
 }
