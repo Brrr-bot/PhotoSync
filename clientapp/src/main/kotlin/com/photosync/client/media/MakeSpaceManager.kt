@@ -36,6 +36,14 @@ class MakeSpaceManager(private val context: Context) {
     private val compressionPrefs = context.getSharedPreferences("compression_state", Context.MODE_PRIVATE)
     private val spacePrefs       = context.getSharedPreferences("make_space_state",  Context.MODE_PRIVATE)
 
+    companion object {
+        // Bump this when compression quality/algorithm changes so all photos are re-processed.
+        // v1 = WebP quality 92 (too large)
+        // v2 = WebP quality 72 (matches social-app ratio ~500KB per 3MB photo)
+        private const val COMPRESS_VERSION     = 2
+        private const val KEY_COMPRESS_VERSION = "compress_version"
+    }
+
     fun process(progress: ((done: Int, total: Int, msg: String) -> Unit)? = null): Summary {
         val ip = effectiveHubIp() ?: return Summary(0, 0, 0, 0)
         val port = ClientForegroundService.liveHubPort
@@ -47,6 +55,15 @@ class MakeSpaceManager(private val context: Context) {
 
         val hubNames       = hubFiles.map { it.displayName }.toHashSet()
         val restoredNames  = compressionPrefs.getStringSet("restored_original_names", emptySet())!!
+
+        // Clear processed set when quality version has been bumped so all photos re-compress
+        val storedVersion = spacePrefs.getInt(KEY_COMPRESS_VERSION, 0)
+        if (storedVersion < COMPRESS_VERSION) {
+            spacePrefs.edit()
+                .remove("processed_names")
+                .putInt(KEY_COMPRESS_VERSION, COMPRESS_VERSION)
+                .apply()
+        }
         val processedNames = spacePrefs.getStringSet("processed_names", emptySet())!!.toMutableSet()
 
         val mediaStore       = MediaStoreHelper(context)
