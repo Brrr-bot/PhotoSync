@@ -12,6 +12,7 @@ import android.view.ViewGroup
 import android.widget.FrameLayout
 import android.widget.ImageButton
 import android.widget.ImageView
+import android.widget.LinearLayout
 import android.widget.TextView
 import android.widget.Toast
 import androidx.appcompat.app.AlertDialog
@@ -22,7 +23,6 @@ import androidx.recyclerview.widget.RecyclerView
 import com.photosync.client.R
 import com.photosync.client.hub.HubFileEntry
 import com.photosync.client.hub.HubFilesClient
-import com.photosync.client.service.ClientForegroundService
 import java.io.File
 import java.text.SimpleDateFormat
 import java.util.Date
@@ -33,20 +33,32 @@ class HubGalleryActivity : AppCompatActivity() {
     private lateinit var rvGallery: RecyclerView
     private lateinit var tvStatus: TextView
     private lateinit var tvFileCount: TextView
+    private lateinit var barSelection: LinearLayout
+    private lateinit var tvSelectionCount: TextView
+    private lateinit var btnShareSelected: ImageButton
+    private lateinit var btnDeleteSelected: ImageButton
 
     private var hubIp: String? = null
     private var hubPort: Int = 0
     private val entries = mutableListOf<HubFileEntry>()
+    private val selectedItems = mutableSetOf<HubFileEntry>()
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         setContentView(R.layout.activity_hub_gallery)
 
-        rvGallery   = findViewById(R.id.rv_gallery)
-        tvStatus    = findViewById(R.id.tv_gallery_status)
-        tvFileCount = findViewById(R.id.tv_file_count)
+        rvGallery        = findViewById(R.id.rv_gallery)
+        tvStatus         = findViewById(R.id.tv_gallery_status)
+        tvFileCount      = findViewById(R.id.tv_file_count)
+        barSelection     = findViewById(R.id.bar_selection)
+        tvSelectionCount = findViewById(R.id.tv_selection_count)
+        btnShareSelected = findViewById(R.id.btn_share_selected)
+        btnDeleteSelected= findViewById(R.id.btn_delete_selected)
 
         findViewById<ImageButton>(R.id.btn_back).setOnClickListener { finish() }
+
+        btnDeleteSelected.setOnClickListener { confirmDeleteSelected() }
+        btnShareSelected.setOnClickListener  { shareSelected() }
 
         hubIp   = intent.getStringExtra(EXTRA_HUB_IP)
         hubPort = intent.getIntExtra(EXTRA_HUB_PORT, 8767)
@@ -82,7 +94,6 @@ class HubGalleryActivity : AppCompatActivity() {
 
     private fun loadThumb(entry: HubFileEntry, iv: ImageView, overlay: FrameLayout) {
         val key = "${entry.deviceName}/${entry.displayName}"
-        // Use ThumbnailCache (disk + memory) so thumbnails survive screen rotations and reopens.
         ThumbnailCache.get(this, key)?.let { iv.setImageBitmap(it); overlay.visibility = View.GONE; return }
         val ip = hubIp ?: return
         Thread {
@@ -94,6 +105,113 @@ class HubGalleryActivity : AppCompatActivity() {
             }
         }.start()
     }
+
+    // ── Selection ─────────────────────────────────────────────────────────────
+
+    private fun toggleSelection(entry: HubFileEntry) {
+        if (selectedItems.contains(entry)) selectedItems.remove(entry)
+        else selectedItems.add(entry)
+        updateSelectionBar()
+        val idx = entries.indexOf(entry)
+        if (idx >= 0) rvGallery.adapter?.notifyItemChanged(idx)
+    }
+
+    private fun updateSelectionBar() {
+        val count = selectedItems.size
+        if (count == 0) {
+            barSelection.visibility = View.GONE
+        } else {
+            barSelection.visibility = View.VISIBLE
+            tvSelectionCount.text = "$count selected"
+        }
+    }
+
+    // ── Delete selected ───────────────────────────────────────────────────────
+
+    private fun confirmDeleteSelected() {
+        val count = selectedItems.size
+        if (count == 0) return
+        val label = if (count == 1) "1 file" else "$count files"
+        AlertDialog.Builder(this)
+            .setTitle("Delete $label from hub?")
+            .setMessage("Permanently deleted from the USB drive on the hub.")
+            .setPositiveButton("Delete") { _, _ -> deleteSelected() }
+            .setNegativeButton("Cancel", null)
+            .show()
+    }
+
+    private fun deleteSelected() {
+        val toDelete = selectedItems.toList()
+        val ip = hubIp ?: return
+        Thread {
+            var deleted = 0
+            for (entry in toDelete) {
+                val ok = HubFilesClient.deleteFile(ip, hubPort, entry.deviceName, entry.displayName)
+                if (ok) {
+                    deleted++
+                    runOnUiThread {
+                        val idx = entries.indexOf(entry)
+                        if (idx >= 0) {
+                            entries.removeAt(idx)
+                            rvGallery.adapter?.notifyItemRemoved(idx)
+                        }
+                    }
+                }
+            }
+            val d = deleted
+            val total = toDelete.size
+            runOnUiThread {
+                selectedItems.clear()
+                updateSelectionBar()
+                tvFileCount.text = "${entries.size} files"
+                val msg = if (d == total) "Deleted $d file${if (d > 1) "s" else ""}"
+                          else "Deleted $d / $total (some failed)"
+                Toast.makeText(this, msg, Toast.LENGTH_SHORT).show()
+            }
+        }.start()
+    }
+
+    // ── Share selected ────────────────────────────────────────────────────────
+
+    private fun shareSelected() {
+        val toShare = selectedItems.toList()
+        val ip = hubIp ?: return
+        if (toShare.isEmpty()) return
+        Toast.makeText(this, "Fetching ${toShare.size} file(s)…", Toast.LENGTH_SHORT).show()
+        Thread {
+            val uris = ArrayList<Uri>()
+            for (entry in toShare) {
+                val bytes = HubFilesClient.fetchFile(ip, hubPort, entry.deviceName, entry.displayName)
+                if (bytes != null) {
+                    val tmpFile = File(cacheDir, entry.displayName)
+                    tmpFile.writeBytes(bytes)
+                    uris.add(FileProvider.getUriForFile(this, "${packageName}.fileprovider", tmpFile))
+                }
+            }
+            runOnUiThread {
+                if (uris.isEmpty()) {
+                    Toast.makeText(this, "Failed to fetch files", Toast.LENGTH_SHORT).show()
+                    return@runOnUiThread
+                }
+                val intent = if (uris.size == 1) {
+                    Intent(Intent.ACTION_SEND).apply {
+                        type = mimeFor(toShare.first().displayName)
+                        putExtra(Intent.EXTRA_STREAM, uris[0])
+                        addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
+                    }
+                } else {
+                    Intent(Intent.ACTION_SEND_MULTIPLE).apply {
+                        type = "*/*"
+                        putParcelableArrayListExtra(Intent.EXTRA_STREAM, uris)
+                        addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
+                    }
+                }
+                startActivity(Intent.createChooser(intent, "Share"))
+            }
+        }.start()
+    }
+
+    // ── Single-file actions ───────────────────────────────────────────────────
 
     private fun confirmDownload(entry: HubFileEntry) {
         val dateFmt = SimpleDateFormat("dd MMM yyyy", Locale.getDefault())
@@ -118,20 +236,12 @@ class HubGalleryActivity : AppCompatActivity() {
                 runOnUiThread { Toast.makeText(this, "Download failed", Toast.LENGTH_SHORT).show() }
                 return@Thread
             }
-            val mime = when (entry.displayName.substringAfterLast('.').lowercase()) {
-                "jpg", "jpeg" -> "image/jpeg"
-                "png"  -> "image/png"
-                "webp" -> "image/webp"
-                "mp4"  -> "video/mp4"
-                "mov"  -> "video/quicktime"
-                else   -> "image/jpeg"
-            }
             val tmpFile = File(cacheDir, entry.displayName)
             tmpFile.writeBytes(bytes)
             val uri: Uri = FileProvider.getUriForFile(this, "${packageName}.fileprovider", tmpFile)
             runOnUiThread {
                 val intent = Intent(Intent.ACTION_SEND).apply {
-                    type = mime
+                    type = mimeFor(entry.displayName)
                     putExtra(Intent.EXTRA_STREAM, uri)
                     addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
                 }
@@ -159,14 +269,7 @@ class HubGalleryActivity : AppCompatActivity() {
 
     private fun saveToGallery(name: String, bytes: ByteArray): Boolean {
         return try {
-            val mime = when (name.substringAfterLast('.').lowercase()) {
-                "jpg", "jpeg" -> "image/jpeg"
-                "png"  -> "image/png"
-                "webp" -> "image/webp"
-                "mp4"  -> "video/mp4"
-                "mov"  -> "video/quicktime"
-                else   -> "image/jpeg"
-            }
+            val mime = mimeFor(name)
             val isVideo = mime.startsWith("video/")
             val values = ContentValues().apply {
                 put(MediaStore.MediaColumns.DISPLAY_NAME, name)
@@ -193,11 +296,24 @@ class HubGalleryActivity : AppCompatActivity() {
         } catch (_: Exception) { false }
     }
 
+    private fun mimeFor(name: String): String = when (name.substringAfterLast('.').lowercase()) {
+        "jpg", "jpeg" -> "image/jpeg"
+        "png"  -> "image/png"
+        "webp" -> "image/webp"
+        "mp4"  -> "video/mp4"
+        "mov"  -> "video/quicktime"
+        else   -> "image/jpeg"
+    }
+
+    // ── Adapter ───────────────────────────────────────────────────────────────
+
     inner class GalleryAdapter : RecyclerView.Adapter<GalleryAdapter.VH>() {
         inner class VH(v: View) : RecyclerView.ViewHolder(v) {
-            val iv: ImageView = v.findViewById(R.id.iv_thumb)
-            val tvName: TextView = v.findViewById(R.id.tv_name)
+            val iv: ImageView        = v.findViewById(R.id.iv_thumb)
+            val tvName: TextView     = v.findViewById(R.id.tv_name)
             val overlay: FrameLayout = v.findViewById(R.id.overlay_downloading)
+            val selOverlay: View     = v.findViewById(R.id.selection_overlay)
+            val ivCheck: ImageView   = v.findViewById(R.id.iv_check)
         }
 
         override fun onCreateViewHolder(parent: ViewGroup, viewType: Int): VH {
@@ -209,46 +325,28 @@ class HubGalleryActivity : AppCompatActivity() {
 
         override fun onBindViewHolder(holder: VH, position: Int) {
             val entry = entries[position]
+            val selected = selectedItems.contains(entry)
+
             holder.tvName.text = entry.displayName
             holder.iv.setImageBitmap(null)
             holder.overlay.visibility = View.VISIBLE
+            holder.selOverlay.visibility = if (selected) View.VISIBLE else View.GONE
+            holder.ivCheck.visibility    = if (selected) View.VISIBLE else View.GONE
+
             loadThumb(entry, holder.iv, holder.overlay)
-            holder.itemView.setOnClickListener { confirmDownload(entry) }
+
+            holder.itemView.setOnClickListener {
+                if (selectedItems.isNotEmpty()) {
+                    toggleSelection(entry)
+                } else {
+                    confirmDownload(entry)
+                }
+            }
             holder.itemView.setOnLongClickListener {
-                confirmDeleteFromHub(entry, holder.adapterPosition)
+                toggleSelection(entry)
                 true
             }
         }
-    }
-
-    private fun confirmDeleteFromHub(entry: HubFileEntry, position: Int) {
-        AlertDialog.Builder(this)
-            .setTitle("Delete from hub?")
-            .setMessage("\"${entry.displayName}\" will be permanently deleted from the USB drive on the hub.\n\nDevice: ${entry.deviceName}")
-            .setPositiveButton("Delete") { _, _ -> deleteFromHub(entry, position) }
-            .setNegativeButton("Cancel", null)
-            .show()
-    }
-
-    private fun deleteFromHub(entry: HubFileEntry, position: Int) {
-        val ip = hubIp ?: return
-        Toast.makeText(this, "Deleting…", Toast.LENGTH_SHORT).show()
-        Thread {
-            val ok = HubFilesClient.deleteFile(ip, hubPort, entry.deviceName, entry.displayName)
-            runOnUiThread {
-                if (ok) {
-                    val idx = entries.indexOf(entry)
-                    if (idx >= 0) {
-                        entries.removeAt(idx)
-                        rvGallery.adapter?.notifyItemRemoved(idx)
-                        tvFileCount.text = "${entries.size} files"
-                    }
-                    Toast.makeText(this, "Deleted: ${entry.displayName}", Toast.LENGTH_SHORT).show()
-                } else {
-                    Toast.makeText(this, "Delete failed — hub not reachable or file not found", Toast.LENGTH_SHORT).show()
-                }
-            }
-        }.start()
     }
 
     companion object {
