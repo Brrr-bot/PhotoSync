@@ -22,15 +22,16 @@ import java.util.concurrent.CountDownLatch
 import java.util.concurrent.TimeUnit
 
 /**
- * Transcodes a video to H.265 HEVC at 720p/4 Mbps using Media3 Transformer.
- * H.265 delivers significantly better quality-per-bit than H.264 at the same bitrate,
- * so 720p/4 Mbps HEVC looks noticeably better than the old 480p/1.5 Mbps H.264.
+ * Transcodes a video to H.265 HEVC at 1080p/6 Mbps using Media3 Transformer.
+ * 1080p keeps enough spatial resolution that the codec can spread its bits across more
+ * pixels, eliminating the "oily" / waxy artefact that 720p/4 Mbps showed on Samsung
+ * high-detail footage.  6 Mbps H.265 still cuts file size by 60–80 % vs the original.
  */
 object VideoTranscoder {
 
     @OptIn(UnstableApi::class)
     fun transcode(context: Context, inputUri: Uri, outputPath: String,
-                  targetHeight: Int = 720, bitrate: Int = 4_000_000): Boolean {
+                  targetHeight: Int = 1080, bitrate: Int = 6_000_000): Boolean {
         val latch = CountDownLatch(1)
         val ok = java.util.concurrent.atomic.AtomicBoolean(false)
 
