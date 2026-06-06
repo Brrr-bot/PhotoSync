@@ -71,6 +71,10 @@ class MakeSpaceManager(private val context: Context) {
 
         val phoneImages = mediaStore.getMediaSince(0).filter { f ->
             f.mimeType.startsWith("image/") &&
+            // Skip files already compressed by the hub replace flow (they are WebP)
+            // and skip anything already small — re-compressing only degrades quality.
+            f.mimeType != "image/webp" &&
+            f.size > 800_000L &&
             f.displayName in hubNames &&
             f.displayName !in restoredNames &&
             f.displayName !in processedNames
