@@ -118,7 +118,7 @@ class MakeSpaceManager(private val context: Context) {
                         processedNames.add(image.displayName); skipped++; continue
                     }
                     mediaStore.replaceFile(image.id, "image/webp", webpBytes, image.dateTaken)
-                    freedBytes += (originalBytes.size - webpBytes.size).coerceAtLeast(0L).toLong()
+                    freedBytes += (originalBytes.size - webpBytes.size).coerceAtLeast(0).toLong()
                     compressed++
                 }
                 processedNames.add(image.displayName)
