@@ -89,7 +89,7 @@ object HubFilesClient {
         return try {
             val enc = java.net.URLEncoder.encode(name, "UTF-8")
             val devEnc = java.net.URLEncoder.encode(device, "UTF-8")
-            val conn = openWithMethod("DELETE",
+            val conn = openWithMethod("POST",
                 "http://$ip:$port${Constants.PATH_HUB_DELETE}?device=$devEnc&name=$enc")
             val ok = conn.responseCode == 200
             conn.disconnect()
