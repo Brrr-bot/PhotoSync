@@ -71,10 +71,6 @@ class MakeSpaceManager(private val context: Context) {
 
         val phoneImages = mediaStore.getMediaSince(0).filter { f ->
             f.mimeType.startsWith("image/") &&
-            // Skip files already compressed by the hub replace flow (they are WebP)
-            // and skip anything already small — re-compressing only degrades quality.
-            f.mimeType != "image/webp" &&
-            f.size > 800_000L &&
             f.displayName in hubNames &&
             f.displayName !in restoredNames &&
             f.displayName !in processedNames
@@ -86,13 +82,28 @@ class MakeSpaceManager(private val context: Context) {
         var freedBytes = 0L
         val total = phoneImages.size
 
+        // Build a map from displayName -> hub entry so we can download originals
+        val hubByName = hubFiles.associateBy { it.displayName }
+
         for ((index, image) in phoneImages.withIndex()) {
             progress?.invoke(index + 1, total, image.displayName)
             try {
-                val uri = ContentUris.withAppendedId(
-                    MediaStore.Images.Media.EXTERNAL_CONTENT_URI, image.id)
-                val originalBytes = context.contentResolver.openInputStream(uri)
-                    ?.use { it.readBytes() } ?: run { skipped++; continue }
+                // Always compress from the hub original so re-runs with new settings
+                // produce the best possible quality regardless of what's on the phone.
+                val hubEntry = hubByName[image.displayName]
+                val originalBytes: ByteArray
+                if (hubEntry != null) {
+                    val tmp = java.io.File(context.cacheDir, "ms_orig_${image.id}")
+                    val ok = HubFilesClient.fetchFileToFile(ip, port, hubEntry.deviceName, hubEntry.displayName, tmp)
+                    if (!ok || tmp.length() == 0L) { tmp.delete(); skipped++; continue }
+                    originalBytes = tmp.readBytes()
+                    tmp.delete()
+                } else {
+                    // Hub entry not found — fall back to phone's local copy
+                    val uri = ContentUris.withAppendedId(MediaStore.Images.Media.EXTERNAL_CONTENT_URI, image.id)
+                    originalBytes = context.contentResolver.openInputStream(uri)
+                        ?.use { it.readBytes() } ?: run { skipped++; continue }
+                }
 
                 val isOld = image.dateAdded < oneMonthAgoSec
 
@@ -103,11 +114,11 @@ class MakeSpaceManager(private val context: Context) {
                     posterized++
                 } else {
                     val webpBytes = WebPConverter.convert(originalBytes, context.cacheDir)
-                    if (webpBytes == null || webpBytes.size >= originalBytes.size) {
+                    if (webpBytes == null) {
                         processedNames.add(image.displayName); skipped++; continue
                     }
                     mediaStore.replaceFile(image.id, "image/webp", webpBytes, image.dateTaken)
-                    freedBytes += (originalBytes.size - webpBytes.size).toLong()
+                    freedBytes += (originalBytes.size - webpBytes.size).coerceAtLeast(0L).toLong()
                     compressed++
                 }
                 processedNames.add(image.displayName)
