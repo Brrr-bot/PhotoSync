@@ -344,6 +344,11 @@ class MediaStoreHelper(private val context: Context) {
                     if (dateModified > 0) put(MediaStore.MediaColumns.DATE_MODIFIED, dateModified)
                 }, null, null)
             } catch (_: Exception) {}
+            // Set the physical file mtime = original DATE_ADDED so that if the MediaStore
+            // scanner fires and re-reads the file, it will not overwrite DATE_ADDED with "now".
+            if (dateAdded > 0) resolveRealPath(origUri)?.let { path ->
+                try { java.io.File(path).setLastModified(dateAdded * 1000L) } catch (_: Exception) {}
+            }
             markReplaced(originalId, originalId, displayName)
             return ReplaceResult.REPLACED
         }
@@ -417,6 +422,11 @@ class MediaStoreHelper(private val context: Context) {
                             if (dateAdded > 0) put(MediaStore.MediaColumns.DATE_ADDED, dateAdded)
                             if (dateModified > 0) put(MediaStore.MediaColumns.DATE_MODIFIED, dateModified)
                         }, null, null)
+                    }
+                    // Set the physical file mtime = original DATE_ADDED so the scanner
+                    // cannot overwrite it with the current time on a future rescan.
+                    if (dateAdded > 0) resolveRealPath(newUri)?.let { path ->
+                        try { java.io.File(path).setLastModified(dateAdded * 1000L) } catch (_: Exception) {}
                     }
                 }
                 markReplaced(originalId, newId, displayName)
