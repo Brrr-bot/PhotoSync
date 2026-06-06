@@ -420,7 +420,7 @@ class ClientForegroundService : LifecycleService() {
         /** Write a timestamped line to the live log without needing a service instance. */
         fun staticLog(message: String) {
             val time = java.text.SimpleDateFormat("HH:mm:ss", java.util.Locale.getDefault()).format(java.util.Date())
-            val line = "  "
+            val line = time + "  " + message
             synchronized(recentLogs) {
                 if (recentLogs.size >= 100) recentLogs.removeFirst()
                 recentLogs.addLast(line)
