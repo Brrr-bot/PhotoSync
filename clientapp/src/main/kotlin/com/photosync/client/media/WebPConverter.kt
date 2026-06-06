@@ -157,6 +157,8 @@ object WebPConverter {
         ExifInterface.TAG_SPECTRAL_SENSITIVITY,
         ExifInterface.TAG_FLASH_PIX_VERSION,
         ExifInterface.TAG_INTEROPERABILITY_INDEX,
+        // XMP — full XML metadata packet (keywords, ratings, editing app data, etc.)
+        ExifInterface.TAG_XMP,
         // Misc
         ExifInterface.TAG_IMAGE_DESCRIPTION,
         ExifInterface.TAG_USER_COMMENT,
