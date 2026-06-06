@@ -31,6 +31,7 @@ import com.photosync.client.BuildConfig
 import com.photosync.client.R
 import com.photosync.client.hub.HubFilesClient
 import com.photosync.client.media.LocalImageProcessor
+import com.photosync.client.media.MakeSpaceManager
 import com.photosync.client.media.MediaStoreHelper
 import com.photosync.client.network.TailscaleIpDetector
 import com.photosync.client.service.ClientForegroundService
@@ -260,6 +261,10 @@ class MainActivity : AppCompatActivity() {
         popup.menuInflater.inflate(R.menu.menu_client, popup.menu)
         popup.setOnMenuItemClickListener { item ->
             when (item.itemId) {
+                R.id.action_make_space -> {
+                    runMakeSpaceNow()
+                    true
+                }
                 R.id.action_start -> {
                     startForegroundService(Intent(this, ClientForegroundService::class.java))
                     true
@@ -687,6 +692,43 @@ class MainActivity : AppCompatActivity() {
             contentResolver, android.provider.Settings.Secure.ENABLED_ACCESSIBILITY_SERVICES
         ) ?: return false
         return enabled.split(":").any { it.equals(serviceName, ignoreCase = true) }
+    }
+
+    // ── Make Space ───────────────────────────────────────────────────────────
+
+    /**
+     * Manually triggers Make Space:
+     *  - Files < 1 month confirmed on hub  -> compress to WebP 85%
+     *  - Files >= 1 month confirmed on hub -> replace with placeholder (dark overlay + cloud icon)
+     * Skips files the user has previously restored as originals from the hub.
+     */
+    private fun runMakeSpaceNow() {
+        val ip = effectiveHubIp()
+        if (ip == null) {
+            Toast.makeText(this, "Hub not connected — connect first", Toast.LENGTH_SHORT).show()
+            return
+        }
+        Toast.makeText(this, "Make Space running…", Toast.LENGTH_SHORT).show()
+        Thread {
+            val summary = com.photosync.client.media.MakeSpaceManager(this).process { done, total, name ->
+                if (done % 10 == 0 || done == total) {
+                    runOnUiThread {
+                        Toast.makeText(this, "Make Space $done/$total: $name", Toast.LENGTH_SHORT).show()
+                    }
+                }
+            }
+            runOnUiThread {
+                val mb = summary.freedBytes / 1_048_576
+                val msg = buildString {
+                    append("Make Space done  ")
+                    if (summary.compressed > 0) append("• ${summary.compressed} compressed  ")
+                    if (summary.posterized > 0)  append("• ${summary.posterized} posterized  ")
+                    append("• ${mb}MB freed")
+                    if (summary.skipped > 0) append("  (${summary.skipped} skipped)")
+                }
+                Toast.makeText(this, msg, Toast.LENGTH_LONG).show()
+            }
+        }.start()
     }
 
     companion object {
