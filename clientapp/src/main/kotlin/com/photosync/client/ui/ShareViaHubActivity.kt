@@ -278,14 +278,14 @@ class ShareViaHubActivity : AppCompatActivity() {
             files.firstOrNull { it.displayName == fileName }
                 ?: run {
                     // Placeholder JPEGs share a base name with the original video.
-                    // If the .jpg isn't on the hub, look for the same base name with a
+                    // If the .jpg is not on the hub, look for the same base name with a
                     // video extension so the user can still download/share the original.
-                    if (fileName.endsWith(.jpg, ignoreCase = true) ||
-                        fileName.endsWith(.jpeg, ignoreCase = true)) {
+                    if (fileName.endsWith(".jpg", ignoreCase = true) ||
+                        fileName.endsWith(".jpeg", ignoreCase = true)) {
                         val base = fileName.substringBeforeLast('.')
                         files.firstOrNull { it.displayName.substringBeforeLast('.') == base
                             && it.displayName.substringAfterLast('.').lowercase()
-                               .let { ext -> ext == mp4 || ext == mov || ext == mkv || ext == avi } }
+                               .let { ext -> ext == "mp4" || ext == "mov" || ext == "mkv" || ext == "avi" } }
                     } else null
                 }
         } catch (_: Exception) { null }
