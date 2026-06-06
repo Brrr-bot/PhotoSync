@@ -143,32 +143,26 @@ class HubGalleryActivity : AppCompatActivity() {
     private fun deleteSelected() {
         val toDelete = selectedItems.toList()
         val ip = hubIp ?: return
-        runOnUiThread { Toast.makeText(this, "Deleting…", Toast.LENGTH_SHORT).show() }
+        // Clear selection immediately so the bar and checkmarks disappear right away
+        selectedItems.clear()
+        updateSelectionBar()
+        rvGallery.adapter?.notifyDataSetChanged()
+        Toast.makeText(this, "Deleting ${toDelete.size} file${if (toDelete.size > 1) "s" else ""}…", Toast.LENGTH_SHORT).show()
         Thread {
             var deleted = 0
             for (entry in toDelete) {
                 val ok = HubFilesClient.deleteFile(ip, hubPort, entry.deviceName, entry.displayName)
                 android.util.Log.d("HubGallery", "deleteFile ${entry.displayName} -> $ok")
-                if (ok) {
-                    deleted++
-                    runOnUiThread {
-                        val idx = entries.indexOf(entry)
-                        if (idx >= 0) {
-                            entries.removeAt(idx)
-                            rvGallery.adapter?.notifyItemRemoved(idx)
-                        }
-                    }
-                }
+                if (ok) deleted++
             }
             val d = deleted
             val total = toDelete.size
             runOnUiThread {
-                selectedItems.clear()
-                updateSelectionBar()
-                tvFileCount.text = "${entries.size} files"
                 val msg = if (d == total) "Deleted $d file${if (d > 1) "s" else ""}"
-                          else "Deleted $d / $total (some failed)"
+                          else "Deleted $d / $total"
                 Toast.makeText(this, msg, Toast.LENGTH_SHORT).show()
+                // Always reload from hub so the list reflects actual hub state
+                loadFiles()
             }
         }.start()
     }
