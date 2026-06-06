@@ -48,6 +48,7 @@ class VideoSpaceManager(private val context: Context) {
         }
 
         repairPosterDates(hubByName)
+        restorePostersFromHub(ip, port)
 
         // Legacy ID-based tracking (pre-v316) — still respected to avoid re-compressing.
         val compressedIds = prefs.getStringSet(KEY_COMPRESSED, emptySet())!!
@@ -279,6 +280,41 @@ class VideoSpaceManager(private val context: Context) {
         }
     }
 
+    /**
+     * One-time restore: re-downloads every known poster JPEG from the hub and replaces
+     * the on-phone copy, undoing any corruption caused by MakeSpace.
+     * Only runs if POSTER_VERSION was bumped; marks itself done so it runs exactly once.
+     */
+    private fun restorePostersFromHub(ip: String, port: Int) {
+        val storedVersion = prefs.getInt(KEY_POSTER_VERSION, 0)
+        if (storedVersion >= POSTER_VERSION) return
+
+        val restore = prefs.getStringSet(KEY_RESTORE, emptySet()) ?: emptySet()
+        val mediaStore = MediaStoreHelper(context)
+
+        for (entry in restore) {
+            val parts = entry.split("|")
+            if (parts.size < 2) continue
+            val posterName = parts[0]
+            val device     = parts[1]
+
+            val tmp = java.io.File(context.cacheDir, "poster_restore_" + posterName)
+            try {
+                val ok = HubFilesClient.fetchFileToFile(ip, port, device, posterName, tmp)
+                if (!ok || tmp.length() == 0L) continue
+                val bytes = tmp.readBytes()
+                val id = findImageIdByName(posterName) ?: continue
+                try {
+                    mediaStore.replaceFile(id, "image/jpeg", bytes, 0L)
+                } catch (_: Exception) { }
+            } finally {
+                tmp.delete()
+            }
+        }
+
+        prefs.edit().putInt(KEY_POSTER_VERSION, POSTER_VERSION).apply()
+    }
+
     private fun rememberRestore(posterName: String, device: String, videoName: String) {
         val set = prefs.getStringSet(KEY_RESTORE, emptySet())!!.toMutableSet()
         set.add("$posterName|$device|$videoName")
@@ -508,5 +544,7 @@ class VideoSpaceManager(private val context: Context) {
         private const val KEY_VIDEO_DATES_REPAIRED = "compressed_video_dates_repaired"
         private const val KEY_COMPRESS_VERSION  = "compress_version"
         private const val COMPRESS_VERSION      = 4  // bump → clears compressed_video_names so H.265 re-runs
+        private const val KEY_POSTER_VERSION    = "poster_restore_version"
+        private const val POSTER_VERSION        = 2  // bump → re-downloads all poster JPEGs from hub
     }
 }
