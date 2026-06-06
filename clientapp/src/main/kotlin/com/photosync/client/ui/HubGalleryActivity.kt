@@ -162,6 +162,18 @@ class HubGalleryActivity : AppCompatActivity() {
                 android.util.Log.d("HubGallery", "deleteFile ${entry.displayName} -> $ok")
                 if (ok) {
                     hubDeleted++
+                    // Mark as user-deleted so MediaHttpServer won't serve it to hub again
+                    // even if the phone-side delete below doesn't fully succeed.
+                    val deletionPrefs = getSharedPreferences("deletion_state", MODE_PRIVATE)
+                    val existing = deletionPrefs.getStringSet("user_deleted_names", emptySet())!!.toMutableSet()
+                    existing.add(entry.displayName)
+                    deletionPrefs.edit().putStringSet("user_deleted_names", existing).apply()
+                    // Also remove from make_space processed set so it won't be compressed again
+                    val spacePrefs = getSharedPreferences("make_space_state", MODE_PRIVATE)
+                    val processed = spacePrefs.getStringSet("processed_names", emptySet())!!.toMutableSet()
+                    processed.remove(entry.displayName)
+                    spacePrefs.edit().putStringSet("processed_names", processed).apply()
+
                     // Delete matching local file from the phone gallery
                     val local = localFiles.firstOrNull { it.displayName == entry.displayName }
                     if (local != null) {
