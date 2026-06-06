@@ -148,6 +148,15 @@ object WebPConverter {
         ExifInterface.TAG_GPS_SATELLITES,
         ExifInterface.TAG_GPS_STATUS,
         ExifInterface.TAG_GPS_VERSION_ID,
+        // Focal plane
+        ExifInterface.TAG_FOCAL_PLANE_X_RESOLUTION,
+        ExifInterface.TAG_FOCAL_PLANE_Y_RESOLUTION,
+        ExifInterface.TAG_FOCAL_PLANE_RESOLUTION_UNIT,
+        // Zoom / digital processing
+        ExifInterface.TAG_DIGITAL_ZOOM_RATIO,
+        ExifInterface.TAG_SPECTRAL_SENSITIVITY,
+        ExifInterface.TAG_FLASH_PIX_VERSION,
+        ExifInterface.TAG_INTEROPERABILITY_INDEX,
         // Misc
         ExifInterface.TAG_IMAGE_DESCRIPTION,
         ExifInterface.TAG_USER_COMMENT,
