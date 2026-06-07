@@ -155,6 +155,31 @@ class HubForegroundService : LifecycleService() {
             usbStorage.warmCache()
             log("Hub file cache warmed")
         }
+
+        // One-time EXIF repair: fix files whose DateTimeOriginal was stamped with the sync/compression
+        // date instead of the actual capture date (old "(1)" compressed copies had dateTaken=0 so
+        // stampExifDate fell back to dateAdded = compression date). After repair, clear the
+        // date-checked cache so FileSyncer re-runs the date correction pass and sends correct
+        // dates back to the phone.
+        if (prefs.getInt(EXIF_REPAIR_VERSION_KEY, 0) < EXIF_REPAIR_VERSION) {
+            lifecycleScope.launch(Dispatchers.IO) {
+                delay(10_000L)   // let cache warm first
+                log("EXIF repair: scanning USB for wrong-dated files…")
+                val knownDevices = usbStorage.listDeviceNames()
+                var totalFixed = 0
+                for (device in knownDevices) {
+                    val fixed = usbStorage.repairExifFromFilenames(device)
+                    if (fixed > 0) {
+                        log("EXIF repair: fixed $fixed file(s) for $device — clearing date-check cache")
+                        syncState.clearDateCheckedFiles(device)
+                        totalFixed += fixed
+                    }
+                }
+                if (totalFixed == 0) log("EXIF repair: all dates OK, nothing to fix")
+                prefs.edit().putInt(EXIF_REPAIR_VERSION_KEY, EXIF_REPAIR_VERSION).apply()
+                usbStorage.invalidateRecentFilesCache()
+            }
+        }
     }
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
@@ -390,6 +415,9 @@ class HubForegroundService : LifecycleService() {
         const val ACTION_FILE_BYTES = "com.photosync.hub.FILE_BYTES"
         const val EXTRA_BYTES_READ = "file_bytes_read"
         const val EXTRA_FILE_TOTAL = "file_bytes_total"
+
+        private const val EXIF_REPAIR_VERSION_KEY = "exif_repair_v"
+        private const val EXIF_REPAIR_VERSION = 1   // bump to re-run repair
 
         private val recentLogs = ArrayDeque<String>(100)
         @Volatile private var currentMode: String = "Idle"
