@@ -286,13 +286,12 @@ class UsbStorageManager(
             val folder = root.findFile(deviceName) ?: return 0
             val imageExts = setOf("jpg", "jpeg", "webp")
 
+            val now = System.currentTimeMillis()
             fun repairFile(file: DocumentFile) {
                 val name = file.name ?: return
                 val ext = name.substringAfterLast('.', "").lowercase()
                 if (ext !in imageExts) return
-                val correctMs = parseDateFromFilename(name) ?: return
-                val correctFormatted = SimpleDateFormat("yyyy:MM:dd HH:mm:ss", Locale.US)
-                    .format(Date(correctMs))
+                val correctMs = parseDateFromFilename(name)  // null if no valid date in filename
                 try {
                     context.contentResolver.openFileDescriptor(file.uri, "rw")?.use { pfd ->
                         val exif = ExifInterface(pfd.fileDescriptor)
@@ -302,12 +301,26 @@ class UsbStorageManager(
                             try { SimpleDateFormat("yyyy:MM:dd HH:mm:ss", Locale.US).parse(existing)?.time ?: 0L }
                             catch (_: Exception) { 0L }
                         } else 0L
-                        // Only fix if the stored date is wrong by more than 1 hour
-                        if (existingMs == 0L || kotlin.math.abs(existingMs - correctMs) > 3_600_000L) {
-                            exif.setAttribute(ExifInterface.TAG_DATETIME_ORIGINAL, correctFormatted)
-                            exif.setAttribute(ExifInterface.TAG_DATETIME, correctFormatted)
-                            exif.saveAttributes()
-                            repaired++
+
+                        if (correctMs == null) {
+                            // No parseable filename date — if EXIF is in the future, clear it
+                            // (was stamped with a bad date by the old lenient-parser repair pass)
+                            if (existingMs > now) {
+                                exif.setAttribute(ExifInterface.TAG_DATETIME_ORIGINAL, null)
+                                exif.setAttribute(ExifInterface.TAG_DATETIME, null)
+                                exif.saveAttributes()
+                                repaired++
+                            }
+                        } else {
+                            // Only fix if the stored date is wrong by more than 1 hour
+                            if (existingMs == 0L || kotlin.math.abs(existingMs - correctMs) > 3_600_000L) {
+                                val correctFormatted = SimpleDateFormat("yyyy:MM:dd HH:mm:ss", Locale.US)
+                                    .format(Date(correctMs))
+                                exif.setAttribute(ExifInterface.TAG_DATETIME_ORIGINAL, correctFormatted)
+                                exif.setAttribute(ExifInterface.TAG_DATETIME, correctFormatted)
+                                exif.saveAttributes()
+                                repaired++
+                            }
                         }
                     }
                 } catch (_: Exception) { /* corrupt EXIF or unsupported format — skip */ }
