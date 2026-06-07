@@ -147,10 +147,10 @@ class UsbStorageManager(
             try { stream.readBytes() } catch (_: Exception) { null }
         } else null
 
-        val dateMs = parseDateFromFilename(file.displayName)
+        val fileDateMs: Long? = parseDateFromFilename(file.displayName)
             ?: file.dateTaken.takeIf { it in since2000..now }
             ?: if (bufferedBytes != null) readExifDateFromBytes(bufferedBytes)?.takeIf { it in since2000..now } else null
-            ?: now
+        val dateMs: Long = fileDateMs ?: now
 
         val dateLabel = SimpleDateFormat("yyyy-MM-dd", Locale.US).format(Date(dateMs))
         val dateFolder = deviceFolder.findFile(dateLabel)
