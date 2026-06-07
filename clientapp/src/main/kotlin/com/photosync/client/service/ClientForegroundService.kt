@@ -506,6 +506,14 @@ class ClientForegroundService : LifecycleService() {
 
         fun getRecentLogs(): List<String> = synchronized(recentLogs) { recentLogs.toList() }
 
+        /** Log from a context where there is no service instance (e.g. MainActivity helpers). */
+        fun staticLog(message: String) {
+            val time = java.text.SimpleDateFormat("HH:mm:ss", java.util.Locale.getDefault())
+                .format(java.util.Date())
+            addLog("$time  $message")
+            RemoteLogger.i(message)
+        }
+
         private fun addLog(line: String) = synchronized(recentLogs) {
             if (recentLogs.size >= 100) recentLogs.removeFirst()
             recentLogs.addLast(line)
