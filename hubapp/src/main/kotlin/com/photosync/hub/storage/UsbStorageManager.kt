@@ -48,6 +48,14 @@ class UsbStorageManager(
 
     fun warmCache() = refreshRecentFilesCache()
 
+    /** Returns the names of all device folders at the root of the USB drive. */
+    fun listDeviceNames(): List<String> {
+        return try {
+            val root = DocumentFile.fromTreeUri(context, treeUri ?: return emptyList()) ?: return emptyList()
+            root.listFiles().filter { it.isDirectory }.mapNotNull { it.name }
+        } catch (_: Exception) { emptyList() }
+    }
+
     private fun refreshRecentFilesCache() {
         val result = mutableListOf<HubFileEntry>()
         val uriMap = mutableMapOf<String, Uri>()
@@ -201,17 +209,21 @@ class UsbStorageManager(
 
     /**
      * Opens [uri] read-write via SAF FileDescriptor and writes EXIF [DateTimeOriginal] /
-     * [DateTime] tags only when they are absent or zero.  Uses [MediaFileInfo.dateTaken]
-     * (ms) first; falls back to [MediaFileInfo.dateAdded] (s → ms).
+     * [DateTime] tags only when they are absent or zero.
+     *
+     * Date source priority (most reliable first):
+     *   1. Filename pattern YYYYMMDD_HHMMSS (e.g. "20250905_165736.jpg" or "20250905_165736 (1).jpg")
+     *   2. [MediaFileInfo.dateTaken] (MediaStore DATE_TAKEN, from EXIF on the phone)
+     *   3. Skip — dateAdded is unreliable (equals the time the file entered MediaStore, which for
+     *      compressed copies is the compression date, not the capture date)
+     *
      * Silently no-ops if the format doesn't support EXIF (e.g. PNG).
      */
     private fun stampExifDate(uri: Uri, file: MediaFileInfo) {
         try {
-            val epochMs = when {
-                file.dateTaken > 0 -> file.dateTaken
-                file.dateAdded > 0 -> file.dateAdded * 1000L
-                else               -> return   // no date info at all — don't touch the file
-            }
+            val epochMs = parseDateFromFilename(file.displayName)
+                ?: file.dateTaken.takeIf { it > 0 }
+                ?: return   // no reliable date — don't touch the file
             val formatted = SimpleDateFormat("yyyy:MM:dd HH:mm:ss", Locale.US)
                 .format(Date(epochMs))
 
@@ -228,6 +240,74 @@ class UsbStorageManager(
         } catch (_: Exception) {
             // PNG, GIF, corrupt EXIF — not fatal
         }
+    }
+
+    /**
+     * Parses epoch-ms from a filename containing YYYYMMDD_HHMMSS (e.g. "20250905_165736.jpg"
+     * or "20250905_165736 (1).jpg" or "Screenshot_20250905_165736_App.jpg").
+     * Returns null if no such pattern is found.
+     */
+    private fun parseDateFromFilename(name: String): Long? {
+        val m = FILENAME_DATE_RE.find(name) ?: return null
+        return try {
+            SimpleDateFormat("yyyyMMdd_HHmmss", Locale.US).parse(
+                "${m.groupValues[1]}_${m.groupValues[2]}"
+            )?.time
+        } catch (_: Exception) { null }
+    }
+
+    /**
+     * One-time repair pass: scans all image files on USB under [deviceName] and
+     * re-stamps EXIF DateTimeOriginal from the filename wherever the stored EXIF date
+     * differs from the filename date by more than 1 hour.
+     *
+     * This fixes files whose EXIF was previously stamped with the sync/compression date
+     * instead of the actual capture date (e.g. "(1)" compressed copies from the old
+     * compression loop had dateTaken=0, so stampExifDate fell back to dateAdded which
+     * was the compression date, not the photo date).
+     *
+     * Returns the count of files repaired.
+     */
+    fun repairExifFromFilenames(deviceName: String): Int {
+        var repaired = 0
+        try {
+            val root = DocumentFile.fromTreeUri(context, treeUri ?: return 0) ?: return 0
+            val folder = root.findFile(deviceName) ?: return 0
+            val imageExts = setOf("jpg", "jpeg", "webp")
+
+            fun repairFile(file: DocumentFile) {
+                val name = file.name ?: return
+                val ext = name.substringAfterLast('.', "").lowercase()
+                if (ext !in imageExts) return
+                val correctMs = parseDateFromFilename(name) ?: return
+                val correctFormatted = SimpleDateFormat("yyyy:MM:dd HH:mm:ss", Locale.US)
+                    .format(Date(correctMs))
+                try {
+                    context.contentResolver.openFileDescriptor(file.uri, "rw")?.use { pfd ->
+                        val exif = ExifInterface(pfd.fileDescriptor)
+                        val existing = exif.getAttribute(ExifInterface.TAG_DATETIME_ORIGINAL)
+                            ?: exif.getAttribute(ExifInterface.TAG_DATETIME)
+                        val existingMs = if (!existing.isNullOrBlank() && !existing.startsWith("0000")) {
+                            try { SimpleDateFormat("yyyy:MM:dd HH:mm:ss", Locale.US).parse(existing)?.time ?: 0L }
+                            catch (_: Exception) { 0L }
+                        } else 0L
+                        // Only fix if the stored date is wrong by more than 1 hour
+                        if (existingMs == 0L || kotlin.math.abs(existingMs - correctMs) > 3_600_000L) {
+                            exif.setAttribute(ExifInterface.TAG_DATETIME_ORIGINAL, correctFormatted)
+                            exif.setAttribute(ExifInterface.TAG_DATETIME, correctFormatted)
+                            exif.saveAttributes()
+                            repaired++
+                        }
+                    }
+                } catch (_: Exception) { /* corrupt EXIF or unsupported format — skip */ }
+            }
+
+            for (item in folder.listFiles()) {
+                if (item.isDirectory) item.listFiles().forEach { repairFile(it) }
+                else repairFile(item)
+            }
+        } catch (_: Exception) { /* USB not accessible */ }
+        return repaired
     }
 
     /**
@@ -630,5 +710,7 @@ class UsbStorageManager(
     companion object {
         const val PREF_USB_URI = "usb_tree_uri"
         const val MANIFEST_FILENAME = "photosync_state.json"   // no leading dot — SAF findFile skips hidden files
+        // Matches YYYYMMDD_HHMMSS anywhere in a filename (handles plain, (1) suffix, Screenshot_ prefix, etc.)
+        val FILENAME_DATE_RE = Regex("""(\d{8})_(\d{6})""")
     }
 }
