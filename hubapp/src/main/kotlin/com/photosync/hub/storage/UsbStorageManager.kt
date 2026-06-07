@@ -133,13 +133,25 @@ class UsbStorageManager(
         }
 
         // Derive date subfolder from capture time.
-        // Priority: filename-parsed YYYYMMDD_HHMMSS > dateTaken (MediaStore EXIF ms) > now.
-        // We deliberately do NOT fall back to dateAdded — for compressed copies (1) etc.
-        // dateAdded equals the compression date, causing them to land in the wrong folder.
+        // Priority: filename patterns (many) > dateTaken > EXIF from bytes > now.
+        // We deliberately do NOT fall back to dateAdded — for compressed copies etc.
+        // dateAdded equals the compression/restore date, causing them to land in today's folder.
         val now = System.currentTimeMillis()
+        val since2000 = 946_684_800_000L
+
+        // For images: buffer the incoming bytes so we can read EXIF if filename/dateTaken fail.
+        // For videos and other types: stream directly (too large to buffer safely).
+        val isJpegLike = file.mimeType == "image/jpeg" || file.mimeType == "image/jpg" ||
+            file.mimeType == "image/heic" || file.mimeType == "image/heif" || file.mimeType == "image/webp"
+        val bufferedBytes: ByteArray? = if (isJpegLike) {
+            try { stream.readBytes() } catch (_: Exception) { null }
+        } else null
+
         val dateMs = parseDateFromFilename(file.displayName)
-            ?: file.dateTaken.takeIf { it > 0 && it <= now }
+            ?: file.dateTaken.takeIf { it in since2000..now }
+            ?: if (bufferedBytes != null) readExifDateFromBytes(bufferedBytes)?.takeIf { it in since2000..now } else null
             ?: now
+
         val dateLabel = SimpleDateFormat("yyyy-MM-dd", Locale.US).format(Date(dateMs))
         val dateFolder = deviceFolder.findFile(dateLabel)
             ?: deviceFolder.createDirectory(dateLabel)
@@ -155,7 +167,8 @@ class UsbStorageManager(
         // permanently, leaving a broken file that can never be retried.
         try {
             context.contentResolver.openOutputStream(newFile.uri)?.use { out ->
-                stream.copyTo(out)
+                if (bufferedBytes != null) out.write(bufferedBytes)
+                else stream.copyTo(out)
             } ?: run {
                 try { newFile.delete() } catch (_: Exception) {}
                 throw IllegalStateException("Cannot open output stream")
@@ -250,20 +263,90 @@ class UsbStorageManager(
     }
 
     /**
-     * Parses epoch-ms from a filename containing YYYYMMDD_HHMMSS (e.g. "20250905_165736.jpg"
-     * or "20250905_165736 (1).jpg" or "Screenshot_20250905_165736_App.jpg").
-     * Returns null if no such pattern is found.
+     * Parses epoch-ms from a filename, trying multiple patterns in priority order.
+     * All parsers use isLenient=false so invalid month/day values throw rather than rolling over.
+     * Any result in the future (or before 2000) is rejected.
+     *
+     * Patterns tried (most specific first):
+     *  1. YYYYMMDD_HHMMSS  — standard Samsung/Android: IMG_20220606_141510.jpg
+     *  2. YYYYMMDD-HHMMSS  — dash variant: 20220606-141510.jpg
+     *  3. YYYY-MM-DD-HH-MM-SS — Signal/fully-hyphenated: signal-2022-06-06-14-15-10.jpg
+     *  4. YYYY-MM-DD_HH-MM-SS — mixed: photo_2022-06-06_14-15-10.jpg
+     *  5. YYYYMMDD only     — WhatsApp/date-only: IMG-20220606-WA0001.jpg → midnight of that day
+     *  6. YYYY-MM-DD only   — ISO date in name: 2022-06-06.jpg → midnight
      */
     private fun parseDateFromFilename(name: String): Long? {
-        val m = FILENAME_DATE_RE.find(name) ?: return null
+        val now = System.currentTimeMillis()
+        val since2000 = 946_684_800_000L   // 2000-01-01 UTC
+        val stem = name.substringBeforeLast('.')
+
+        fun tryMs(ms: Long): Long? = if (ms in since2000..now) ms else null
+
+        // 1. YYYYMMDD_HHMMSS
+        Regex("""(\d{8})_(\d{6})""").find(stem)?.let { m ->
+            try {
+                val sdf = SimpleDateFormat("yyyyMMdd_HHmmss", Locale.US).apply { isLenient = false }
+                sdf.parse("${m.groupValues[1]}_${m.groupValues[2]}")?.time?.let { tryMs(it) }?.let { return it }
+            } catch (_: Exception) {}
+        }
+
+        // 2. YYYYMMDD-HHMMSS
+        Regex("""(\d{8})-(\d{6})(?!\d)""").find(stem)?.let { m ->
+            try {
+                val sdf = SimpleDateFormat("yyyyMMdd-HHmmss", Locale.US).apply { isLenient = false }
+                sdf.parse("${m.groupValues[1]}-${m.groupValues[2]}")?.time?.let { tryMs(it) }?.let { return it }
+            } catch (_: Exception) {}
+        }
+
+        // 3. YYYY-MM-DD-HH-MM-SS  (signal-2022-06-06-14-15-10)
+        Regex("""(\d{4})-(\d{2})-(\d{2})-(\d{2})-(\d{2})-(\d{2})""").find(stem)?.let { m ->
+            try {
+                val sdf = SimpleDateFormat("yyyy-MM-dd-HH-mm-ss", Locale.US).apply { isLenient = false }
+                val raw = m.groupValues.drop(1).joinToString("-")
+                sdf.parse(raw)?.time?.let { tryMs(it) }?.let { return it }
+            } catch (_: Exception) {}
+        }
+
+        // 4. YYYY-MM-DD_HH-MM-SS
+        Regex("""(\d{4}-\d{2}-\d{2})_(\d{2}-\d{2}-\d{2})""").find(stem)?.let { m ->
+            try {
+                val sdf = SimpleDateFormat("yyyy-MM-dd_HH-mm-ss", Locale.US).apply { isLenient = false }
+                sdf.parse("${m.groupValues[1]}_${m.groupValues[2]}")?.time?.let { tryMs(it) }?.let { return it }
+            } catch (_: Exception) {}
+        }
+
+        // 5. YYYYMMDD only (date-only, e.g. WhatsApp IMG-20220606-WA0001.jpg)
+        Regex("""(\d{8})""").find(stem)?.let { m ->
+            try {
+                val sdf = SimpleDateFormat("yyyyMMdd", Locale.US).apply { isLenient = false }
+                sdf.parse(m.groupValues[1])?.time?.let { tryMs(it) }?.let { return it }
+            } catch (_: Exception) {}
+        }
+
+        // 6. YYYY-MM-DD only
+        Regex("""(\d{4}-\d{2}-\d{2})""").find(stem)?.let { m ->
+            try {
+                val sdf = SimpleDateFormat("yyyy-MM-dd", Locale.US).apply { isLenient = false }
+                sdf.parse(m.groupValues[1])?.time?.let { tryMs(it) }?.let { return it }
+            } catch (_: Exception) {}
+        }
+
+        return null
+    }
+
+    /**
+     * Reads EXIF DateTimeOriginal (or DateTime) from raw image bytes.
+     * Returns epoch-ms, or null if absent / unreadable / out of valid range.
+     */
+    private fun readExifDateFromBytes(bytes: ByteArray): Long? {
         return try {
-            val sdf = SimpleDateFormat("yyyyMMdd_HHmmss", Locale.US).apply { isLenient = false }
-            val date = sdf.parse("${m.groupValues[1]}_${m.groupValues[2]}") ?: return null
-            // A capture date can never be in the future — reject anything past "now".
-            // This also catches the lenient-mode overflow case where epoch-timestamp filenames
-            // like "IMG_1755589224045_1755656772686.jpg" matched "(89224045)_(175565)" and
-            // produced dates in year 7155, 8220, etc.
-            if (date.time > System.currentTimeMillis()) null else date.time
+            val exif = ExifInterface(bytes.inputStream())
+            val tag = exif.getAttribute(ExifInterface.TAG_DATETIME_ORIGINAL)
+                ?: exif.getAttribute(ExifInterface.TAG_DATETIME)
+                ?: return null
+            if (tag.isBlank() || tag.startsWith("0000")) return null
+            SimpleDateFormat("yyyy:MM:dd HH:mm:ss", Locale.US).apply { isLenient = false }
+                .parse(tag)?.time
         } catch (_: Exception) { null }
     }
 
@@ -866,6 +949,6 @@ class UsbStorageManager(
         const val PREF_USB_URI = "usb_tree_uri"
         const val MANIFEST_FILENAME = "photosync_state.json"   // no leading dot — SAF findFile skips hidden files
         // Matches YYYYMMDD_HHMMSS anywhere in a filename (handles plain, (1) suffix, Screenshot_ prefix, etc.)
-        val FILENAME_DATE_RE = Regex("""(\d{8})_(\d{6})""")
+        // FILENAME_DATE_RE removed — parseDateFromFilename now tries multiple patterns inline
     }
 }
