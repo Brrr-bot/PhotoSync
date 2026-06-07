@@ -119,21 +119,26 @@ class UsbStorageManager(
             ?: throw IllegalStateException("Cannot create device folder '$deviceName'")
 
         // Skip if already present anywhere in the device folder (flat or subfolder),
-        // UNLESS the existing file is zero-bytes (a broken partial write from a previous attempt).
-        // A zero-byte file with the right name would otherwise block retries forever.
+        // UNLESS the existing file is zero-bytes or significantly truncated (< 90% of expected
+        // size). A truncated file with the right name would otherwise permanently block retries.
         val existingFile = findFileAnywhere(deviceFolder, file.displayName)
         if (existingFile != null) {
-            if (existingFile.length() > 0) return false   // complete file present — skip
-            // Zero-byte broken file — delete and re-download
+            val existingSize = existingFile.length()
+            val expectedSize = file.size
+            val isTruncated = existingSize == 0L ||
+                (expectedSize > 0 && existingSize < (expectedSize * 9 / 10))
+            if (!isTruncated) return false   // complete file present — skip
+            // Broken/truncated file — delete and re-download
             try { existingFile.delete() } catch (_: Exception) {}
         }
 
-        // Derive date subfolder from capture time (falls back to dateAdded)
-        val dateMs = when {
-            file.dateTaken > 0 -> file.dateTaken
-            file.dateAdded > 0 -> file.dateAdded * 1000L
-            else               -> System.currentTimeMillis()
-        }
+        // Derive date subfolder from capture time.
+        // Priority: filename-parsed YYYYMMDD_HHMMSS > dateTaken (MediaStore EXIF ms) > now.
+        // We deliberately do NOT fall back to dateAdded — for compressed copies (1) etc.
+        // dateAdded equals the compression date, causing them to land in the wrong folder.
+        val dateMs = parseDateFromFilename(file.displayName)
+            ?: file.dateTaken.takeIf { it > 0 }
+            ?: System.currentTimeMillis()
         val dateLabel = SimpleDateFormat("yyyy-MM-dd", Locale.US).format(Date(dateMs))
         val dateFolder = deviceFolder.findFile(dateLabel)
             ?: deviceFolder.createDirectory(dateLabel)
@@ -511,6 +516,88 @@ class UsbStorageManager(
                 SimpleDateFormat("yyyy:MM:dd HH:mm:ss", Locale.US).parse(raw)?.time ?: 0L
             } ?: 0L
         } catch (_: Exception) { 0L }
+    }
+
+    /**
+     * Moves files that are in the wrong date subfolder into the correct one derived from their
+     * filename (YYYYMMDD_HHMMSS pattern). A file is "wrong" if the parent folder date differs
+     * from the filename date by more than 1 day.
+     *
+     * This fixes files that were written when dateTaken=0 caused the old code to fall back to
+     * dateAdded (= the compression/sync date) for folder selection, landing everything in a
+     * single date folder (e.g. 2026-06-06) instead of the correct capture-date folders.
+     *
+     * SAF has no rename/move — we create a new file in the correct folder, copy bytes, then
+     * delete the original. Returns the count of files moved.
+     */
+    fun reorganizeMisplacedFiles(deviceName: String): Int {
+        var moved = 0
+        try {
+            val root = DocumentFile.fromTreeUri(context, treeUri ?: return 0) ?: return 0
+            val deviceFolder = root.findFile(deviceName) ?: return 0
+            val dateFormat = SimpleDateFormat("yyyy-MM-dd", Locale.US)
+            val dayMs = 86_400_000L
+
+            // Collect (file, correctDateLabel) pairs where file is in wrong folder
+            val toMove = mutableListOf<Pair<DocumentFile, String>>()
+            for (child in deviceFolder.listFiles()) {
+                if (!child.isDirectory) continue
+                val folderLabel = child.name ?: continue   // e.g. "2026-06-06"
+                val folderMs = try { dateFormat.parse(folderLabel)?.time ?: continue } catch (_: Exception) { continue }
+                for (file in child.listFiles()) {
+                    val name = file.name ?: continue
+                    val correctMs = parseDateFromFilename(name) ?: continue
+                    if (kotlin.math.abs(correctMs - folderMs) > dayMs) {
+                        val correctLabel = dateFormat.format(Date(correctMs))
+                        toMove.add(file to correctLabel)
+                    }
+                }
+            }
+
+            for ((srcFile, targetLabel) in toMove) {
+                val name = srcFile.name ?: continue
+                try {
+                    // Create or find the target date folder
+                    val targetFolder = deviceFolder.findFile(targetLabel)
+                        ?: deviceFolder.createDirectory(targetLabel)
+                        ?: continue
+
+                    // Skip if already exists in target (avoid duplicate)
+                    if (targetFolder.findFile(name) != null) {
+                        srcFile.delete(); continue
+                    }
+
+                    val destFile = targetFolder.createFile("application/octet-stream", name) ?: continue
+
+                    // Copy bytes
+                    var copyOk = false
+                    try {
+                        context.contentResolver.openInputStream(srcFile.uri)?.use { inp ->
+                            context.contentResolver.openOutputStream(destFile.uri)?.use { out ->
+                                inp.copyTo(out)
+                                copyOk = true
+                            }
+                        }
+                    } catch (_: Exception) {}
+
+                    if (copyOk) {
+                        srcFile.delete()
+                        moved++
+                    } else {
+                        // Copy failed — remove the incomplete destination
+                        try { destFile.delete() } catch (_: Exception) {}
+                    }
+                } catch (_: Exception) { /* skip this file */ }
+            }
+
+            // Remove any now-empty date folders we moved files out of
+            for (child in deviceFolder.listFiles()) {
+                if (child.isDirectory && child.listFiles().isEmpty()) {
+                    try { child.delete() } catch (_: Exception) {}
+                }
+            }
+        } catch (_: Exception) { /* USB not accessible */ }
+        return moved
     }
 
     /**
