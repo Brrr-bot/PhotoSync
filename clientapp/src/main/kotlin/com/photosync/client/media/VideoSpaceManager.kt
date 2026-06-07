@@ -75,14 +75,36 @@ class VideoSpaceManager(private val context: Context) {
                 val hubEntry = hubByName[v.name]
                 if (hubEntry == null || hubEntry.size < v.size) { skipped++; return@forEachIndexed }
 
-                val ageMs = System.currentTimeMillis() - v.takenMs
+                // Determine age from filename first — more reliable than DATE_TAKEN which
+                // Samsung zeros out during IS_PENDING transitions.
+                val now = System.currentTimeMillis()
+                val captureMs = parseDateFromName(v.name).takeIf { it > 0 && it <= now }
+                    ?: v.takenMs.takeIf { it > 0 && it <= now && it != v.dateAddedSec * 1000L }
+                    ?: (v.dateAddedSec * 1000L).takeIf { it > 0 && it <= now }
+                    ?: now
+                val ageMs = now - captureMs
                 val videoUri = ContentUris.withAppendedId(MediaStore.Video.Media.EXTERNAL_CONTENT_URI, v.id)
 
                 if (ageMs > OLD_AGE_MS) {
-                    // Old video — hub has full backup, just delete from phone to free space.
-                    // No poster/placeholder: photos stay as compressed images, videos just go.
+                    // Old video -> replace with a JPEG poster so the gallery keeps a thumbnail.
+                    // DATE FIX: never fall back to dateAddedSec as poster date (that causes all
+                    // posters to appear on the day the video was added, not when it was captured).
+                    // Fallback chain: filename > internal metadata > hub lastModified > skip.
+                    val now2 = System.currentTimeMillis()
+                    val takenMs = parseDateFromName(v.name).takeIf { it > 0 && it <= now2 }
+                        ?: readVideoDate(videoUri)?.takeIf { it > 0 && it <= now2 }
+                        ?: hubEntry.lastModifiedMs.takeIf { it > 0 && it <= now2 }
+                        ?: v.takenMs.takeIf { it > 0 && it <= now2 && it != v.dateAddedSec * 1000L }
+                        ?: 0L
+                    if (takenMs == 0L) { skipped++; return@forEachIndexed }   // no reliable date — leave for next cycle
+
+                    val poster = VideoThumbnailer.makePosterJpeg(context, videoUri) ?: run { skipped++; return@forEachIndexed }
+                    val posterName = v.name.substringBeforeLast('.') + ".jpg"
+                    val stampedPoster = VideoThumbnailer.stampPosterExif(poster, takenMs)
+                    insertPoster(v, stampedPoster, posterName, takenMs) ?: run { skipped++; return@forEachIndexed }
+                    rememberRestore(posterName, hubEntry.device, v.name)
                     val deleted = try { context.contentResolver.delete(videoUri, null, null) > 0 } catch (_: Exception) { false }
-                    if (deleted) { thumbed++; freed += v.size }
+                    if (deleted) { thumbed++; freed += (v.size - stampedPoster.size).coerceAtLeast(0L) }
                     else { skipped++ }
                 } else if (v.name !in compressedNames && v.id.toString() !in compressedIds) {
                     // Recent video -> transcode to smaller MP4, preserve filename + original date
