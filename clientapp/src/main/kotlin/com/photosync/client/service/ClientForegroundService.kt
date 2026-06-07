@@ -14,6 +14,7 @@ import androidx.lifecycle.LifecycleService
 import androidx.lifecycle.lifecycleScope
 import com.photosync.client.BuildConfig
 import com.photosync.client.ClientApplication
+import com.photosync.client.hub.HubFilesClient
 import com.photosync.client.media.LocalImageProcessor
 import com.photosync.client.media.MediaStoreHelper
 import com.photosync.client.ui.MainActivity
@@ -81,6 +82,7 @@ class ClientForegroundService : LifecycleService() {
         server = MediaHttpServer(
             MediaStoreHelper(this),
             cacheDir = cacheDir,
+            isOnMobileData = { isMobileData() },
             onLog = { msg ->
                 log(msg)
                 updateNotification(msg)
@@ -104,17 +106,12 @@ class ClientForegroundService : LifecycleService() {
                     checker.checkAndNotify()
                     checker.checkTimesheetUpdate()
                 }
-            },
-            deletedNames = {
-                getSharedPreferences("deletion_state", MODE_PRIVATE)
-                    .getStringSet("user_deleted_names", emptySet()) ?: emptySet()
             }
         ).also {
             try {
                 it.start()
                 liveServer = it
                 log("HTTP server started on port ${Constants.CLIENT_PORT}")
-                RemoteLogger.i("Started v${com.photosync.client.BuildConfig.VERSION_NAME} (build ${com.photosync.client.BuildConfig.VERSION_CODE})")
             } catch (e: Exception) {
                 log("ERROR: server failed to start — ${e.message}")
             }
@@ -134,6 +131,17 @@ class ClientForegroundService : LifecycleService() {
             }
         }
 
+        // Video date repair runs as the first step inside VideoSpaceManager.process(),
+        // which is now called in the hourly localFixJob. Also run it once at startup
+        // (before the hub is available) so MP4 internal dates are patched immediately.
+        lifecycleScope.launch(Dispatchers.IO) {
+            delay(5_000L)
+            try {
+                com.photosync.client.media.VideoSpaceManager(this@ClientForegroundService)
+                    .repairCompressedVideoDates()
+            } catch (t: Throwable) { log("VideoDateRepair(startup) error: ${t.message}") }
+        }
+
         // Broadcast presence every 15s so the hub can find us
         // Pass hub's Tailscale IP so we can unicast when off the same WiFi
         announceJob = lifecycleScope.launch(Dispatchers.IO) {
@@ -143,15 +151,19 @@ class ClientForegroundService : LifecycleService() {
 
         // Listen for hub announcements so we know hub's IP for phone-initiated sync
         hubDiscovery = HubDiscovery { ip, port, deviceName, tailscaleIp ->
+            val wasStale = System.currentTimeMillis() - liveHubIpUpdatedAt > 90_000L
             liveHubIp = ip
             liveHubIpUpdatedAt = System.currentTimeMillis()
             liveHubPort = port
             liveHubName = deviceName
             if (tailscaleIp != null) {
-                // Persist hub's Tailscale IP so remote sync works after leaving local network
                 getSharedPreferences(PREFS_NAME, MODE_PRIVATE).edit()
                     .putString(KEY_HUB_TAILSCALE_IP, tailscaleIp).apply()
                 liveHubTailscaleIp = tailscaleIp
+            }
+            // Hub just reconnected — run cleanup immediately so gallery is tidy before sync
+            if (wasStale) {
+                lifecycleScope.launch(Dispatchers.IO) { runOnHubConnect() }
             }
         }.also { discovery ->
             hubDiscoveryJob = lifecycleScope.launch(Dispatchers.IO) {
@@ -188,23 +200,44 @@ class ClientForegroundService : LifecycleService() {
                         .putInt(KEY_LOCAL_FIX_VERSION, LOCAL_FIX_CODE).apply()
                     log("LocalFix: cleared stale scan cache for v$LOCAL_FIX_CODE rescan")
                 }
-                val fixed = processor.processUnfixed(onProgress = { done, total, msg ->
-                    if (done % 20 == 0 || done == total) {
-                        log("LocalFix $done/$total: $msg")
-                        updateNotification("Fixing: $done/$total")
-                    }
-                })
+                val hubFilesForLocalFix = try {
+                    val ip = liveHubIp ?: liveHubTailscaleIp
+                    if (ip != null) HubFilesClient.fetchFiles(ip, liveHubPort, limit = 5000)
+                    else emptyList<com.photosync.client.hub.HubFileEntry>()
+                } catch (_: Exception) { emptyList<com.photosync.client.hub.HubFileEntry>() }
+                val fixed = processor.processUnfixed(
+                    onProgress = { done, total, msg ->
+                        if (done % 20 == 0 || done == total) {
+                            log("LocalFix $done/$total: $msg")
+                            updateNotification("Fixing: $done/$total")
+                        }
+                    },
+                    hubFiles = hubFilesForLocalFix
+                )
                 if (fixed > 0) log("LocalFix complete — fixed $fixed image(s)")
 
-                // Video space management — only touches videos the hub already holds.
+                // Compress backed-up images to WebP — hub already confirmed these on USB.
+                // Single compression step on the phone (no lossy hub pass first).
+                try {
+                    val ism = com.photosync.client.media.ImageSpaceManager(this@ClientForegroundService)
+                    val is2 = ism.process { done, total, name ->
+                        log("◇ WebP $done/$total: $name")
+                        updateNotification("Compressing to WebP: $done/$total")
+                    }
+                    if (is2.compressed > 0)
+                        log("✓ WebP done — ${is2.compressed} converted, ${is2.freedBytes / 1_048_576}MB freed (${is2.skipped} skipped)")
+                } catch (t: Throwable) { log("ImageSpace error: ${t.javaClass.simpleName}: ${t.message}") }
+
+                // Compress / posterise videos — same hub-confirmed safety check as images.
+                // Only runs when hub is reachable (VideoSpaceManager checks live hub IP).
                 try {
                     val vsm = com.photosync.client.media.VideoSpaceManager(this@ClientForegroundService)
-                    val vs = vsm.process { done, total, _ ->
-                        if (done % 5 == 0 || done == total) updateNotification("Video space: $done/$total")
+                    val vs = vsm.process { done, total, name ->
+                        log("▶ VideoSpace $done/$total: $name")
+                        updateNotification("Video space: $done/$total")
                     }
-                    if (vs.thumbed > 0 || vs.compressed > 0 || vs.skipped > 0)
-                        log("VideoSpace: ${vs.thumbed} posterised, ${vs.compressed} compressed, " +
-                            "${vs.freedBytes / 1_048_576}MB freed (${vs.skipped} skipped)")
+                    if (vs.thumbed > 0 || vs.compressed > 0)
+                        log("✓ VideoSpace done — ${vs.thumbed} posterised, ${vs.compressed} compressed, ${vs.freedBytes / 1_048_576}MB freed (${vs.skipped} skipped)")
                 } catch (t: Throwable) { log("VideoSpace error: ${t.javaClass.simpleName}: ${t.message}") }
 
                 updateNotification("Ready — announcing on network")
@@ -222,6 +255,67 @@ class ClientForegroundService : LifecycleService() {
         }
 
         updateNotification("Ready — announcing on network")
+    }
+
+    /**
+     * Runs immediately when the hub reconnects (was stale > 90s).
+     * Fixes dates and EXIF before any sync so the gallery is tidy before files move.
+     */
+    private suspend fun runOnHubConnect() {
+        try {
+            log("Hub connected — running pre-sync cleanup…")
+
+            // 1. Restore files damaged by the old hub-side WebP conversion (no EXIF, wrong
+            //    rotation, .jpg.webp double extension) from their pristine hub originals.
+            try {
+                val repair = com.photosync.client.media.GalleryRepair(this)
+                val r = repair.repair { msg -> log(msg) }
+                if (r.restored > 0 || r.failed > 0)
+                    log("Repair done: ${r.restored} restored, ${r.failed} failed, ${r.damagedRemaining} remaining")
+            } catch (t: Throwable) { log("Repair error: ${t.javaClass.simpleName}: ${t.message}") }
+
+            // 2. Fix dates/orientation on the rest from each file's own EXIF/filename.
+            //    Also pass hub file list so files with no EXIF/filename date (e.g. screenshots
+            //    with descriptive names) can use the hub's lastModifiedMs as fallback.
+            val hubFilesForFix = try {
+                val ip = liveHubIp ?: liveHubTailscaleIp
+                if (ip != null) HubFilesClient.fetchFiles(ip, liveHubPort, limit = 5000)
+                else emptyList<com.photosync.client.hub.HubFileEntry>()
+            } catch (_: Exception) { emptyList<com.photosync.client.hub.HubFileEntry>() }
+            val processor = com.photosync.client.media.LocalImageProcessor(this)
+            val fixed = processor.processUnfixed(
+                onProgress = { done, total, msg ->
+                    if (done % 20 == 0 || done == total) updateNotification("Cleanup: $done/$total")
+                },
+                hubFiles = hubFilesForFix
+            )
+            if (fixed > 0) log("Pre-sync cleanup: fixed $fixed image date(s)")
+            else log("Pre-sync cleanup: dates OK")
+            updateNotification("Ready — announcing on network")
+
+            // One-time restore: download every hub-backed file not already on the phone,
+            // then let VideoSpaceManager + ImageSpaceManager compress them on the next cycle.
+            val restoreMgr = com.photosync.client.media.HubRestoreManager(this)
+            if (restoreMgr.shouldRun()) {
+                try {
+                    val ip2   = liveHubIp ?: liveHubTailscaleIp ?: return
+                    val port2 = liveHubPort
+                    val allHub = try { HubFilesClient.fetchFiles(ip2, port2, limit = 20_000) }
+                                 catch (_: Exception) { emptyList() }
+                    val est = restoreMgr.estimate(allHub, android.os.Build.MODEL)
+                    log("HubRestore: ${est.imageCount}img + ${est.videoRecentCount}vid + ${est.videoOldCount}old-vid→poster" +
+                        " | raw ${est.rawBytes / 1_000_000}MB → ~${est.estimatedBytes / 1_000_000}MB after compression")
+                    val n = restoreMgr.restoreAll(ip2, port2, android.os.Build.MODEL, allHub) { done, total, name ->
+                        if (done % 100 == 0 || done == total) {
+                            log("HubRestore $done/$total: $name")
+                            updateNotification("Restoring from hub: $done/$total")
+                        }
+                    }
+                    log("HubRestore done — $n file(s) restored. VideoSpace + ImageSpace will compress on next cycle.")
+                    restoreMgr.markDone()
+                } catch (t: Throwable) { log("HubRestore error: ${t.javaClass.simpleName}: ${t.message}") }
+            }
+        } catch (t: Throwable) { log("Pre-sync cleanup error: ${t.javaClass.simpleName}: ${t.message}") }
     }
 
     private fun postTailscaleNotification() {
@@ -359,12 +453,7 @@ class ClientForegroundService : LifecycleService() {
     private fun autoTriggerHubSync() {
         if (isMobileData() && !getSharedPreferences(PREFS_NAME, MODE_PRIVATE)
                 .getBoolean(KEY_ALLOW_MOBILE_DATA, false)) return
-        // Prefer fresh LAN IP; fall back to Tailscale when off the same network (or stale >90s)
-        val ip = liveHubIp
-            ?.takeIf { System.currentTimeMillis() - liveHubIpUpdatedAt < 90_000L }
-            ?: liveHubTailscaleIp
-            ?: liveHubIp  // stale LAN IP — best we have
-            ?: return
+        val ip   = liveHubIp ?: liveHubTailscaleIp ?: return
         val port = liveHubPort
         Thread {
             try {
@@ -411,21 +500,11 @@ class ClientForegroundService : LifecycleService() {
         private const val SYNC_INTERVAL_MS      = 5 * 60 * 1000L
         private const val LOCAL_FIX_INTERVAL_MS  = 60 * 60 * 1000L
         private const val KEY_LOCAL_FIX_VERSION  = "local_fix_version"
-        private const val LOCAL_FIX_CODE         = 10 // bump when scan logic changes to force rescan
+        private const val LOCAL_FIX_CODE         = 15 // bump when scan logic changes to force rescan
 
         private val recentLogs = ArrayDeque<String>(100)
 
         fun getRecentLogs(): List<String> = synchronized(recentLogs) { recentLogs.toList() }
-
-        /** Write a timestamped line to the live log without needing a service instance. */
-        fun staticLog(message: String) {
-            val time = java.text.SimpleDateFormat("HH:mm:ss", java.util.Locale.getDefault()).format(java.util.Date())
-            val line = time + "  " + message
-            synchronized(recentLogs) {
-                if (recentLogs.size >= 100) recentLogs.removeFirst()
-                recentLogs.addLast(line)
-            }
-        }
 
         private fun addLog(line: String) = synchronized(recentLogs) {
             if (recentLogs.size >= 100) recentLogs.removeFirst()
