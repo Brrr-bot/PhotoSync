@@ -440,7 +440,7 @@ class HubForegroundService : LifecycleService() {
         private const val EXIF_REPAIR_VERSION_KEY = "exif_repair_v"
         private const val EXIF_REPAIR_VERSION = 1   // bump to re-run repair
         private const val REORG_VERSION_KEY = "folder_reorg_v"
-        private const val REORG_VERSION = 1         // bump to re-run folder reorganisation
+        private const val REORG_VERSION = 2         // v2: rescue files from bad-year folders (7155, 8220, etc.)
 
         private val recentLogs = ArrayDeque<String>(100)
         @Volatile private var currentMode: String = "Idle"
