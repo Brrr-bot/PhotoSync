@@ -115,6 +115,11 @@ class SyncStateRepository(private val prefs: SharedPreferences) {
         prefs.edit().putStringSet(dateCheckedKey(deviceName), existing).commit()
     }
 
+    /** Clears the date-checked cache for [deviceName] so the next sync re-checks all files. */
+    fun clearDateCheckedFiles(deviceName: String) {
+        prefs.edit().remove(dateCheckedKey(deviceName)).apply()
+    }
+
     // ── Client Tailscale IP storage ───────────────────────────────────────────
     // Persists the Tailscale IP for each known client so the hub can unicast UDP
     // announcements to them when they are not on the same local network.
