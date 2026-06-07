@@ -136,9 +136,10 @@ class UsbStorageManager(
         // Priority: filename-parsed YYYYMMDD_HHMMSS > dateTaken (MediaStore EXIF ms) > now.
         // We deliberately do NOT fall back to dateAdded — for compressed copies (1) etc.
         // dateAdded equals the compression date, causing them to land in the wrong folder.
+        val now = System.currentTimeMillis()
         val dateMs = parseDateFromFilename(file.displayName)
-            ?: file.dateTaken.takeIf { it > 0 }
-            ?: System.currentTimeMillis()
+            ?: file.dateTaken.takeIf { it > 0 && it <= now }
+            ?: now
         val dateLabel = SimpleDateFormat("yyyy-MM-dd", Locale.US).format(Date(dateMs))
         val dateFolder = deviceFolder.findFile(dateLabel)
             ?: deviceFolder.createDirectory(dateLabel)
@@ -226,8 +227,9 @@ class UsbStorageManager(
      */
     private fun stampExifDate(uri: Uri, file: MediaFileInfo) {
         try {
+            val now = System.currentTimeMillis()
             val epochMs = parseDateFromFilename(file.displayName)
-                ?: file.dateTaken.takeIf { it > 0 }
+                ?: file.dateTaken.takeIf { it > 0 && it <= now }
                 ?: return   // no reliable date — don't touch the file
             val formatted = SimpleDateFormat("yyyy:MM:dd HH:mm:ss", Locale.US)
                 .format(Date(epochMs))
@@ -257,12 +259,11 @@ class UsbStorageManager(
         return try {
             val sdf = SimpleDateFormat("yyyyMMdd_HHmmss", Locale.US).apply { isLenient = false }
             val date = sdf.parse("${m.groupValues[1]}_${m.groupValues[2]}") ?: return null
-            // Extra sanity: year must be plausible — catches cases where lenient-mode would
-            // have silently accepted e.g. month=40, day=45 from epoch-timestamp filenames
-            // like "IMG_1755589224045_1755656772686.jpg" matching "(89224045)_(175565)".
-            val cal = java.util.Calendar.getInstance().apply { time = date }
-            val year = cal.get(java.util.Calendar.YEAR)
-            if (year < 1900 || year > 2100) null else date.time
+            // A capture date can never be in the future — reject anything past "now".
+            // This also catches the lenient-mode overflow case where epoch-timestamp filenames
+            // like "IMG_1755589224045_1755656772686.jpg" matched "(89224045)_(175565)" and
+            // produced dates in year 7155, 8220, etc.
+            if (date.time > System.currentTimeMillis()) null else date.time
         } catch (_: Exception) { null }
     }
 
