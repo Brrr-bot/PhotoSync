@@ -126,13 +126,31 @@ class FileSyncer(
             checkedAtMs  = System.currentTimeMillis()
         )
 
-        // ── Integrity check: find every phone file not yet on USB ─────────────
+        // Build a name→size map from the USB cache to detect truncated files.
+        // A file is considered truncated if the USB copy is <90% of the phone's reported size.
+        // Truncated files were previously skipped forever (only zero-byte was caught); this
+        // ensures they get re-downloaded on the next sync.
+        val usbSizeByName: Map<String, Long> = usbStorage.listRecentFiles(limit = 100_000)
+            .filter { it.deviceName == clientInfo.deviceName }
+            .associate { it.displayName to it.sizeBytes }
+
+        // ── Integrity check: find every phone file not yet on USB (or truncated) ─────────────
         val toProcess = allFiles.filter { file ->
             val strippedName = stripReplacementSuffixes(file.displayName)
-            !isPosterImage(file.displayName) &&
-            file.displayName !in existing &&
-            file.displayName.substringBeforeLast('.') !in existing &&
-            strippedName !in existing
+            if (isPosterImage(file.displayName)) return@filter false
+            val notOnUsb = file.displayName !in existing &&
+                file.displayName.substringBeforeLast('.') !in existing &&
+                strippedName !in existing
+            if (notOnUsb) return@filter true
+            // File is on USB — check if it is truncated (< 90% of phone size)
+            val usbSize = usbSizeByName[file.displayName]
+                ?: usbSizeByName[file.displayName.substringBeforeLast('.')]
+                ?: usbSizeByName[strippedName]
+            if (usbSize != null && file.size > 0 && usbSize < file.size * 9 / 10) {
+                onProgress("⚠ ${file.displayName}: hub copy truncated (${usbSize}B vs ${file.size}B) — re-downloading")
+                return@filter true
+            }
+            false
         }
 
         if (toProcess.isNotEmpty()) {
