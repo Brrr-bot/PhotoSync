@@ -180,6 +180,27 @@ class HubForegroundService : LifecycleService() {
                 usbStorage.invalidateRecentFilesCache()
             }
         }
+
+        // One-time folder reorganisation: move files that landed in the wrong date folder
+        // (e.g. everything in 2026-06-06 because dateTaken=0 fell back to dateAdded) into the
+        // correct capture-date folder derived from their YYYYMMDD_HHMMSS filename.
+        if (prefs.getInt(REORG_VERSION_KEY, 0) < REORG_VERSION) {
+            lifecycleScope.launch(Dispatchers.IO) {
+                delay(15_000L)   // let EXIF repair start first
+                log("Folder reorg: moving misplaced files to correct date folders…")
+                val knownDevices = usbStorage.listDeviceNames()
+                var totalMoved = 0
+                for (device in knownDevices) {
+                    val moved = usbStorage.reorganizeMisplacedFiles(device)
+                    if (moved > 0) log("Folder reorg: moved $moved file(s) for $device")
+                    totalMoved += moved
+                }
+                if (totalMoved == 0) log("Folder reorg: all files already in correct folders")
+                else log("Folder reorg: done — $totalMoved file(s) reorganised")
+                prefs.edit().putInt(REORG_VERSION_KEY, REORG_VERSION).apply()
+                usbStorage.invalidateRecentFilesCache()
+            }
+        }
     }
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
@@ -418,6 +439,8 @@ class HubForegroundService : LifecycleService() {
 
         private const val EXIF_REPAIR_VERSION_KEY = "exif_repair_v"
         private const val EXIF_REPAIR_VERSION = 1   // bump to re-run repair
+        private const val REORG_VERSION_KEY = "folder_reorg_v"
+        private const val REORG_VERSION = 1         // bump to re-run folder reorganisation
 
         private val recentLogs = ArrayDeque<String>(100)
         @Volatile private var currentMode: String = "Idle"
