@@ -438,7 +438,7 @@ class HubForegroundService : LifecycleService() {
         const val EXTRA_FILE_TOTAL = "file_bytes_total"
 
         private const val EXIF_REPAIR_VERSION_KEY = "exif_repair_v"
-        private const val EXIF_REPAIR_VERSION = 1   // bump to re-run repair
+        private const val EXIF_REPAIR_VERSION = 2   // v2: clear future EXIF dates stamped by old lenient-parser bug
         private const val REORG_VERSION_KEY = "folder_reorg_v"
         private const val REORG_VERSION = 2         // v2: rescue files from bad-year folders (7155, 8220, etc.)
 
