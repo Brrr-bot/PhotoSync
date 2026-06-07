@@ -255,9 +255,14 @@ class UsbStorageManager(
     private fun parseDateFromFilename(name: String): Long? {
         val m = FILENAME_DATE_RE.find(name) ?: return null
         return try {
-            SimpleDateFormat("yyyyMMdd_HHmmss", Locale.US).parse(
-                "${m.groupValues[1]}_${m.groupValues[2]}"
-            )?.time
+            val sdf = SimpleDateFormat("yyyyMMdd_HHmmss", Locale.US).apply { isLenient = false }
+            val date = sdf.parse("${m.groupValues[1]}_${m.groupValues[2]}") ?: return null
+            // Extra sanity: year must be plausible — catches cases where lenient-mode would
+            // have silently accepted e.g. month=40, day=45 from epoch-timestamp filenames
+            // like "IMG_1755589224045_1755656772686.jpg" matching "(89224045)_(175565)".
+            val cal = java.util.Calendar.getInstance().apply { time = date }
+            val year = cal.get(java.util.Calendar.YEAR)
+            if (year < 1900 || year > 2100) null else date.time
         } catch (_: Exception) { null }
     }
 
@@ -588,6 +593,55 @@ class UsbStorageManager(
                         try { destFile.delete() } catch (_: Exception) {}
                     }
                 } catch (_: Exception) { /* skip this file */ }
+            }
+
+            // Second pass: rescue files stranded in clearly-wrong-year folders
+            // (year < 1900 or > 2100) that have no parseable Samsung filename date.
+            // These were created by the old lenient-SimpleDateFormat bug where epoch-
+            // timestamp filenames like "IMG_1755589224045_1755656772686.jpg" caused
+            // dates in year 7155, 8220, 2727, etc.
+            for (child in deviceFolder.listFiles()) {
+                if (!child.isDirectory) continue
+                val folderLabel = child.name ?: continue
+                val folderMs = try { dateFormat.parse(folderLabel)?.time ?: continue }
+                               catch (_: Exception) { continue }
+                val folderCal = java.util.Calendar.getInstance().apply { timeInMillis = folderMs }
+                val folderYear = folderCal.get(java.util.Calendar.YEAR)
+                if (folderYear in 1900..2100) continue   // normal folder — skip
+
+                // Bad year folder — move every file to flat root and clear bad EXIF
+                for (file in child.listFiles()) {
+                    val name = file.name ?: continue
+                    // If there's already a copy in the flat root, just delete the stray
+                    if (deviceFolder.findFile(name) != null) { try { file.delete() } catch (_: Exception) {}; continue }
+                    val destFile = deviceFolder.createFile("application/octet-stream", name) ?: continue
+                    var copyOk = false
+                    try {
+                        context.contentResolver.openInputStream(file.uri)?.use { inp ->
+                            context.contentResolver.openOutputStream(destFile.uri)?.use { out ->
+                                inp.copyTo(out); copyOk = true
+                            }
+                        }
+                    } catch (_: Exception) {}
+                    if (copyOk) {
+                        // Clear EXIF date — it was stamped with the same bad future date
+                        val ext = name.substringAfterLast('.', "").lowercase()
+                        if (ext in setOf("jpg", "jpeg", "webp")) {
+                            try {
+                                context.contentResolver.openFileDescriptor(destFile.uri, "rw")?.use { pfd ->
+                                    val exif = ExifInterface(pfd.fileDescriptor)
+                                    exif.setAttribute(ExifInterface.TAG_DATETIME_ORIGINAL, null)
+                                    exif.setAttribute(ExifInterface.TAG_DATETIME, null)
+                                    exif.saveAttributes()
+                                }
+                            } catch (_: Exception) { /* non-fatal */ }
+                        }
+                        try { file.delete() } catch (_: Exception) {}
+                        moved++
+                    } else {
+                        try { destFile.delete() } catch (_: Exception) {}
+                    }
+                }
             }
 
             // Remove any now-empty date folders we moved files out of
