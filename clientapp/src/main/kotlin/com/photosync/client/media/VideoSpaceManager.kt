@@ -47,7 +47,6 @@ class VideoSpaceManager(private val context: Context) {
                 hubByName[f.displayName] = HubInfo(f.deviceName, f.sizeBytes, f.lastModifiedMs)
         }
 
-        restorePostersFromHub(ip, port)
         repairPosterDates(hubByName)
 
         // Legacy ID-based tracking (pre-v316) — still respected to avoid re-compressing.
@@ -61,7 +60,7 @@ class VideoSpaceManager(private val context: Context) {
                 .remove(KEY_COMPRESSED)
                 .putInt(KEY_COMPRESS_VERSION, COMPRESS_VERSION)
                 .apply()
-            RemoteLogger.i("VideoSpace: quality upgrade to v$COMPRESS_VERSION — re-transcoding all videos at original resolution/6Mbps")
+            RemoteLogger.i("VideoSpace: quality upgrade to v$COMPRESS_VERSION — re-transcoding all videos")
         }
         val compressedNames = prefs.getStringSet(KEY_COMPRESSED_NAMES, emptySet())!!.toMutableSet()
 
@@ -80,39 +79,24 @@ class VideoSpaceManager(private val context: Context) {
                 val videoUri = ContentUris.withAppendedId(MediaStore.Video.Media.EXTERNAL_CONTENT_URI, v.id)
 
                 if (ageMs > OLD_AGE_MS) {
-                    // Old video -> replace with poster JPEG
-                    val poster = VideoThumbnailer.makePosterJpeg(context, videoUri) ?: run { skipped++; return@forEachIndexed }
-                    val posterName = v.name.substringBeforeLast('.') + ".jpg"
-                    val takenMs = parseDateFromName(v.name).takeIf { it > 0 }
-                        ?: readVideoDate(videoUri)
-                        ?: v.dateAddedSec.takeIf { it > 0 }?.times(1000L)
-                        ?: v.takenMs
-                    val stampedPoster = VideoThumbnailer.stampPosterExif(poster, takenMs)
-                    insertPoster(v, stampedPoster, posterName, takenMs) ?: run { skipped++; return@forEachIndexed }
-                    rememberRestore(posterName, hubEntry.device, v.name)
+                    // Old video — hub has full backup, just delete from phone to free space.
+                    // No poster/placeholder: photos stay as compressed images, videos just go.
                     val deleted = try { context.contentResolver.delete(videoUri, null, null) > 0 } catch (_: Exception) { false }
-                    if (deleted) { thumbed++; freed += (v.size - stampedPoster.size).coerceAtLeast(0L) }
+                    if (deleted) { thumbed++; freed += v.size }
                     else { skipped++ }
                 } else if (v.name !in compressedNames && v.id.toString() !in compressedIds) {
-                    // Recent video -> download original from hub, transcode from that so
-                    // re-runs at new quality settings always start from the best source.
-                    val tmpOrig = File(context.cacheDir, "vorig_${v.id}.mp4")
-                    val tmpOut  = File(context.cacheDir, "vtrans_${v.id}.mp4")
+                    // Recent video -> transcode to smaller MP4, preserve filename + original date
+                    val tmp = File(context.cacheDir, "vtrans_${v.id}.mp4")
                     try {
-                        val srcUri = if (hubEntry != null) {
-                            val ok = HubFilesClient.fetchFileToFile(ip, port, hubEntry.device, v.name, tmpOrig)
-                            if (ok && tmpOrig.length() > 0) android.net.Uri.fromFile(tmpOrig) else videoUri
-                        } else videoUri
-                        val okT = VideoTranscoder.transcode(context, srcUri, tmpOut.absolutePath)
-                        val origSize = if (tmpOrig.exists() && tmpOrig.length() > 0) tmpOrig.length() else v.size
-                        if (okT && tmpOut.exists() && tmpOut.length() in 1 until (origSize * 9 / 10)) {
-                            val bytes = tmpOut.readBytes()
-                            val savedBytes = origSize - bytes.size
+                        val okT = VideoTranscoder.transcode(context, videoUri, tmp.absolutePath)
+                        if (okT && tmp.exists() && tmp.length() in 1 until (v.size * 9 / 10)) {
+                            val bytes = tmp.readBytes()
+                            val savedBytes = v.size - bytes.size
                             if (replaceCompressedVideo(v, bytes)) {
                                 compressed++; freed += savedBytes.coerceAtLeast(0L)
                             }
                         }
-                    } finally { tmpOrig.delete(); tmpOut.delete() }
+                    } finally { tmp.delete() }
                     compressedNames.add(v.name)   // mark regardless to avoid repeated transcode
                 }
             } catch (_: Throwable) { skipped++ }
@@ -272,62 +256,12 @@ class VideoSpaceManager(private val context: Context) {
                     if (v.dateAddedSec > 0)    put(MediaStore.Video.Media.DATE_ADDED, v.dateAddedSec)
                     if (v.dateModifiedSec > 0) put(MediaStore.Video.Media.DATE_MODIFIED, v.dateModifiedSec)
                 }, null, null)
-                // Set physical file mtime so a future scanner rescan cannot reset DATE_ADDED.
-                if (v.dateAddedSec > 0) {
-                    context.contentResolver.query(newUri,
-                        arrayOf(MediaStore.Video.Media.DATA), null, null, null
-                    )?.use { cur ->
-                        if (cur.moveToFirst()) cur.getString(0)?.let { path ->
-                            try { java.io.File(path).setLastModified(v.dateAddedSec * 1000L) } catch (_: Exception) {}
-                        }
-                    }
-                }
             }
             true
         } catch (_: Exception) {
             runCatching { context.contentResolver.delete(newUri, null, null) }
             false
         }
-    }
-
-    /**
-     * One-time restore: re-downloads every known poster JPEG from the hub and replaces
-     * the on-phone copy, undoing any corruption caused by MakeSpace.
-     * Only runs if POSTER_VERSION was bumped; marks itself done so it runs exactly once.
-     */
-    private fun restorePostersFromHub(ip: String, port: Int) {
-        val storedVersion = prefs.getInt(KEY_POSTER_VERSION, 0)
-        if (storedVersion >= POSTER_VERSION) return
-
-        val restore = prefs.getStringSet(KEY_RESTORE, emptySet()) ?: emptySet()
-        val mediaStore = MediaStoreHelper(context)
-
-        for (entry in restore) {
-            val parts = entry.split("|")
-            if (parts.size < 2) continue
-            val posterName = parts[0]
-            val device     = parts[1]
-
-            val tmp = java.io.File(context.cacheDir, "poster_restore_" + posterName)
-            try {
-                val ok = HubFilesClient.fetchFileToFile(ip, port, device, posterName, tmp)
-                if (!ok || tmp.length() == 0L) continue
-                val bytes = tmp.readBytes()
-                val id = findImageIdByName(posterName) ?: continue
-                try {
-                    mediaStore.replaceFile(id, "image/jpeg", bytes, 0L)
-                } catch (_: Exception) { }
-            } finally {
-                tmp.delete()
-            }
-        }
-
-        // Clear the repaired-set so repairPosterDates will re-stamp the correct
-        // dates on the freshly-downloaded poster bytes in the same process() run.
-        prefs.edit()
-            .putInt(KEY_POSTER_VERSION, POSTER_VERSION)
-            .remove(KEY_REPAIRED)
-            .apply()
     }
 
     private fun rememberRestore(posterName: String, device: String, videoName: String) {
@@ -558,8 +492,6 @@ class VideoSpaceManager(private val context: Context) {
         internal const val KEY_POSTER_NAMES    = "poster_names"
         private const val KEY_VIDEO_DATES_REPAIRED = "compressed_video_dates_repaired"
         private const val KEY_COMPRESS_VERSION  = "compress_version"
-        private const val COMPRESS_VERSION      = 4  // bump → clears compressed_video_names so H.265 re-runs
-        private const val KEY_POSTER_VERSION    = "poster_restore_version"
-        private const val POSTER_VERSION        = 2  // bump → re-downloads all poster JPEGs from hub
+        private const val COMPRESS_VERSION      = 2  // bump → clears compressed_video_names so H.265 re-runs
     }
 }
