@@ -30,10 +30,17 @@ class HubRestoreManager(private val context: Context) {
         val rawBytes: Long
     )
 
+    data class RestoreSummary(
+        val restored: Int,
+        val totalOnHub: Int,
+        val toDownload: Int,
+        val failed: Int
+    )
+
     private val prefs = context.getSharedPreferences("hub_restore_state", Context.MODE_PRIVATE)
 
     companion object {
-        private const val KEY_RESTORE_DONE    = "restore_done_v1"
+        private const val KEY_RESTORE_DONE    = "restore_done_v2"
         private const val IMAGE_COMPRESS_RATIO = 0.40   // WebP ≈ 40 % of original JPEG
         private const val VIDEO_COMPRESS_RATIO = 0.60   // H.265 ≈ 60 % of original MP4
         private const val POSTER_SIZE_BYTES    = 80_000L // ~80 KB per poster JPEG
@@ -98,11 +105,11 @@ class HubRestoreManager(private val context: Context) {
         ip: String, port: Int, deviceName: String,
         hubFiles: List<HubFileEntry>,
         progress: ((done: Int, total: Int, name: String) -> Unit)? = null
-    ): Int {
+    ): RestoreSummary {
         val myFiles = hubFiles.filter { it.deviceName == deviceName }
         if (myFiles.isEmpty()) {
             RemoteLogger.i("HubRestore: no files on hub for $deviceName")
-            return 0
+            return RestoreSummary(restored = 0, totalOnHub = 0, toDownload = 0, failed = 0)
         }
 
         val existing = buildExistingNamesSet()
@@ -113,11 +120,12 @@ class HubRestoreManager(private val context: Context) {
         )
         if (toDownload.isEmpty()) {
             RemoteLogger.i("HubRestore: phone already has everything, nothing to do")
-            return 0
+            return RestoreSummary(restored = 0, totalOnHub = myFiles.size, toDownload = 0, failed = 0)
         }
 
         val tmp = File(context.cacheDir, "hub_restore_tmp")
         var done = 0
+        var failed = 0
 
         for ((index, f) in toDownload.withIndex()) {
             try {
@@ -126,6 +134,7 @@ class HubRestoreManager(private val context: Context) {
                 val ok = HubFilesClient.fetchFileToFile(ip, port, deviceName, f.displayName, tmp)
                 if (!ok || !tmp.exists() || tmp.length() == 0L) {
                     RemoteLogger.i("HubRestore: download failed for ${f.displayName}")
+                    failed++
                     continue
                 }
 
@@ -154,8 +163,11 @@ class HubRestoreManager(private val context: Context) {
                 if (inserted) {
                     done++
                     if (done % 50 == 0) RemoteLogger.i("HubRestore: $done/${toDownload.size} done")
+                } else {
+                    failed++
                 }
             } catch (t: Throwable) {
+                failed++
                 RemoteLogger.i("HubRestore: error on ${f.displayName} — ${t.message}")
             } finally {
                 tmp.delete()
@@ -163,7 +175,7 @@ class HubRestoreManager(private val context: Context) {
         }
 
         RemoteLogger.i("HubRestore: complete — restored $done / ${toDownload.size} files")
-        return done
+        return RestoreSummary(restored = done, totalOnHub = myFiles.size, toDownload = toDownload.size, failed = failed)
     }
 
     // ── helpers ───────────────────────────────────────────────────────────────

@@ -301,18 +301,35 @@ class ClientForegroundService : LifecycleService() {
                     val ip2   = liveHubIp ?: liveHubTailscaleIp ?: return
                     val port2 = liveHubPort
                     val allHub = try { HubFilesClient.fetchFiles(ip2, port2, limit = 20_000) }
-                                 catch (_: Exception) { emptyList() }
+                                 catch (t: Exception) {
+                                     log("HubRestore: file list failed (${t.javaClass.simpleName}); will retry next hub connect")
+                                     return
+                                 }
+                    if (allHub.isEmpty()) {
+                        log("HubRestore: hub returned no files; will retry next hub connect")
+                        return
+                    }
                     val est = restoreMgr.estimate(allHub, android.os.Build.MODEL)
+                    val totalForThisPhone = est.imageCount + est.videoRecentCount + est.videoOldCount
+                    if (totalForThisPhone == 0) {
+                        log("HubRestore: no hub files matched ${android.os.Build.MODEL}; will retry next hub connect")
+                        return
+                    }
                     log("HubRestore: ${est.imageCount}img + ${est.videoRecentCount}vid + ${est.videoOldCount}old-vid→poster" +
                         " | raw ${est.rawBytes / 1_000_000}MB → ~${est.estimatedBytes / 1_000_000}MB after compression")
-                    val n = restoreMgr.restoreAll(ip2, port2, android.os.Build.MODEL, allHub) { done, total, name ->
+                    val result = restoreMgr.restoreAll(ip2, port2, android.os.Build.MODEL, allHub) { done, total, name ->
                         if (done % 100 == 0 || done == total) {
                             log("HubRestore $done/$total: $name")
                             updateNotification("Restoring from hub: $done/$total")
                         }
                     }
+                    val n = result.restored
                     log("HubRestore done — $n file(s) restored. VideoSpace + ImageSpace will compress on next cycle.")
-                    restoreMgr.markDone()
+                    if (result.failed == 0) {
+                        restoreMgr.markDone()
+                    } else {
+                        log("HubRestore incomplete: ${result.restored}/${result.toDownload} restored, ${result.failed} failed; will retry next hub connect")
+                    }
                 } catch (t: Throwable) { log("HubRestore error: ${t.javaClass.simpleName}: ${t.message}") }
             }
         } catch (t: Throwable) { log("Pre-sync cleanup error: ${t.javaClass.simpleName}: ${t.message}") }

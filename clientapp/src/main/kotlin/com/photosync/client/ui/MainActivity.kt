@@ -265,6 +265,10 @@ class MainActivity : AppCompatActivity() {
                     runMakeSpaceNow()
                     true
                 }
+                R.id.action_restore_from_hub -> {
+                    runRestoreFromHubNow()
+                    true
+                }
                 R.id.action_start -> {
                     startForegroundService(Intent(this, ClientForegroundService::class.java))
                     true
@@ -723,6 +727,53 @@ class MainActivity : AppCompatActivity() {
                 if (summary.skipped > 0) append("  (${summary.skipped} skipped)")
             }
             com.photosync.client.service.ClientForegroundService.staticLog(msg)
+        }.start()
+    }
+
+    private fun runRestoreFromHubNow() {
+        val ip = effectiveHubIp()
+        if (ip == null) {
+            com.photosync.client.service.ClientForegroundService.staticLog("Restore: hub not connected")
+            Toast.makeText(this, "Hub not connected", Toast.LENGTH_SHORT).show()
+            return
+        }
+        val port = ClientForegroundService.liveHubPort
+        Toast.makeText(this, "Restoring from hub...", Toast.LENGTH_SHORT).show()
+        com.photosync.client.service.ClientForegroundService.staticLog("Restore from Hub starting...")
+        Thread {
+            try {
+                val files = com.photosync.client.hub.HubFilesClient.fetchFiles(ip, port, limit = 20_000)
+                if (files.isEmpty()) {
+                    com.photosync.client.service.ClientForegroundService.staticLog("Restore: hub returned no files")
+                    return@Thread
+                }
+
+                val mgr = com.photosync.client.media.HubRestoreManager(this)
+                val estimate = mgr.estimate(files, android.os.Build.MODEL)
+                val totalForThisPhone = estimate.imageCount + estimate.videoRecentCount + estimate.videoOldCount
+                if (totalForThisPhone == 0) {
+                    com.photosync.client.service.ClientForegroundService.staticLog(
+                        "Restore: no hub files matched ${android.os.Build.MODEL}")
+                    return@Thread
+                }
+
+                com.photosync.client.service.ClientForegroundService.staticLog(
+                    "Restore estimate: ${estimate.imageCount} images, ${estimate.videoRecentCount} videos, ${estimate.videoOldCount} old videos")
+                val result = mgr.restoreAll(ip, port, android.os.Build.MODEL, files) { done, total, name ->
+                    if (done % 25 == 0 || done == total) {
+                        com.photosync.client.service.ClientForegroundService.staticLog(
+                            "Restore $done/$total: $name")
+                    }
+                }
+                com.photosync.client.service.ClientForegroundService.staticLog(
+                    "Restore done: ${result.restored}/${result.toDownload} restored, ${result.failed} failed")
+                if (result.failed == 0) {
+                    mgr.markDone()
+                }
+            } catch (t: Throwable) {
+                com.photosync.client.service.ClientForegroundService.staticLog(
+                    "Restore error: ${t.javaClass.simpleName}: ${t.message}")
+            }
         }.start()
     }
 
