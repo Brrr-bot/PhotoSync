@@ -69,7 +69,10 @@ class UsbStorageManager(
                     val name = f.name ?: return
                     val ext = name.substringAfterLast('.', "").lowercase()
                     if (ext !in imageExts) return
-                    result += HubFileEntry(deviceName, name, f.length(), f.lastModified())
+                    // Use the capture date from the filename (most reliable), fall back to
+                    // file modification time only when the filename has no parseable date.
+                    val dateMs = parseDateFromFilename(name) ?: f.lastModified()
+                    result += HubFileEntry(deviceName, name, f.length(), dateMs)
                     uriMap["$deviceName/$name"] = f.uri
                 }
                 for (child in deviceDir.listFiles()) {
@@ -749,35 +752,14 @@ class UsbStorageManager(
             }
 
             // Third pass: organize flat-root files (directly in deviceFolder, not in any subfolder).
-            // These are files that were synced before the date-folder logic existed, or whose
-            // filenames/EXIF dates couldn't be parsed at sync time.
-            val imageExtsFlat = setOf("jpg", "jpeg", "webp", "heic", "heif", "png")
+            // Only use the filename date — EXIF is NOT used as a fallback because the hub's
+            // writeFile stamped EXIF with the sync date for files that had no parseable filename,
+            // which would cause those files to be moved to the wrong (sync) date folder.
+            // Files with no parseable filename date stay in the flat root.
             for (child in deviceFolder.listFiles()) {
                 if (child.isDirectory) continue
                 val name = child.name ?: continue
-                // Determine the best date: filename first, then EXIF for images
-                val ext = name.substringAfterLast('.', "").lowercase()
-                val dateFromName = parseDateFromFilename(name)
-                val correctMs: Long = if (dateFromName != null) {
-                    dateFromName
-                } else if (ext in imageExtsFlat) {
-                    // Try EXIF
-                    try {
-                        context.contentResolver.openFileDescriptor(child.uri, "r")?.use { pfd ->
-                            val exif = ExifInterface(pfd.fileDescriptor)
-                            val tag = exif.getAttribute(ExifInterface.TAG_DATETIME_ORIGINAL)
-                                ?: exif.getAttribute(ExifInterface.TAG_DATETIME)
-                                ?: return@use null
-                            if (tag.isBlank() || tag.startsWith("0000")) return@use null
-                            SimpleDateFormat("yyyy:MM:dd HH:mm:ss", Locale.US)
-                                .apply { isLenient = false }.parse(tag)?.time
-                        }
-                    } catch (_: Exception) { null }
-                        ?.takeIf { it in 946_684_800_000L..System.currentTimeMillis() }
-                        ?: continue  // no reliable date → leave in flat root
-                } else {
-                    continue  // no reliable date for video → leave in flat root
-                }
+                val correctMs: Long = parseDateFromFilename(name) ?: continue
 
                 val targetLabel = dateFormat.format(Date(correctMs))
                 try {
