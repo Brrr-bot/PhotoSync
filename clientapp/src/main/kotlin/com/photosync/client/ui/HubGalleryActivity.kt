@@ -143,64 +143,30 @@ class HubGalleryActivity : AppCompatActivity() {
     private fun deleteSelected() {
         val toDelete = selectedItems.toList()
         val ip = hubIp ?: return
-        // Clear selection immediately so bar and checkmarks disappear right away
-        selectedItems.clear()
-        updateSelectionBar()
-        rvGallery.adapter?.notifyDataSetChanged()
-        Toast.makeText(this, "Deleting ${toDelete.size} file${if (toDelete.size > 1) "s" else ""}…", Toast.LENGTH_SHORT).show()
         Thread {
-            var hubDeleted   = 0
-            var localDeleted = 0
-
-            // Fetch local MediaStore entries once so we can delete matching phone files
-            val localFiles = try {
-                com.photosync.client.media.MediaStoreHelper(this).getMediaSince(0)
-            } catch (_: Exception) { emptyList() }
-
+            var deleted = 0
             for (entry in toDelete) {
                 val ok = HubFilesClient.deleteFile(ip, hubPort, entry.deviceName, entry.displayName)
-                android.util.Log.d("HubGallery", "deleteFile ${entry.displayName} -> $ok")
                 if (ok) {
-                    hubDeleted++
-                    // Mark as user-deleted so MediaHttpServer won't serve it to hub again
-                    // even if the phone-side delete below doesn't fully succeed.
-                    val deletionPrefs = getSharedPreferences("deletion_state", MODE_PRIVATE)
-                    val existing = deletionPrefs.getStringSet("user_deleted_names", emptySet())!!.toMutableSet()
-                    existing.add(entry.displayName)
-                    deletionPrefs.edit().putStringSet("user_deleted_names", existing).apply()
-                    // Also remove from make_space processed set so it won't be compressed again
-                    val spacePrefs = getSharedPreferences("make_space_state", MODE_PRIVATE)
-                    val processed = spacePrefs.getStringSet("processed_names", emptySet())!!.toMutableSet()
-                    processed.remove(entry.displayName)
-                    spacePrefs.edit().putStringSet("processed_names", processed).apply()
-
-                    // Delete matching local file from the phone gallery
-                    val local = localFiles.firstOrNull { it.displayName == entry.displayName }
-                    if (local != null) {
-                        try {
-                            val isVideo = local.mimeType.startsWith("video/")
-                            val uri = android.content.ContentUris.withAppendedId(
-                                if (isVideo) android.provider.MediaStore.Video.Media.EXTERNAL_CONTENT_URI
-                                else         android.provider.MediaStore.Images.Media.EXTERNAL_CONTENT_URI,
-                                local.id)
-                            val rows = contentResolver.delete(uri, null, null)
-                            if (rows > 0) localDeleted++
-                        } catch (_: Exception) { }
+                    deleted++
+                    runOnUiThread {
+                        val idx = entries.indexOf(entry)
+                        if (idx >= 0) {
+                            entries.removeAt(idx)
+                            rvGallery.adapter?.notifyItemRemoved(idx)
+                        }
                     }
                 }
             }
-
-            val d   = hubDeleted
-            val ld  = localDeleted
-            val tot = toDelete.size
+            val d = deleted
+            val total = toDelete.size
             runOnUiThread {
-                val msg = buildString {
-                    if (d == tot) append("Deleted $d from hub")
-                    else          append("Deleted $d / $tot from hub")
-                    if (ld > 0)   append(" + $ld from phone")
-                }
+                selectedItems.clear()
+                updateSelectionBar()
+                tvFileCount.text = "${entries.size} files"
+                val msg = if (d == total) "Deleted $d file${if (d > 1) "s" else ""}"
+                          else "Deleted $d / $total (some failed)"
                 Toast.makeText(this, msg, Toast.LENGTH_SHORT).show()
-                loadFiles()
             }
         }.start()
     }
@@ -293,7 +259,12 @@ class HubGalleryActivity : AppCompatActivity() {
                 runOnUiThread { Toast.makeText(this, "Download failed", Toast.LENGTH_SHORT).show() }
                 return@Thread
             }
-            val saved = saveToGallery(entry.displayName, bytes)
+            val saved = saveToGallery(entry.displayName, bytes, entry.lastModifiedMs)
+            if (saved) {
+                // If this video had a poster placeholder, delete it and clear tracking so
+                // VideoSpaceManager won't re-posterize the restored original.
+                replacePosterWithRestoredVideo(entry.displayName)
+            }
             runOnUiThread {
                 if (saved) Toast.makeText(this, "Saved to gallery: ${entry.displayName}", Toast.LENGTH_LONG).show()
                 else Toast.makeText(this, "Failed to save file", Toast.LENGTH_SHORT).show()
@@ -301,29 +272,88 @@ class HubGalleryActivity : AppCompatActivity() {
         }.start()
     }
 
-    private fun saveToGallery(name: String, bytes: ByteArray): Boolean {
+    /**
+     * If [videoName] previously had a poster placeholder (recorded by VideoSpaceManager),
+     * deletes the poster from MediaStore and clears all tracking so the video won't be
+     * auto-posterized again on the next VideoSpaceManager cycle.
+     */
+    private fun replacePosterWithRestoredVideo(videoName: String) {
+        val prefs = getSharedPreferences("video_space_state", Context.MODE_PRIVATE)
+
+        // Find poster name for this video in the restore map ("posterName|device|videoName")
+        val restoreSet = prefs.getStringSet(com.photosync.client.media.VideoSpaceManager.KEY_RESTORE, emptySet())!!.toMutableSet()
+        val mapEntry = restoreSet.find { it.endsWith("|$videoName") } ?: run {
+            // No poster was recorded — still mark as user-restored to prevent future posterization
+            val userRestored = prefs.getStringSet(com.photosync.client.media.VideoSpaceManager.KEY_USER_RESTORED, emptySet())!!.toMutableSet()
+            userRestored.add(videoName)
+            prefs.edit().putStringSet(com.photosync.client.media.VideoSpaceManager.KEY_USER_RESTORED, userRestored).apply()
+            return
+        }
+        val posterName = mapEntry.substringBefore('|')
+
+        // Delete the poster JPEG from MediaStore
+        try {
+            contentResolver.delete(
+                MediaStore.Images.Media.EXTERNAL_CONTENT_URI,
+                "${MediaStore.Images.Media.DISPLAY_NAME} = ?",
+                arrayOf(posterName)
+            )
+        } catch (_: Exception) {}
+
+        // Remove from tracking sets; mark video as user-restored
+        restoreSet.remove(mapEntry)
+        val posterNames = prefs.getStringSet(com.photosync.client.media.VideoSpaceManager.KEY_POSTER_NAMES, emptySet())!!.toMutableSet()
+        posterNames.remove(posterName)
+        val userRestored = prefs.getStringSet(com.photosync.client.media.VideoSpaceManager.KEY_USER_RESTORED, emptySet())!!.toMutableSet()
+        userRestored.add(videoName)
+
+        prefs.edit()
+            .putStringSet(com.photosync.client.media.VideoSpaceManager.KEY_RESTORE, restoreSet)
+            .putStringSet(com.photosync.client.media.VideoSpaceManager.KEY_POSTER_NAMES, posterNames)
+            .putStringSet(com.photosync.client.media.VideoSpaceManager.KEY_USER_RESTORED, userRestored)
+            .apply()
+    }
+
+    private fun saveToGallery(name: String, bytes: ByteArray, dateMs: Long = 0L): Boolean {
         return try {
             val mime = mimeFor(name)
             val isVideo = mime.startsWith("video/")
-            val values = ContentValues().apply {
-                put(MediaStore.MediaColumns.DISPLAY_NAME, name)
-                put(MediaStore.MediaColumns.MIME_TYPE, mime)
-                if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
-                    put(MediaStore.MediaColumns.RELATIVE_PATH,
-                        if (isVideo) Environment.DIRECTORY_MOVIES + "/PhotoSync"
-                        else Environment.DIRECTORY_PICTURES + "/PhotoSync")
-                    put(MediaStore.MediaColumns.IS_PENDING, 1)
-                }
-            }
+            val dateSec = if (dateMs > 0) dateMs / 1000L else System.currentTimeMillis() / 1000L
             val collection = if (isVideo)
                 MediaStore.Video.Media.getContentUri(MediaStore.VOLUME_EXTERNAL_PRIMARY)
             else
                 MediaStore.Images.Media.getContentUri(MediaStore.VOLUME_EXTERNAL_PRIMARY)
+            val nameCol  = if (isVideo) MediaStore.Video.Media.DISPLAY_NAME  else MediaStore.Images.Media.DISPLAY_NAME
+            val mimeCol  = if (isVideo) MediaStore.Video.Media.MIME_TYPE      else MediaStore.Images.Media.MIME_TYPE
+            val pathCol  = if (isVideo) MediaStore.Video.Media.RELATIVE_PATH  else MediaStore.Images.Media.RELATIVE_PATH
+            val takenCol = if (isVideo) MediaStore.Video.Media.DATE_TAKEN     else MediaStore.Images.Media.DATE_TAKEN
+            val addedCol = if (isVideo) MediaStore.Video.Media.DATE_ADDED     else MediaStore.Images.Media.DATE_ADDED
+            val modCol   = if (isVideo) MediaStore.Video.Media.DATE_MODIFIED  else MediaStore.Images.Media.DATE_MODIFIED
+            val pendCol  = if (isVideo) MediaStore.Video.Media.IS_PENDING     else MediaStore.Images.Media.IS_PENDING
+            val values = ContentValues().apply {
+                put(nameCol,  name)
+                put(mimeCol,  mime)
+                put(takenCol, dateMs)
+                put(addedCol, dateSec)
+                put(modCol,   dateSec)
+                if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
+                    put(pathCol, if (isVideo) android.os.Environment.DIRECTORY_MOVIES + "/PhotoSync"
+                                 else android.os.Environment.DIRECTORY_PICTURES + "/PhotoSync")
+                    put(pendCol, 1)
+                }
+            }
             val uri = contentResolver.insert(collection, values) ?: return false
             contentResolver.openOutputStream(uri)?.use { it.write(bytes) }
             if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
                 contentResolver.update(uri, ContentValues().apply {
-                    put(MediaStore.MediaColumns.IS_PENDING, 0)
+                    put(pendCol,  0)
+                    put(takenCol, dateMs)
+                    put(addedCol, dateSec)
+                    put(modCol,   dateSec)
+                }, null, null)
+                // Samsung resets dates on IS_PENDING→0 — force them again
+                contentResolver.update(uri, ContentValues().apply {
+                    put(takenCol, dateMs); put(addedCol, dateSec); put(modCol, dateSec)
                 }, null, null)
             }
             true
