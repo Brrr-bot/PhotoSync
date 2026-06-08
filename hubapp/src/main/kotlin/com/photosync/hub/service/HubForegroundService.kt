@@ -440,7 +440,7 @@ class HubForegroundService : LifecycleService() {
         private const val EXIF_REPAIR_VERSION_KEY = "exif_repair_v"
         private const val EXIF_REPAIR_VERSION = 3   // v3: re-stamp EXIF now that parseDateFromFilename handles WhatsApp/Signal/ISO patterns
         private const val REORG_VERSION_KEY = "folder_reorg_v"
-        private const val REORG_VERSION = 3         // v3: re-run reorg with expanded filename date parser (WhatsApp dashes, date-only, ISO)
+        private const val REORG_VERSION = 4         // v4: flat-root pass + 13-digit epoch pattern (organizes 2152 files in device root)
 
         private val recentLogs = ArrayDeque<String>(100)
         @Volatile private var currentMode: String = "Idle"
