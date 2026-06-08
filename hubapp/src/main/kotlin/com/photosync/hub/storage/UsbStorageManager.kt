@@ -331,6 +331,13 @@ class UsbStorageManager(
             } catch (_: Exception) {}
         }
 
+        // 7. 13-digit epoch-ms embedded in filename (WeChat mmexport, Android download IDs)
+        //    e.g. mmexport1729837012822.mp4, 1746777749456.mp4
+        Regex("""(\d{13})""").find(stem)?.let { m ->
+            val ms = m.groupValues[1].toLongOrNull() ?: return@let
+            tryMs(ms)?.let { return it }
+        }
+
         return null
     }
 
@@ -739,6 +746,62 @@ class UsbStorageManager(
                         try { destFile.delete() } catch (_: Exception) {}
                     }
                 }
+            }
+
+            // Third pass: organize flat-root files (directly in deviceFolder, not in any subfolder).
+            // These are files that were synced before the date-folder logic existed, or whose
+            // filenames/EXIF dates couldn't be parsed at sync time.
+            val imageExtsFlat = setOf("jpg", "jpeg", "webp", "heic", "heif", "png")
+            for (child in deviceFolder.listFiles()) {
+                if (child.isDirectory) continue
+                val name = child.name ?: continue
+                // Determine the best date: filename first, then EXIF for images
+                val ext = name.substringAfterLast('.', "").lowercase()
+                val dateFromName = parseDateFromFilename(name)
+                val correctMs: Long = if (dateFromName != null) {
+                    dateFromName
+                } else if (ext in imageExtsFlat) {
+                    // Try EXIF
+                    try {
+                        context.contentResolver.openFileDescriptor(child.uri, "r")?.use { pfd ->
+                            val exif = ExifInterface(pfd.fileDescriptor)
+                            val tag = exif.getAttribute(ExifInterface.TAG_DATETIME_ORIGINAL)
+                                ?: exif.getAttribute(ExifInterface.TAG_DATETIME)
+                                ?: return@use null
+                            if (tag.isBlank() || tag.startsWith("0000")) return@use null
+                            SimpleDateFormat("yyyy:MM:dd HH:mm:ss", Locale.US)
+                                .apply { isLenient = false }.parse(tag)?.time
+                        }
+                    } catch (_: Exception) { null }
+                        ?.takeIf { it in 946_684_800_000L..System.currentTimeMillis() }
+                        ?: continue  // no reliable date → leave in flat root
+                } else {
+                    continue  // no reliable date for video → leave in flat root
+                }
+
+                val targetLabel = dateFormat.format(Date(correctMs))
+                try {
+                    val targetFolder = deviceFolder.findFile(targetLabel)
+                        ?: deviceFolder.createDirectory(targetLabel)
+                        ?: continue
+                    if (targetFolder.findFile(name) != null) {
+                        child.delete(); continue
+                    }
+                    val destFile = targetFolder.createFile("application/octet-stream", name) ?: continue
+                    var copyOk = false
+                    try {
+                        context.contentResolver.openInputStream(child.uri)?.use { inp ->
+                            context.contentResolver.openOutputStream(destFile.uri)?.use { out ->
+                                inp.copyTo(out); copyOk = true
+                            }
+                        }
+                    } catch (_: Exception) {}
+                    if (copyOk) {
+                        child.delete(); moved++
+                    } else {
+                        try { destFile.delete() } catch (_: Exception) {}
+                    }
+                } catch (_: Exception) {}
             }
 
             // Remove any now-empty date folders we moved files out of
