@@ -62,7 +62,8 @@ class VideoSpaceManager(private val context: Context) {
                 .apply()
             RemoteLogger.i("VideoSpace: quality upgrade to v$COMPRESS_VERSION — re-transcoding all videos")
         }
-        val compressedNames = prefs.getStringSet(KEY_COMPRESSED_NAMES, emptySet())!!.toMutableSet()
+        val compressedNames  = prefs.getStringSet(KEY_COMPRESSED_NAMES, emptySet())!!.toMutableSet()
+        val userRestoredNames = prefs.getStringSet(KEY_USER_RESTORED, emptySet())!!
 
         val videos = queryVideos()
         var thumbed = 0; var compressed = 0; var skipped = 0; var freed = 0L
@@ -74,6 +75,9 @@ class VideoSpaceManager(private val context: Context) {
 
                 val hubEntry = hubByName[v.name]
                 if (hubEntry == null || hubEntry.size < v.size) { skipped++; return@forEachIndexed }
+
+                // User explicitly restored this video from the hub — never auto-posterize it again.
+                if (v.name in userRestoredNames) { skipped++; return@forEachIndexed }
 
                 // Determine age from filename first — more reliable than DATE_TAKEN which
                 // Samsung zeros out during IS_PENDING transitions.
@@ -509,9 +513,11 @@ class VideoSpaceManager(private val context: Context) {
         private const val OLD_AGE_MS           = 30L * 24 * 60 * 60 * 1000
         private const val KEY_COMPRESSED       = "compressed_video_ids"    // legacy: stores IDs
         private const val KEY_COMPRESSED_NAMES = "compressed_video_names"  // v316+: stores display names
-        private const val KEY_RESTORE          = "poster_restore_map"
+        internal const val KEY_RESTORE         = "poster_restore_map"
         private const val KEY_REPAIRED         = "poster_repaired_set"
         internal const val KEY_POSTER_NAMES    = "poster_names"
+        /** Videos the user explicitly restored from hub — never auto-posterize these again. */
+        internal const val KEY_USER_RESTORED   = "user_restored_videos"
         private const val KEY_VIDEO_DATES_REPAIRED = "compressed_video_dates_repaired"
         private const val KEY_COMPRESS_VERSION  = "compress_version"
         private const val COMPRESS_VERSION      = 2  // bump → clears compressed_video_names so H.265 re-runs
