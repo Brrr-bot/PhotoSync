@@ -752,14 +752,37 @@ class UsbStorageManager(
             }
 
             // Third pass: organize flat-root files (directly in deviceFolder, not in any subfolder).
-            // Only use the filename date — EXIF is NOT used as a fallback because the hub's
-            // writeFile stamped EXIF with the sync date for files that had no parseable filename,
-            // which would cause those files to be moved to the wrong (sync) date folder.
-            // Files with no parseable filename date stay in the flat root.
+            // Date priority:
+            //   1. Filename date (always reliable)
+            //   2. EXIF DateTimeOriginal — but ONLY if the date is >7 days ago. The hub's
+            //      writeFile stamped EXIF with the sync date for files whose filenames had no
+            //      parseable date; since sync happened recently, any EXIF date within the last
+            //      7 days is likely a fake sync-date and must be ignored.
+            //   3. No reliable date → leave in flat root
+            val imageExtsFlat = setOf("jpg", "jpeg", "webp", "heic", "heif", "png")
+            val sevenDaysMs = 7L * 24 * 60 * 60 * 1000L
             for (child in deviceFolder.listFiles()) {
                 if (child.isDirectory) continue
                 val name = child.name ?: continue
-                val correctMs: Long = parseDateFromFilename(name) ?: continue
+                val ext = name.substringAfterLast('.', "").lowercase()
+                val now2 = System.currentTimeMillis()
+                val correctMs: Long = parseDateFromFilename(name) ?: run {
+                    if (ext !in imageExtsFlat) return@run null
+                    try {
+                        context.contentResolver.openFileDescriptor(child.uri, "r")?.use { pfd ->
+                            val exif = ExifInterface(pfd.fileDescriptor)
+                            val tag = exif.getAttribute(ExifInterface.TAG_DATETIME_ORIGINAL)
+                                ?: exif.getAttribute(ExifInterface.TAG_DATETIME)
+                                ?: return@use null
+                            if (tag.isBlank() || tag.startsWith("0000")) return@use null
+                            val ms = SimpleDateFormat("yyyy:MM:dd HH:mm:ss", Locale.US)
+                                .apply { isLenient = false }.parse(tag)?.time ?: return@use null
+                            // Only trust EXIF if the date is older than 7 days — recent dates
+                            // are likely the sync-stamp fake date, not the real capture date.
+                            if (ms in 946_684_800_000L..(now2 - sevenDaysMs)) ms else null
+                        }
+                    } catch (_: Exception) { null }
+                } ?: continue
 
                 val targetLabel = dateFormat.format(Date(correctMs))
                 try {
