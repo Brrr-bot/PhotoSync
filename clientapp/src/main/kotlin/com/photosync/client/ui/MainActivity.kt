@@ -15,6 +15,9 @@ import android.os.Handler
 import android.os.Looper
 import android.os.PowerManager
 import android.provider.Settings
+import android.text.SpannableStringBuilder
+import android.text.Spanned
+import android.text.style.ForegroundColorSpan
 import android.view.View
 import android.widget.ImageButton
 import android.widget.ImageView
@@ -166,7 +169,7 @@ class MainActivity : AppCompatActivity() {
             val line = "$time  $msg"
             if (logLines.size >= 100) logLines.removeFirst()
             logLines.addLast(line)
-            tvLog.text = logLines.joinToString("\n")
+            renderLog()
             scrollLog.post { scrollLog.fullScroll(ScrollView.FOCUS_DOWN) }
         }
     }
@@ -226,7 +229,7 @@ class MainActivity : AppCompatActivity() {
         logLines.clear()
         logLines.addAll(ClientForegroundService.getRecentLogs())
         if (logLines.isNotEmpty()) {
-            tvLog.text = logLines.joinToString("\n")
+            renderLog()
             scrollLog.post { scrollLog.fullScroll(ScrollView.FOCUS_DOWN) }
         }
 
@@ -731,8 +734,14 @@ class MainActivity : AppCompatActivity() {
     }
 
     private fun runRestoreFromHubNow() {
+        if (!restoreRunning.compareAndSet(false, true)) {
+            ClientForegroundService.staticLog("Restore already running")
+            Toast.makeText(this, "Restore already running", Toast.LENGTH_SHORT).show()
+            return
+        }
         val ip = effectiveHubIp()
         if (ip == null) {
+            restoreRunning.set(false)
             com.photosync.client.service.ClientForegroundService.staticLog("Restore: hub not connected")
             Toast.makeText(this, "Hub not connected", Toast.LENGTH_SHORT).show()
             return
@@ -760,10 +769,7 @@ class MainActivity : AppCompatActivity() {
                 com.photosync.client.service.ClientForegroundService.staticLog(
                     "Restore estimate: ${estimate.imageCount} images, ${estimate.videoRecentCount} videos, ${estimate.videoOldCount} old videos")
                 val result = mgr.restoreAll(ip, port, android.os.Build.MODEL, files) { done, total, name ->
-                    if (done % 25 == 0 || done == total) {
-                        com.photosync.client.service.ClientForegroundService.staticLog(
-                            "Restore $done/$total: $name")
-                    }
+                    ClientForegroundService.staticLog("Restore $done/$total: $name")
                 }
                 com.photosync.client.service.ClientForegroundService.staticLog(
                     "Restore done: ${result.restored}/${result.toDownload} restored, ${result.failed} failed")
@@ -773,11 +779,47 @@ class MainActivity : AppCompatActivity() {
             } catch (t: Throwable) {
                 com.photosync.client.service.ClientForegroundService.staticLog(
                     "Restore error: ${t.javaClass.simpleName}: ${t.message}")
+            } finally {
+                restoreRunning.set(false)
             }
         }.start()
     }
 
+    private fun renderLog() {
+        val out = SpannableStringBuilder()
+        logLines.forEachIndexed { index, line ->
+            if (index > 0) out.append('\n')
+            val start = out.length
+            out.append(line)
+            out.setSpan(
+                ForegroundColorSpan(logColor(line)),
+                start, out.length, Spanned.SPAN_EXCLUSIVE_EXCLUSIVE
+            )
+        }
+        tvLog.text = out
+    }
+
+    private fun logColor(line: String): Int {
+        val text = line.lowercase(Locale.US)
+        return when {
+            text.contains("error") || text.contains("failed") || text.contains("fatal") ->
+                ContextCompat.getColor(this, android.R.color.holo_red_light)
+            text.contains("restore") || text.contains("poster") ->
+                ContextCompat.getColor(this, android.R.color.holo_purple)
+            text.contains("compress") || text.contains("make space") || text.contains("localfix") ->
+                ContextCompat.getColor(this, android.R.color.holo_orange_light)
+            text.contains("sync") || text.contains("upload") || text.contains("download") ->
+                ContextCompat.getColor(this, android.R.color.holo_blue_light)
+            text.contains("handshake") || text.contains("hub ") || text.contains("tailscale") ->
+                0xFF26C6DA.toInt()
+            text.contains("done") || text.contains("complete") || text.contains("saved") ->
+                ContextCompat.getColor(this, android.R.color.holo_green_light)
+            else -> ContextCompat.getColor(this, android.R.color.white)
+        }
+    }
+
     companion object {
+        private val restoreRunning = java.util.concurrent.atomic.AtomicBoolean(false)
         private const val REQ_WRITE_ACCESS       = 1001
         private const val REQ_DELETE_ORIGINALS   = 1002
         private const val REQ_CLEANUP_DUPLICATES = 1003

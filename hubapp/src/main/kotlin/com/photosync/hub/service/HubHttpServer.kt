@@ -130,6 +130,7 @@ class HubHttpServer(
             ?: return newFixedLengthResponse(Response.Status.BAD_REQUEST, MIME_PLAINTEXT, "Missing device")
         val name = session.parameters["name"]?.firstOrNull()
             ?: return newFixedLengthResponse(Response.Status.BAD_REQUEST, MIME_PLAINTEXT, "Missing name")
+        onLog?.invoke("Restore serving: $name")
         val bytes = onThumbRequest?.invoke(device, name)
             ?: return newFixedLengthResponse(Response.Status.NOT_FOUND, MIME_PLAINTEXT, "Not found")
         return newFixedLengthResponse(Response.Status.OK, "image/jpeg",

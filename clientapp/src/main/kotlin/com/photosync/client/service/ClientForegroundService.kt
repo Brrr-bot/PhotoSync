@@ -57,6 +57,7 @@ class ClientForegroundService : LifecycleService() {
 
     override fun onCreate() {
         super.onCreate()
+        liveInstance = this
         // Restore persisted Tailscale IP so remote sync works immediately after restart
         liveHubTailscaleIp = getSharedPreferences(PREFS_NAME, MODE_PRIVATE)
             .getString(KEY_HUB_TAILSCALE_IP, null)
@@ -362,6 +363,7 @@ class ClientForegroundService : LifecycleService() {
     override fun onBind(intent: Intent): IBinder? = super.onBind(intent)
 
     override fun onDestroy() {
+        liveInstance = null
         super.onDestroy()
         syncHandler.removeCallbacks(syncRunnable)
         announceJob?.cancel()
@@ -525,11 +527,15 @@ class ClientForegroundService : LifecycleService() {
 
         /** Log from a context where there is no service instance (e.g. MainActivity helpers). */
         fun staticLog(message: String) {
-            val time = java.text.SimpleDateFormat("HH:mm:ss", java.util.Locale.getDefault())
-                .format(java.util.Date())
-            addLog("$time  $message")
-            RemoteLogger.i(message)
+            liveInstance?.log(message) ?: run {
+                val time = java.text.SimpleDateFormat("HH:mm:ss", java.util.Locale.getDefault())
+                    .format(java.util.Date())
+                addLog("$time  $message")
+                RemoteLogger.i(message)
+            }
         }
+
+        @Volatile private var liveInstance: ClientForegroundService? = null
 
         private fun addLog(line: String) = synchronized(recentLogs) {
             if (recentLogs.size >= 100) recentLogs.removeFirst()

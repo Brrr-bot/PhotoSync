@@ -8,6 +8,9 @@ import android.net.Uri
 import android.os.Bundle
 import android.os.PowerManager
 import android.provider.Settings
+import android.text.SpannableStringBuilder
+import android.text.Spanned
+import android.text.style.ForegroundColorSpan
 import android.view.View
 import android.widget.ImageButton
 import android.widget.PopupMenu
@@ -15,6 +18,7 @@ import android.widget.ProgressBar
 import android.widget.ScrollView
 import android.widget.TextView
 import androidx.appcompat.app.AppCompatActivity
+import androidx.core.content.ContextCompat
 import com.photosync.hub.BuildConfig
 import com.photosync.hub.R
 import com.photosync.hub.network.TailscaleIpDetector
@@ -134,7 +138,7 @@ class MainActivity : AppCompatActivity() {
             val line = "$time  $msg"
             if (logLines.size >= 100) logLines.removeFirst()
             logLines.addLast(line)
-            tvLog.text = logLines.joinToString("\n")
+            renderLog()
             scrollLog.post { scrollLog.fullScroll(ScrollView.FOCUS_DOWN) }
         }
     }
@@ -178,7 +182,7 @@ class MainActivity : AppCompatActivity() {
         logLines.clear()
         logLines.addAll(HubForegroundService.getRecentLogs())
         if (logLines.isNotEmpty()) {
-            tvLog.text = logLines.joinToString("\n")
+            renderLog()
             scrollLog.post { scrollLog.fullScroll(ScrollView.FOCUS_DOWN) }
         }
 
@@ -197,6 +201,40 @@ class MainActivity : AppCompatActivity() {
         unregisterReceiver(logReceiver)
         unregisterReceiver(progressReceiver)
         unregisterReceiver(fileBytesReceiver)
+    }
+
+    private fun renderLog() {
+        val out = SpannableStringBuilder()
+        logLines.forEachIndexed { index, line ->
+            if (index > 0) out.append('\n')
+            val start = out.length
+            out.append(line)
+            out.setSpan(
+                ForegroundColorSpan(logColor(line)),
+                start, out.length, Spanned.SPAN_EXCLUSIVE_EXCLUSIVE
+            )
+        }
+        tvLog.text = out
+    }
+
+    private fun logColor(line: String): Int {
+        val text = line.lowercase(Locale.US)
+        return when {
+            text.contains("error") || text.contains("failed") || text.contains("fatal") ->
+                ContextCompat.getColor(this, android.R.color.holo_red_light)
+            text.contains("restore") || text.contains("poster") ->
+                ContextCompat.getColor(this, android.R.color.holo_purple)
+            text.contains("compress") || text.contains("make space") ->
+                ContextCompat.getColor(this, android.R.color.holo_orange_light)
+            text.contains("sync") || text.contains("upload") || text.contains("download") ->
+                ContextCompat.getColor(this, android.R.color.holo_blue_light)
+            text.contains("heard") || text.contains("handshake") || text.contains("tailscale") ->
+                0xFF26C6DA.toInt()
+            text.contains("done") || text.contains("complete") || text.contains("saved") ||
+                text.contains("confirmed") ->
+                ContextCompat.getColor(this, android.R.color.holo_green_light)
+            else -> ContextCompat.getColor(this, android.R.color.white)
+        }
     }
 
     // ── Dropdown menu ─────────────────────────────────────────────────────────
