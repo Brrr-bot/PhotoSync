@@ -4,8 +4,31 @@
     android:height="108dp"
     android:viewportWidth="108"
     android:viewportHeight="108">
-    <!-- Simple "C" for Client -->
-    <path
-        android:fillColor="#FFFFFF"
-        android:pathData="M70,36 A26,26 0 1 0 70,72 L70,60 A14,14 0 1 1 70,48 Z"/>
+    <group
+        android:translateX="24"
+        android:translateY="24"
+        android:scaleX="2.5"
+        android:scaleY="2.5">
+        <!-- Circular sync arrows (Material Design "sync", 24x24 space) -->
+        <path
+            android:fillColor="#FFFFFF"
+            android:pathData="M12,4V1L8,5l4,4V6c3.31,0,6,2.69,6,6c0,1.01-0.25,1.97-0.7,2.8l1.46,1.46C19.54,15.03,20,13.57,20,12c0-4.42-3.58-8-8-8z"/>
+        <path
+            android:fillColor="#FFFFFF"
+            android:pathData="M12,18c-3.31,0-6-2.69-6-6c0-1.01,0.25-1.97,0.7-2.8L5.24,7.74C4.46,8.97,4,10.43,4,12c0,4.42,3.58,8,8,8v3l4-4l-4-4v3z"/>
+        <!-- Photo placeholder frame in the center opening -->
+        <path
+            android:strokeColor="#FFFFFF"
+            android:strokeWidth="1"
+            android:fillColor="#00000000"
+            android:pathData="M9,10L15,10L15,14L9,14Z"/>
+        <!-- Sun (top-left of frame) -->
+        <path
+            android:fillColor="#FFFFFF"
+            android:pathData="M10.8,11.5m-0.9,0a0.9,0.9 0,1,0 1.8,0a0.9,0.9 0,1,0-1.8,0"/>
+        <!-- Mountains (fill lower part of frame) -->
+        <path
+            android:fillColor="#FFFFFF"
+            android:pathData="M9,14L11.5,11L13.2,12.6L14.2,11L15,14Z"/>
+    </group>
 </vector>
