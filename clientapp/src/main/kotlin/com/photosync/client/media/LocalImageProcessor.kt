@@ -70,9 +70,15 @@ class LocalImageProcessor(private val context: Context) {
             done++
             if (done % 25 == 0) onProgress?.invoke(done, total, "Scanning $done/$total…")
 
+            if (image.size > MAX_BUFFERED_IMAGE_BYTES) {
+                RemoteLogger.i("LocalFix: skipped oversized image ${image.displayName} (${image.size / 1_048_576}MB)")
+                markChecked(image.id)
+                continue
+            }
+
             val bytes = try {
                 mediaStore.openFileById(image.id, false)?.use { it.readBytes() }
-            } catch (_: Exception) { null }
+            } catch (_: Throwable) { null }
 
             if (bytes == null || bytes.isEmpty()) {
                 markChecked(image.id); continue
@@ -731,5 +737,6 @@ class LocalImageProcessor(private val context: Context) {
     companion object {
         private const val PREFS_NAME = "local_fix_state"
         private const val KEY_CHECKED = "checked_ids"
+        private const val MAX_BUFFERED_IMAGE_BYTES = 32L * 1024 * 1024
     }
 }

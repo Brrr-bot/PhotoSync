@@ -163,9 +163,26 @@ class MediaStoreHelper(private val context: Context) {
         // Exclude video poster images — they are local thumbnails, not originals to sync.
         // VideoSpaceManager writes the poster display name into KEY_POSTER_NAMES so we
         // can filter them here cheaply (set lookup, no EXIF reads).
-        val posterNames = context.getSharedPreferences("video_space_state", Context.MODE_PRIVATE)
+        val compressedIds = compressionPrefs
+            .getStringSet(KEY_COMPRESSED_NEW_IDS, emptySet()) ?: emptySet()
+        val replacementNames = compressionPrefs
+            .getStringSet(KEY_COMPRESSED_NAMES, emptySet()) ?: emptySet()
+        val imageCompressedNames = context
+            .getSharedPreferences("image_space_state", Context.MODE_PRIVATE)
+            .getStringSet("compressed_image_names", emptySet()) ?: emptySet()
+        val videoPrefs = context.getSharedPreferences("video_space_state", Context.MODE_PRIVATE)
+        val videoCompressedNames = videoPrefs
+            .getStringSet("compressed_video_names", emptySet()) ?: emptySet()
+        val posterNames = videoPrefs
             .getStringSet(VideoSpaceManager.KEY_POSTER_NAMES, emptySet()) ?: emptySet()
-        return results.filter { it.displayName !in posterNames }.sortedBy { it.dateAdded }
+
+        return results.filter { file ->
+            file.id.toString() !in compressedIds &&
+                file.displayName !in replacementNames &&
+                file.displayName !in imageCompressedNames &&
+                file.displayName !in videoCompressedNames &&
+                file.displayName !in posterNames
+        }.sortedBy { it.dateAdded }
     }
 
     /** Opens an InputStream for a media file by its MediaStore ID. */

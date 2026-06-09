@@ -923,12 +923,11 @@ class UsbStorageManager(
         val ext = displayName.substringAfterLast('.', "").lowercase()
         if (ext == "mp4" || ext == "mov") return videoThumbnailForFile(deviceName, displayName, maxPx)
         return try {
-            val bytes = readAnyFile(deviceName, displayName) ?: return null
             // Read EXIF orientation before decoding
-            val orientation = bytes.inputStream().use {
+            val orientation = openFileStream(deviceName, displayName)?.first?.use {
                 ExifInterface(it).getAttributeInt(
                     ExifInterface.TAG_ORIENTATION, ExifInterface.ORIENTATION_NORMAL)
-            }
+            } ?: ExifInterface.ORIENTATION_NORMAL
             val rotation = when (orientation) {
                 ExifInterface.ORIENTATION_ROTATE_90  -> 90f
                 ExifInterface.ORIENTATION_ROTATE_180 -> 180f
@@ -936,15 +935,19 @@ class UsbStorageManager(
                 else                                 -> 0f
             }
             val opts = BitmapFactory.Options().apply { inJustDecodeBounds = true }
-            BitmapFactory.decodeByteArray(bytes, 0, bytes.size, opts)
+            openFileStream(deviceName, displayName)?.first?.use {
+                BitmapFactory.decodeStream(it, null, opts)
+            } ?: return null
             if (opts.outWidth <= 0) return null
             val sample = run {
                 var s = 1; var w = opts.outWidth; var h = opts.outHeight
                 while (w / 2 >= maxPx && h / 2 >= maxPx) { w /= 2; h /= 2; s *= 2 }
                 s
             }
-            val bmp = BitmapFactory.decodeByteArray(bytes, 0, bytes.size,
-                BitmapFactory.Options().apply { inSampleSize = sample }) ?: return null
+            val bmp = openFileStream(deviceName, displayName)?.first?.use {
+                BitmapFactory.decodeStream(
+                    it, null, BitmapFactory.Options().apply { inSampleSize = sample })
+            } ?: return null
             val (w, h) = bmp.width to bmp.height
             var scaled = if (w >= h) {
                 val nh = (h.toFloat() / w * maxPx).toInt().coerceAtLeast(1)
@@ -964,7 +967,7 @@ class UsbStorageManager(
             scaled.compress(Bitmap.CompressFormat.JPEG, 75, out)
             scaled.recycle()
             out.toByteArray()
-        } catch (_: Exception) { null }
+        } catch (_: Throwable) { null }
     }
 
     /** Extracts a frame from a video file on USB and returns it as a scaled JPEG thumbnail. */
