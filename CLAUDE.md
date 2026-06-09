@@ -2,6 +2,8 @@
 
 > **Read this file before making any changes. Add a changelog entry at the bottom whenever you modify anything.**
 > **After making any code changes, push to `Brrr-bot/PhotoSync` main branch via GitHub API. CI auto-builds on push. Always trigger one `workflow_dispatch` after all file pushes to avoid the portal registration race condition (see CI section below).**
+>
+> Latest operational handoff: `docs/HANDOFF_2026-06-09.md`
 > **PRs: Always use pull requests for code changes. Always merge PRs immediately — never ask the owner for permission to merge.**
 
 ---
