@@ -551,33 +551,13 @@ class MainActivity : AppCompatActivity() {
      * phone) are skipped so the loop cannot re-form.
      */
     private fun restoreFromHubNow() {
-        Toast.makeText(this, "Restoring from hub…", Toast.LENGTH_SHORT).show()
-        Thread {
-            val ip = effectiveHubIp()
-            if (ip == null) {
-                runOnUiThread { Toast.makeText(this, "Hub not reachable — connect to the hub first", Toast.LENGTH_LONG).show() }
-                return@Thread
-            }
-            val port = ClientForegroundService.liveHubPort
-            try {
-                val allHub = HubFilesClient.fetchFiles(ip, port, limit = 20_000)
-                val mgr = com.photosync.client.media.HubRestoreManager(this)
-                val n = mgr.restoreAll(ip, port, Build.MODEL, allHub) { done, total, name ->
-                    if (done % 25 == 0 || done == total) {
-                        runOnUiThread { Toast.makeText(this, "Restore $done/$total: $name", Toast.LENGTH_SHORT).show() }
-                    }
-                }
-                mgr.markDone()
-                runOnUiThread {
-                    Toast.makeText(this,
-                        if (n > 0) "Restored $n file(s) from hub — compression runs on next cycle"
-                        else "Phone already has everything on the hub",
-                        Toast.LENGTH_LONG).show()
-                }
-            } catch (t: Throwable) {
-                runOnUiThread { Toast.makeText(this, "Restore failed: ${t.message}", Toast.LENGTH_LONG).show() }
-            }
-        }.start()
+        // Run the restore inside the foreground service so its progress streams to the live-log
+        // card (and notification) just like sync/compression — not as transient Toasts.
+        Toast.makeText(this, "Restore from hub started — see the live log card", Toast.LENGTH_LONG).show()
+        startForegroundService(
+            Intent(this, ClientForegroundService::class.java)
+                .setAction(ClientForegroundService.ACTION_RESTORE_FROM_HUB)
+        )
     }
 
     // ── Fix & check sequence ──────────────────────────────────────────────────
