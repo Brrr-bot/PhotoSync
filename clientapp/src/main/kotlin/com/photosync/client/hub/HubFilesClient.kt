@@ -48,6 +48,22 @@ object HubFilesClient {
         } catch (_: Exception) { null }
     }
 
+    /** Asks the hub to generate a fresh full-size badged poster for video [name]. */
+    fun fetchPoster(ip: String, port: Int, device: String, name: String): ByteArray? {
+        return try {
+            val enc = java.net.URLEncoder.encode(name, "UTF-8")
+            val devEnc = java.net.URLEncoder.encode(device, "UTF-8")
+            val conn = openGet(
+                "http://$ip:$port${Constants.PATH_HUB_POSTER}?device=$devEnc&name=$enc",
+                timeoutMs = 60_000
+            )
+            if (conn.responseCode != 200) return null
+            val bytes = conn.inputStream.use { it.readBytes() }
+            conn.disconnect()
+            bytes
+        } catch (_: Exception) { null }
+    }
+
     fun fetchFile(ip: String, port: Int, device: String, name: String): ByteArray? {
         return try {
             val enc = java.net.URLEncoder.encode(name, "UTF-8")
