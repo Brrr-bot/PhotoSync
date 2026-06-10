@@ -148,15 +148,23 @@ class HubRestoreManager(private val context: Context) {
                     ?: now
 
                 val ext = f.displayName.substringAfterLast('.', "").lowercase()
+                // Restore under a CLEAN name — strip MediaStore's " (N)" auto-rename suffixes so
+                // restored files don't carry the ugly "foo (1).jpg" the hub backed up. If the phone
+                // already has the clean name, this file is effectively present already → skip it so
+                // we never create a real duplicate of an existing photo.
+                val cleanName = stripSuffixes(f.displayName)
+                if (cleanName != f.displayName && cleanName in existing) {
+                    continue
+                }
                 val inserted = when {
                     ext in IMAGE_EXTS -> insertFromFile(
-                        tmp, f.displayName, dateMs,
+                        tmp, cleanName, dateMs,
                         mimeForImage(ext),
                         MediaStore.Images.Media.EXTERNAL_CONTENT_URI,
                         isVideo = false
                     )
                     ext in VIDEO_EXTS -> insertFromFile(
-                        tmp, f.displayName, dateMs,
+                        tmp, cleanName, dateMs,
                         mimeForVideo(ext),
                         MediaStore.Video.Media.EXTERNAL_CONTENT_URI,
                         isVideo = true
@@ -270,6 +278,17 @@ class HubRestoreManager(private val context: Context) {
             runCatching { context.contentResolver.delete(uri, null, null) }
             false
         }
+    }
+
+    /** Strips trailing MediaStore auto-rename suffixes: "foo (1) (1).jpg" → "foo.jpg". */
+    private fun stripSuffixes(name: String): String {
+        val dot = name.lastIndexOf('.')
+        var stem = if (dot > 0) name.substring(0, dot) else name
+        val ext  = if (dot > 0) name.substring(dot) else ""
+        val re = Regex("""\s*\(\d+\)$""")
+        var prev: String
+        do { prev = stem; stem = stem.replace(re, "") } while (prev != stem)
+        return "$stem$ext"
     }
 
     private fun parseDateFromName(name: String): Long {
