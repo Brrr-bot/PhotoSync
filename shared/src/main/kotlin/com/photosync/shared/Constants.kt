@@ -34,6 +34,7 @@ object Constants {
     const val PATH_HUB_FILE   = "/hub/file"
     const val PATH_HUB_DELETE = "/hub/delete"
     const val PATH_HUB_POSTER = "/hub/poster"
+    const val PATH_HUB_META   = "/hub/meta"
 
     const val UPDATE_PORTAL_URL = "https://app-updates.mcubittbuilders.workers.dev"
 }
