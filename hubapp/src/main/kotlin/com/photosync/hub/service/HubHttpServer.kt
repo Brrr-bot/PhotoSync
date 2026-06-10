@@ -18,7 +18,12 @@ class HubHttpServer(
     private val onFileStreamRequest: ((device: String, name: String) -> Pair<java.io.InputStream, Long>?)? = null,
     private val onDeleteRequest: ((device: String, name: String) -> Boolean)? = null,
     private val onPosterRequest: ((device: String, name: String) -> ByteArray?)? = null,
-    private val onMetaRequest: ((device: String, name: String) -> Map<String, String>)? = null
+    private val onMetaRequest: ((device: String, name: String) -> Map<String, String>)? = null,
+    // Sidecar relay: phone apps (finance/timesheet) POST their latest snapshot here and the home
+    // dashboard on this same tablet reads it back. Keeps those cards live over the local/Tailscale
+    // network with no cloud dependency.
+    private val onSidecarPut: ((kind: String, json: String) -> Unit)? = null,
+    private val onSidecarGet: ((kind: String) -> String)? = null
 ) : NanoHTTPD(Constants.HUB_HTTP_PORT) {
 
     private val gson = Gson()
@@ -37,6 +42,8 @@ class HubHttpServer(
                 Constants.PATH_HUB_DELETE -> handleHubDelete(session)
                 "/push" -> handlePush(session)
                 "/nudge" -> handleNudge()
+                "/sidecar/finance" -> handleSidecar(session, "finance")
+                "/sidecar/timesheet" -> handleSidecar(session, "timesheet")
                 "/", "" -> handleHtmlDashboard()
                 else -> newFixedLengthResponse(Response.Status.NOT_FOUND, MIME_PLAINTEXT, "Not found")
             }
@@ -273,6 +280,31 @@ ${progressCard}${compressionCard}<div class="card">
 </div>
 </body>
 </html>"""
+    }
+
+    /**
+     * Sidecar data relay. POST (unauthenticated, local-network only like /push) stores a phone
+     * app's latest JSON snapshot; GET (HMAC-verified like /dashboard) returns it to the home
+     * dashboard. The hub persists the last snapshot so the dashboard still shows it when the
+     * phone is offline.
+     */
+    private fun handleSidecar(session: IHTTPSession, kind: String): Response {
+        if (session.method == Method.POST) {
+            val body = try {
+                val map = mutableMapOf<String, String>()
+                session.parseBody(map)
+                map["postData"] ?: ""
+            } catch (_: Exception) { "" }
+            if (body.isNotEmpty()) {
+                onSidecarPut?.invoke(kind, body)
+                onLog?.invoke("Sidecar $kind updated (${body.length} bytes)")
+            }
+            return newFixedLengthResponse(Response.Status.OK, MIME_PLAINTEXT, "OK")
+        }
+        if (!verifyHmacFromHeaders(session))
+            return newFixedLengthResponse(Response.Status.UNAUTHORIZED, MIME_PLAINTEXT, "Unauthorized")
+        val json = (onSidecarGet?.invoke(kind) ?: "{}").ifBlank { "{}" }
+        return newFixedLengthResponse(Response.Status.OK, "application/json", json)
     }
 
     /** Unauthenticated — laptop pings this immediately after pushing a new APK. */
