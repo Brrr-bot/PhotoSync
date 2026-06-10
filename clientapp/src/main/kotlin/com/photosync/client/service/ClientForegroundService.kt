@@ -344,7 +344,31 @@ class ClientForegroundService : LifecycleService() {
         if (intent?.action == ACTION_RESTORE_METADATA) {
             lifecycleScope.launch(Dispatchers.IO) { runRestoreMetadata() }
         }
+        if (intent?.action == ACTION_FIX_ROTATION) {
+            lifecycleScope.launch(Dispatchers.IO) { runFixRotation() }
+        }
         return START_STICKY
+    }
+
+    @Volatile private var rotationFixInProgress = false
+
+    /** Local, no-hub repair of compressed-photo orientation (resets baked-upright WebP to normal). */
+    private suspend fun runFixRotation() {
+        if (rotationFixInProgress) { log("↻ Rotation fix already running…"); return }
+        rotationFixInProgress = true
+        try {
+            log("↻ Fixing photo rotation (compressed copies)…")
+            val n = com.photosync.client.media.RotationFixer(this).fix { done, total, name ->
+                if (done % 20 == 0 || done == total) {
+                    log("↻ Rotation $done/$total: $name")
+                    updateNotification("Fixing rotation: $done/$total")
+                }
+            }
+            log("✓ Rotation fix done — $n photo(s) set upright")
+            updateNotification("Ready — announcing on network")
+        } catch (t: Throwable) {
+            log("↻ Rotation fix error: ${t.javaClass.simpleName}: ${t.message}")
+        } finally { rotationFixInProgress = false }
     }
 
     @Volatile private var metaRestoreInProgress = false
@@ -665,6 +689,7 @@ class ClientForegroundService : LifecycleService() {
         const val ACTION_LOG = "com.photosync.client.LOG"
         const val ACTION_RESTORE_FROM_HUB = "com.photosync.client.RESTORE_FROM_HUB"
         const val ACTION_RESTORE_METADATA = "com.photosync.client.RESTORE_METADATA"
+        const val ACTION_FIX_ROTATION = "com.photosync.client.FIX_ROTATION"
         const val EXTRA_LOG = "log_message"
 
         /** Exposed so MainActivity can poll progress state without broadcasts. */
