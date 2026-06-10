@@ -6,6 +6,7 @@
     <item android:id="@+id/action_delete_originals"      android:title="Delete queued originals" />
     <item android:id="@+id/action_cleanup_duplicates"    android:title="Clean up duplicate originals" />
     <item android:id="@+id/action_restore_hub"           android:title="Restore from hub" />
+    <item android:id="@+id/action_restore_metadata"      android:title="Restore metadata from hub" />
 
     <item android:id="@+id/action_permissions_group" android:title="Permissions">
         <menu>
