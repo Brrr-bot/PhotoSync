@@ -43,8 +43,13 @@ object WebPConverter {
                 tmp.writeBytes(webpBytes)
                 ExifInterface(tmp.absolutePath).also { dst ->
                     for (tag in TAGS) {
+                        if (tag == ExifInterface.TAG_ORIENTATION) continue   // see note below
                         srcExif.getAttribute(tag)?.let { dst.setAttribute(tag, it) }
                     }
+                    // BitmapFactory.decodeByteArray bakes the source EXIF rotation into upright
+                    // pixels, so the WebP is always upright — it must carry ORIENTATION_NORMAL.
+                    // Copying the source orientation (e.g. 6) would double-rotate it in viewers.
+                    dst.setAttribute(ExifInterface.TAG_ORIENTATION, ExifInterface.ORIENTATION_NORMAL.toString())
                     dst.saveAttributes()
                 }
                 tmp.readBytes()
