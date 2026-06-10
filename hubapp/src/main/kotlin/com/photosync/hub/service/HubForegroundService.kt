@@ -462,7 +462,7 @@ class HubForegroundService : LifecycleService() {
         private const val REORG_VERSION_KEY = "folder_reorg_v"
         private const val REORG_VERSION = 5         // v5: EXIF fallback for flat-root files older than 7 days (camera EXIF vs sync-stamp)
         private const val DEDUP_VERSION_KEY = "dedup_v"
-        private const val DEDUP_VERSION = 1         // v1: remove same-name files duplicated across folders
+        private const val DEDUP_VERSION = 2         // v2: collapse " (N)" suffix families, keep largest original
 
         private val recentLogs = ArrayDeque<String>(100)
         @Volatile private var currentMode: String = "Idle"
