@@ -57,7 +57,6 @@ class ClientForegroundService : LifecycleService() {
 
     override fun onCreate() {
         super.onCreate()
-        liveInstance = this
         // Restore persisted Tailscale IP so remote sync works immediately after restart
         liveHubTailscaleIp = getSharedPreferences(PREFS_NAME, MODE_PRIVATE)
             .getString(KEY_HUB_TAILSCALE_IP, null)
@@ -294,45 +293,12 @@ class ClientForegroundService : LifecycleService() {
             else log("Pre-sync cleanup: dates OK")
             updateNotification("Ready — announcing on network")
 
-            // One-time restore: download every hub-backed file not already on the phone,
-            // then let VideoSpaceManager + ImageSpaceManager compress them on the next cycle.
-            val restoreMgr = com.photosync.client.media.HubRestoreManager(this)
-            if (restoreMgr.shouldRun()) {
-                try {
-                    val ip2   = liveHubIp ?: liveHubTailscaleIp ?: return
-                    val port2 = liveHubPort
-                    val allHub = try { HubFilesClient.fetchFiles(ip2, port2, limit = 20_000) }
-                                 catch (t: Exception) {
-                                     log("HubRestore: file list failed (${t.javaClass.simpleName}); will retry next hub connect")
-                                     return
-                                 }
-                    if (allHub.isEmpty()) {
-                        log("HubRestore: hub returned no files; will retry next hub connect")
-                        return
-                    }
-                    val est = restoreMgr.estimate(allHub, android.os.Build.MODEL)
-                    val totalForThisPhone = est.imageCount + est.videoRecentCount + est.videoOldCount
-                    if (totalForThisPhone == 0) {
-                        log("HubRestore: no hub files matched ${android.os.Build.MODEL}; will retry next hub connect")
-                        return
-                    }
-                    log("HubRestore: ${est.imageCount}img + ${est.videoRecentCount}vid + ${est.videoOldCount}old-vid→poster" +
-                        " | raw ${est.rawBytes / 1_000_000}MB → ~${est.estimatedBytes / 1_000_000}MB after compression")
-                    val result = restoreMgr.restoreAll(ip2, port2, android.os.Build.MODEL, allHub) { done, total, name ->
-                        if (done % 100 == 0 || done == total) {
-                            log("HubRestore $done/$total: $name")
-                            updateNotification("Restoring from hub: $done/$total")
-                        }
-                    }
-                    val n = result.restored
-                    log("HubRestore done — $n file(s) restored. VideoSpace + ImageSpace will compress on next cycle.")
-                    if (result.failed == 0) {
-                        restoreMgr.markDone()
-                    } else {
-                        log("HubRestore incomplete: ${result.restored}/${result.toDownload} restored, ${result.failed} failed; will retry next hub connect")
-                    }
-                } catch (t: Throwable) { log("HubRestore error: ${t.javaClass.simpleName}: ${t.message}") }
-            }
+            // NOTE: full hub-restore (download every hub-backed file missing from the phone)
+            // is NO LONGER run automatically. Auto-restoring re-added files the phone had
+            // intentionally slimmed — e.g. videos that VideoSpaceManager posterised (mp4 deleted,
+            // poster kept) were re-downloaded → re-posterised → re-downloaded in an infinite loop,
+            // and the hub kept seeing the re-inserted files as "new" and re-backed them up.
+            // Restore is now strictly user-initiated via the menu → "Restore from hub".
         } catch (t: Throwable) { log("Pre-sync cleanup error: ${t.javaClass.simpleName}: ${t.message}") }
     }
 
@@ -363,7 +329,6 @@ class ClientForegroundService : LifecycleService() {
     override fun onBind(intent: Intent): IBinder? = super.onBind(intent)
 
     override fun onDestroy() {
-        liveInstance = null
         super.onDestroy()
         syncHandler.removeCallbacks(syncRunnable)
         announceJob?.cancel()
@@ -527,15 +492,11 @@ class ClientForegroundService : LifecycleService() {
 
         /** Log from a context where there is no service instance (e.g. MainActivity helpers). */
         fun staticLog(message: String) {
-            liveInstance?.log(message) ?: run {
-                val time = java.text.SimpleDateFormat("HH:mm:ss", java.util.Locale.getDefault())
-                    .format(java.util.Date())
-                addLog("$time  $message")
-                RemoteLogger.i(message)
-            }
+            val time = java.text.SimpleDateFormat("HH:mm:ss", java.util.Locale.getDefault())
+                .format(java.util.Date())
+            addLog("$time  $message")
+            RemoteLogger.i(message)
         }
-
-        @Volatile private var liveInstance: ClientForegroundService? = null
 
         private fun addLog(line: String) = synchronized(recentLogs) {
             if (recentLogs.size >= 100) recentLogs.removeFirst()
