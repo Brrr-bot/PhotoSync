@@ -506,6 +506,24 @@ class UsbStorageManager(
     // Stored as "photosync_state.json" (no leading dot — SAF findFile misses hidden files)
     // Survives app reinstalls because it lives on the USB drive, not SharedPreferences.
 
+    /**
+     * Deletes every file at [root] whose name is [filename] OR a MediaStore-renamed variant of it
+     * ("photosync_state (1).json", "photosync_state (2).json", …). Used before (re)writing the
+     * manifest/state files so SAF never auto-renames a fresh write into an endless "(N)" series.
+     */
+    private fun deleteNamedVariants(root: DocumentFile, filename: String) {
+        val dot  = filename.lastIndexOf('.')
+        val stem = if (dot > 0) filename.substring(0, dot) else filename
+        val ext  = if (dot > 0) filename.substring(dot) else ""
+        val variant = Regex("""^${Regex.escape(stem)}(\s*\(\d+\))*${Regex.escape(ext)}$""")
+        for (f in root.listFiles()) {
+            val n = f.name ?: continue
+            if (n == filename || variant.matches(n)) {
+                try { f.delete() } catch (_: Exception) {}
+            }
+        }
+    }
+
     /** Returns the last sync timestamp (ms) for [deviceName], or 0 if not found. */
     fun readManifestLastSync(deviceName: String): Long {
         return try {
@@ -571,7 +589,7 @@ class UsbStorageManager(
                 append("}")
             }
             val filename = "photosync_manifest_${deviceName.replace(' ', '_')}.json"
-            root.findFile(filename)?.delete()
+            deleteNamedVariants(root, filename)
             root.createFile("application/json", filename)?.let { file ->
                 context.contentResolver.openOutputStream(file.uri)?.use { out ->
                     out.write(json.toByteArray())
@@ -601,8 +619,9 @@ class UsbStorageManager(
 
             existing[deviceName] = lastSyncMs
 
-            // Delete old file and write fresh (SAF can't seek/truncate)
-            root.findFile(MANIFEST_FILENAME)?.delete()
+            // Delete old file and write fresh (SAF can't seek/truncate). Purge any "(N)" variants
+            // too so a stale copy can't make SAF auto-rename this write into an endless series.
+            deleteNamedVariants(root, MANIFEST_FILENAME)
             root.createFile("application/json", MANIFEST_FILENAME)?.let { newFile ->
                 context.contentResolver.openOutputStream(newFile.uri)?.use { out ->
                     out.write(gson.toJson(existing).toByteArray())
@@ -820,13 +839,15 @@ class UsbStorageManager(
     }
 
     /**
-     * Removes duplicate files within [deviceName]'s folder — i.e. the same displayName appearing
-     * in more than one place (flat root + a date subfolder, or two different date subfolders).
-     * These accumulate from the folder-reorg passes (copy-to-target then delete-source where the
-     * source delete failed, or a file that already existed in another date folder).
+     * Removes duplicate files within [deviceName]'s folder. Two files are duplicates of the same
+     * logical photo/video when their names match after stripping MediaStore's auto-rename suffixes
+     * (" (1)", " (1) (1)", " (2)", …) AND they share the same extension — e.g. "photo.jpg",
+     * "photo (1).jpg" and "photo (1) (1).jpg" are one family. These accumulate when the phone
+     * serves a re-named copy (compressed → "(1)") that the hub then backs up as a "new" file, and
+     * from the folder-reorg passes leaving the same name in two folders.
      *
-     * For each duplicated name we keep the single largest copy (the complete file) and delete the
-     * rest. Returns the number of files deleted.
+     * The hub is the pristine backup store, so for each family we KEEP THE LARGEST copy (the full
+     * original) and delete the smaller/duplicate copies. Returns the number of files deleted.
      */
     fun removeDuplicateFiles(deviceName: String): Int {
         var deleted = 0
@@ -834,21 +855,33 @@ class UsbStorageManager(
             val root = DocumentFile.fromTreeUri(context, treeUri ?: return 0) ?: return 0
             val folder = root.findFile(deviceName) ?: return 0
 
-            // Group every file (flat + one level of subfolders) by its name.
-            val byName = mutableMapOf<String, MutableList<DocumentFile>>()
+            // Strips a filename to its family key: base stem (all trailing " (N)" groups removed)
+            // plus the lowercased extension, so suffixed copies group with their original.
+            fun familyKey(name: String): String {
+                val dot = name.lastIndexOf('.')
+                var stem = if (dot > 0) name.substring(0, dot) else name
+                val ext  = if (dot > 0) name.substring(dot).lowercase() else ""
+                val re = Regex("""\s*\(\d+\)$""")
+                var prev: String
+                do { prev = stem; stem = stem.replace(re, "") } while (prev != stem)
+                return "$stem$ext"
+            }
+
+            // Group every file (flat + one level of subfolders) by family key.
+            val byFamily = mutableMapOf<String, MutableList<DocumentFile>>()
             fun add(f: DocumentFile) {
                 if (f.isDirectory) return
                 val name = f.name ?: return
-                byName.getOrPut(name) { mutableListOf() }.add(f)
+                byFamily.getOrPut(familyKey(name)) { mutableListOf() }.add(f)
             }
             for (item in folder.listFiles()) {
                 if (item.isDirectory) item.listFiles().forEach { add(it) }
                 else add(item)
             }
 
-            for ((_, copies) in byName) {
+            for ((_, copies) in byFamily) {
                 if (copies.size < 2) continue
-                // Keep the largest copy; delete the others.
+                // Keep the largest copy (the full original backup); delete the rest.
                 val keep = copies.maxByOrNull { it.length() } ?: continue
                 for (dup in copies) {
                     if (dup.uri == keep.uri) continue
