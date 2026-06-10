@@ -317,6 +317,14 @@ class MainActivity : AppCompatActivity() {
                     )
                     true
                 }
+                R.id.action_fix_rotation -> {
+                    Toast.makeText(this, "Fixing photo rotation — see the live log card", Toast.LENGTH_LONG).show()
+                    startForegroundService(
+                        Intent(this, ClientForegroundService::class.java)
+                            .setAction(ClientForegroundService.ACTION_FIX_ROTATION)
+                    )
+                    true
+                }
                 R.id.action_run_fix -> {
                     runFixSequenceNow()
                     true
