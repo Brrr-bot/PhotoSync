@@ -449,6 +449,19 @@ class UsbStorageManager(
      */
     fun openFileStream(deviceName: String, displayName: String): Pair<InputStream, Long>? {
         return try {
+            // Fast path: use the URI built during the warm scan. SAF findFileAnywhere scans every
+            // date subfolder (hundreds) which takes many seconds per file — far too slow when a
+            // client restore pulls hundreds of files and times out. The cache makes it instant.
+            fileUriCache["$deviceName/$displayName"]?.let { uri ->
+                runCatching {
+                    val len = DocumentFile.fromSingleUri(context, uri)?.length() ?: -1L
+                    if (len > 0) {
+                        val stream = context.contentResolver.openInputStream(uri)
+                        if (stream != null) return Pair(stream, len)
+                    }
+                }
+            }
+            // Slow path: SAF scan (cache miss — file added since last scan, or cache cold).
             val root = DocumentFile.fromTreeUri(context, treeUri ?: return null) ?: return null
             val folder = root.findFile(deviceName) ?: return null
             val file = findFileAnywhere(folder, displayName) ?: return null
