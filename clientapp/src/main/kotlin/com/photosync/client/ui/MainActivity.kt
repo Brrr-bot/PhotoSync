@@ -309,6 +309,14 @@ class MainActivity : AppCompatActivity() {
                     restoreFromHubNow()
                     true
                 }
+                R.id.action_restore_metadata -> {
+                    Toast.makeText(this, "Restoring metadata from hub — see the live log card", Toast.LENGTH_LONG).show()
+                    startForegroundService(
+                        Intent(this, ClientForegroundService::class.java)
+                            .setAction(ClientForegroundService.ACTION_RESTORE_METADATA)
+                    )
+                    true
+                }
                 R.id.action_run_fix -> {
                     runFixSequenceNow()
                     true
