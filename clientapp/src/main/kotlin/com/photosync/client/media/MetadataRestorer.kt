@@ -132,11 +132,19 @@ class MetadataRestorer(private val context: Context) {
     /** Writes every [meta] tag (the full original EXIF, orientation included) verbatim into
      *  [bytes] via ExifInterface (supports JPEG + WebP on API 31+). The compressed copy keeps the
      *  original's pixel layout, so its orientation must match the original's exactly. */
+    // Tags that describe the ORIGINAL's pixel size — must NOT be copied onto the (smaller)
+    // compressed file or viewers mis-render it. Orientation IS copied (same pixel layout).
+    private val skipTags = setOf(
+        ExifInterface.TAG_PIXEL_X_DIMENSION, ExifInterface.TAG_PIXEL_Y_DIMENSION,
+        ExifInterface.TAG_IMAGE_WIDTH, ExifInterface.TAG_IMAGE_LENGTH
+    )
+
     private fun applyExif(bytes: ByteArray, tmp: File, meta: Map<String, String>): ByteArray? {
         return try {
             tmp.writeBytes(bytes)
             val exif = ExifInterface(tmp.absolutePath)
             for ((tag, value) in meta) {
+                if (tag in skipTags) continue
                 try { exif.setAttribute(tag, value) } catch (_: Exception) {}
             }
             exif.saveAttributes()
