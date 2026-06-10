@@ -104,7 +104,9 @@ class HubForegroundService : LifecycleService() {
                 ok
             },
             onPosterRequest = { device, name -> usbStorage.videoPosterJpeg(device, name) },
-            onMetaRequest = { device, name -> usbStorage.readImageMetadata(device, name) }
+            onMetaRequest = { device, name -> usbStorage.readImageMetadata(device, name) },
+            onSidecarPut = { kind, json -> writeSidecar(kind, json) },
+            onSidecarGet = { kind -> readSidecar(kind) }
         ).also {
             try {
                 it.start()
@@ -114,6 +116,8 @@ class HubForegroundService : LifecycleService() {
             }
         }
 
+        // Phone apps (finance/timesheet) POST their latest snapshot to /sidecar/<kind>; the home
+        // dashboard reads it back. Persisted to a file so it survives a hub restart / phone offline.
         // After a short delay, check if Tailscale is connected. If not, post a tappable
         // notification that opens the Tailscale app so the user can connect with one tap.
         lifecycleScope.launch(Dispatchers.IO) {
@@ -507,5 +511,22 @@ class HubForegroundService : LifecycleService() {
             }
             csvFile.appendText("$ts,$dtStr,$lat,$lng,$acc,$provider,$device\n")
         } catch (_: Exception) {}
+    }
+
+    // ── Sidecar snapshot store (finance / timesheet pushed from the phone apps) ───
+    private fun sidecarFile(kind: String): java.io.File {
+        val safe = if (kind == "finance" || kind == "timesheet") kind else "other"
+        return java.io.File(filesDir, "sidecar_$safe.json")
+    }
+
+    private fun writeSidecar(kind: String, json: String) {
+        try { sidecarFile(kind).writeText(json, Charsets.UTF_8) } catch (_: Exception) {}
+    }
+
+    private fun readSidecar(kind: String): String {
+        return try {
+            val f = sidecarFile(kind)
+            if (f.exists()) f.readText(Charsets.UTF_8) else "{}"
+        } catch (_: Exception) { "{}" }
     }
 }
