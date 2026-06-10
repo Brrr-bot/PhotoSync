@@ -130,7 +130,6 @@ class HubHttpServer(
             ?: return newFixedLengthResponse(Response.Status.BAD_REQUEST, MIME_PLAINTEXT, "Missing device")
         val name = session.parameters["name"]?.firstOrNull()
             ?: return newFixedLengthResponse(Response.Status.BAD_REQUEST, MIME_PLAINTEXT, "Missing name")
-        onLog?.invoke("Restore serving: $name")
         val bytes = onThumbRequest?.invoke(device, name)
             ?: return newFixedLengthResponse(Response.Status.NOT_FOUND, MIME_PLAINTEXT, "Not found")
         return newFixedLengthResponse(Response.Status.OK, "image/jpeg",
@@ -186,7 +185,9 @@ class HubHttpServer(
               <progress class="comp" value="${s.compressionCurrent}" max="${s.compressionTotal}"></progress>
             </div>""" else ""
 
-        val logs = s.recentLogs.takeLast(40).joinToString("\n") { esc(it) }
+        val logs = s.recentLogs.takeLast(40).joinToString("\n") { line ->
+            "<span style=\"color:${com.photosync.shared.LogStyle.colorFor(line)}\">${esc(line)}</span>"
+        }
 
         return """<!DOCTYPE html>
 <html lang="en">
