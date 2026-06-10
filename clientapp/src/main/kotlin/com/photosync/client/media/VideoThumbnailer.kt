@@ -83,28 +83,37 @@ object VideoThumbnailer {
         finally { tmp.delete() }
     }
 
-    /** Draws a translucent circle + white play triangle centred on a copy of [src]. */
+    /**
+     * Draws a small, translucent play badge centred on a copy of [src] so the photo behind it
+     * stays visible. The badge is deliberately subtle: a faint dark disc, a thin translucent
+     * white ring, and a translucent white triangle nudged slightly right so it reads as centred
+     * inside the disc (a play triangle whose centroid sits exactly at centre looks left-heavy).
+     */
     private fun drawPlayBadge(src: Bitmap): Bitmap {
         val bmp = if (src.isMutable) src else src.copy(Bitmap.Config.ARGB_8888, true)
         val canvas = Canvas(bmp)
         val cx = bmp.width / 2f
         val cy = bmp.height / 2f
-        val r  = min(bmp.width, bmp.height) * 0.16f
+        val r  = min(bmp.width, bmp.height) * 0.10f   // smaller (was 0.16)
 
+        // Faint dark disc — low alpha so the underlying image shows through.
         canvas.drawCircle(cx, cy, r, Paint(Paint.ANTI_ALIAS_FLAG).apply {
-            color = Color.argb(140, 0, 0, 0)
+            color = Color.argb(70, 0, 0, 0)
         })
+        // Thin, translucent white ring.
         canvas.drawCircle(cx, cy, r, Paint(Paint.ANTI_ALIAS_FLAG).apply {
-            color = Color.WHITE; style = Paint.Style.STROKE; strokeWidth = r * 0.10f
+            color = Color.argb(130, 255, 255, 255); style = Paint.Style.STROKE; strokeWidth = r * 0.07f
         })
-        val tri = r * 0.55f
+        // Translucent white play triangle, optically centred (nudged right by dx).
+        val tri = r * 0.5f
+        val dx  = r * 0.10f
         val path = Path().apply {
-            moveTo(cx - tri * 0.5f, cy - tri)
-            lineTo(cx - tri * 0.5f, cy + tri)
-            lineTo(cx + tri, cy)
+            moveTo(cx - tri * 0.45f + dx, cy - tri)
+            lineTo(cx - tri * 0.45f + dx, cy + tri)
+            lineTo(cx + tri * 0.9f  + dx, cy)
             close()
         }
-        canvas.drawPath(path, Paint(Paint.ANTI_ALIAS_FLAG).apply { color = Color.WHITE })
+        canvas.drawPath(path, Paint(Paint.ANTI_ALIAS_FLAG).apply { color = Color.argb(210, 255, 255, 255) })
         return bmp
     }
 }
