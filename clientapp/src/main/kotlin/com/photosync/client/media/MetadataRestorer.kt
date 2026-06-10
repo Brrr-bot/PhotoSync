@@ -78,8 +78,20 @@ class MetadataRestorer(private val context: Context) {
                 consecutiveHubFails = 0
                 if (meta.isEmpty()) return@forEachIndexed
 
-                // Write all original tags into the local (compressed) bytes.
-                val stamped = applyExif(localBytes, tmp, meta) ?: return@forEachIndexed
+                // Work out the CORRECT orientation for THIS compressed copy by comparing its actual
+                // pixel aspect to the original's display aspect. WebP compression bakes the rotation
+                // into upright pixels for SOME images but not others, so we can't assume either way.
+                val orientation = correctOrientation(localBytes, meta)
+
+                // Write all original tags into the local (compressed) bytes, but with the computed
+                // orientation (and without the original's pixel-size tags).
+                val stamped = applyExif(localBytes, tmp, meta, orientation) ?: return@forEachIndexed
+                val orientationDeg = when (orientation) {
+                    ExifInterface.ORIENTATION_ROTATE_90  -> 90
+                    ExifInterface.ORIENTATION_ROTATE_180 -> 180
+                    ExifInterface.ORIENTATION_ROTATE_270 -> 270
+                    else -> 0
+                }
 
                 // Capture date: original EXIF DateTimeOriginal > filename > existing MediaStore value.
                 val dateMs = parseExifDate(meta[ExifInterface.TAG_DATETIME_ORIGINAL] ?: meta[ExifInterface.TAG_DATETIME])
@@ -93,6 +105,7 @@ class MetadataRestorer(private val context: Context) {
                     put(MediaStore.Images.Media.DISPLAY_NAME, t.name)
                     put(MediaStore.Images.Media.MIME_TYPE, "image/jpeg")   // keep .jpg name + JPEG MIME (bytes are WebP; viewers read magic)
                     put(MediaStore.Images.Media.RELATIVE_PATH, t.rel)
+                    put(MediaStore.Images.Media.ORIENTATION, orientationDeg)
                     if (dateMs > 0) put(MediaStore.Images.Media.DATE_TAKEN, dateMs)
                     if (dateSec > 0) { put(MediaStore.Images.Media.DATE_ADDED, dateSec); put(MediaStore.Images.Media.DATE_MODIFIED, dateSec) }
                     if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) put(MediaStore.Images.Media.IS_PENDING, 1)
@@ -103,6 +116,7 @@ class MetadataRestorer(private val context: Context) {
                     contentResolver().update(nu, ContentValues().apply {
                         put(MediaStore.Images.Media.IS_PENDING, 0)
                         put(MediaStore.Images.Media.SIZE, stamped.size.toLong())
+                        put(MediaStore.Images.Media.ORIENTATION, orientationDeg)
                         if (dateMs > 0) put(MediaStore.Images.Media.DATE_TAKEN, dateMs)
                     }, null, null)
                     if (dateMs > 0) contentResolver().update(nu, ContentValues().apply {
@@ -129,17 +143,16 @@ class MetadataRestorer(private val context: Context) {
         b[3] == 'F'.code.toByte() && b[8] == 'W'.code.toByte() && b[9] == 'E'.code.toByte() &&
         b[10] == 'B'.code.toByte() && b[11] == 'P'.code.toByte()
 
-    /** Writes every [meta] tag (the full original EXIF, orientation included) verbatim into
-     *  [bytes] via ExifInterface (supports JPEG + WebP on API 31+). The compressed copy keeps the
-     *  original's pixel layout, so its orientation must match the original's exactly. */
-    // Tags that describe the ORIGINAL's pixel size — must NOT be copied onto the (smaller)
-    // compressed file or viewers mis-render it. Orientation IS copied (same pixel layout).
+    // Tags NOT copied verbatim from the original: pixel-size tags (the compressed copy is smaller)
+    // and orientation (computed per-image because compression may have baked the rotation in).
     private val skipTags = setOf(
         ExifInterface.TAG_PIXEL_X_DIMENSION, ExifInterface.TAG_PIXEL_Y_DIMENSION,
-        ExifInterface.TAG_IMAGE_WIDTH, ExifInterface.TAG_IMAGE_LENGTH
+        ExifInterface.TAG_IMAGE_WIDTH, ExifInterface.TAG_IMAGE_LENGTH,
+        ExifInterface.TAG_ORIENTATION
     )
 
-    private fun applyExif(bytes: ByteArray, tmp: File, meta: Map<String, String>): ByteArray? {
+    /** Copies the full original EXIF (minus pixel-size + orientation) and stamps [orientation]. */
+    private fun applyExif(bytes: ByteArray, tmp: File, meta: Map<String, String>, orientation: Int): ByteArray? {
         return try {
             tmp.writeBytes(bytes)
             val exif = ExifInterface(tmp.absolutePath)
@@ -147,9 +160,30 @@ class MetadataRestorer(private val context: Context) {
                 if (tag in skipTags) continue
                 try { exif.setAttribute(tag, value) } catch (_: Exception) {}
             }
+            exif.setAttribute(ExifInterface.TAG_ORIENTATION, orientation.toString())
             exif.saveAttributes()
             tmp.readBytes()
         } catch (_: Exception) { null }
+    }
+
+    /**
+     * The orientation the compressed copy needs so it displays the same way the original does.
+     * Compares the compressed file's ACTUAL pixel aspect to the original's DISPLAY aspect:
+     *  - if they match, the rotation was baked into the pixels → ORIENTATION_NORMAL
+     *  - if they differ, the pixels are still in sensor orientation → use the original's orientation
+     */
+    private fun correctOrientation(localBytes: ByteArray, meta: Map<String, String>): Int {
+        val origOri = meta[ExifInterface.TAG_ORIENTATION]?.toIntOrNull() ?: ExifInterface.ORIENTATION_NORMAL
+        val origW = (meta[ExifInterface.TAG_PIXEL_X_DIMENSION] ?: meta[ExifInterface.TAG_IMAGE_WIDTH])?.toIntOrNull() ?: 0
+        val origH = (meta[ExifInterface.TAG_PIXEL_Y_DIMENSION] ?: meta[ExifInterface.TAG_IMAGE_LENGTH])?.toIntOrNull() ?: 0
+        val opts = android.graphics.BitmapFactory.Options().apply { inJustDecodeBounds = true }
+        android.graphics.BitmapFactory.decodeByteArray(localBytes, 0, localBytes.size, opts)
+        val webpW = opts.outWidth; val webpH = opts.outHeight
+        if (origW <= 0 || origH <= 0 || webpW <= 0 || webpH <= 0) return origOri   // can't tell → copy original
+        val origRotated = origOri == ExifInterface.ORIENTATION_ROTATE_90 || origOri == ExifInterface.ORIENTATION_ROTATE_270
+        val displayPortrait = if (origRotated) origW > origH else origH > origW
+        val webpPortrait = webpH > webpW
+        return if (webpPortrait == displayPortrait) ExifInterface.ORIENTATION_NORMAL else origOri
     }
 
     private fun parseExifDate(raw: String?): Long {
