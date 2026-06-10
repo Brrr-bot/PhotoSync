@@ -30,17 +30,10 @@ class HubRestoreManager(private val context: Context) {
         val rawBytes: Long
     )
 
-    data class RestoreSummary(
-        val restored: Int,
-        val totalOnHub: Int,
-        val toDownload: Int,
-        val failed: Int
-    )
-
     private val prefs = context.getSharedPreferences("hub_restore_state", Context.MODE_PRIVATE)
 
     companion object {
-        private const val KEY_RESTORE_DONE    = "restore_done_v2"
+        private const val KEY_RESTORE_DONE    = "restore_done_v1"
         private const val IMAGE_COMPRESS_RATIO = 0.40   // WebP ≈ 40 % of original JPEG
         private const val VIDEO_COMPRESS_RATIO = 0.60   // H.265 ≈ 60 % of original MP4
         private const val POSTER_SIZE_BYTES    = 80_000L // ~80 KB per poster JPEG
@@ -105,27 +98,39 @@ class HubRestoreManager(private val context: Context) {
         ip: String, port: Int, deviceName: String,
         hubFiles: List<HubFileEntry>,
         progress: ((done: Int, total: Int, name: String) -> Unit)? = null
-    ): RestoreSummary {
+    ): Int {
         val myFiles = hubFiles.filter { it.deviceName == deviceName }
         if (myFiles.isEmpty()) {
             RemoteLogger.i("HubRestore: no files on hub for $deviceName")
-            return RestoreSummary(restored = 0, totalOnHub = 0, toDownload = 0, failed = 0)
+            return 0
         }
 
         val existing = buildExistingNamesSet()
-        val toDownload = myFiles.filter { it.displayName !in existing }
+        // Stems of every image on the phone. A hub video whose stem matches an existing image
+        // is a video that VideoSpaceManager already posterised (mp4 deleted, "VID_x.jpg" poster
+        // kept). Restoring such a video would just get re-posterised → re-restored forever, so we
+        // treat the poster's presence as "already handled" and never re-download the video.
+        val imageStems = buildExistingImageStems()
+        val toDownload = myFiles.filter { f ->
+            if (f.displayName in existing) return@filter false
+            val ext = f.displayName.substringAfterLast('.', "").lowercase()
+            if (ext in VIDEO_EXTS &&
+                f.displayName.substringBeforeLast('.').lowercase() in imageStems) {
+                return@filter false   // poster already on phone — video was intentionally slimmed
+            }
+            true
+        }
 
         RemoteLogger.i(
             "HubRestore: hub=${myFiles.size} phone=${existing.size} toDownload=${toDownload.size}"
         )
         if (toDownload.isEmpty()) {
             RemoteLogger.i("HubRestore: phone already has everything, nothing to do")
-            return RestoreSummary(restored = 0, totalOnHub = myFiles.size, toDownload = 0, failed = 0)
+            return 0
         }
 
         val tmp = File(context.cacheDir, "hub_restore_tmp")
         var done = 0
-        var failed = 0
 
         for ((index, f) in toDownload.withIndex()) {
             try {
@@ -134,7 +139,6 @@ class HubRestoreManager(private val context: Context) {
                 val ok = HubFilesClient.fetchFileToFile(ip, port, deviceName, f.displayName, tmp)
                 if (!ok || !tmp.exists() || tmp.length() == 0L) {
                     RemoteLogger.i("HubRestore: download failed for ${f.displayName}")
-                    failed++
                     continue
                 }
 
@@ -163,11 +167,8 @@ class HubRestoreManager(private val context: Context) {
                 if (inserted) {
                     done++
                     if (done % 50 == 0) RemoteLogger.i("HubRestore: $done/${toDownload.size} done")
-                } else {
-                    failed++
                 }
             } catch (t: Throwable) {
-                failed++
                 RemoteLogger.i("HubRestore: error on ${f.displayName} — ${t.message}")
             } finally {
                 tmp.delete()
@@ -175,7 +176,7 @@ class HubRestoreManager(private val context: Context) {
         }
 
         RemoteLogger.i("HubRestore: complete — restored $done / ${toDownload.size} files")
-        return RestoreSummary(restored = done, totalOnHub = myFiles.size, toDownload = toDownload.size, failed = failed)
+        return done
     }
 
     // ── helpers ───────────────────────────────────────────────────────────────
@@ -193,6 +194,22 @@ class HubRestoreManager(private val context: Context) {
             }
         }
         return names
+    }
+
+    /** Lowercase filename stems (no extension) of every image currently in MediaStore. */
+    private fun buildExistingImageStems(): Set<String> {
+        val stems = mutableSetOf<String>()
+        val col = MediaStore.Images.Media.DISPLAY_NAME
+        context.contentResolver.query(
+            MediaStore.Images.Media.EXTERNAL_CONTENT_URI, arrayOf(col), null, null, null
+        )?.use { c ->
+            val i = c.getColumnIndex(col)
+            if (i < 0) return@use
+            while (c.moveToNext()) {
+                c.getString(i)?.let { stems.add(it.substringBeforeLast('.').lowercase()) }
+            }
+        }
+        return stems
     }
 
     /**
