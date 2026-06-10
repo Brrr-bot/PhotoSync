@@ -117,14 +117,21 @@ class MetadataRestorer(private val context: Context) {
         b[3] == 'F'.code.toByte() && b[8] == 'W'.code.toByte() && b[9] == 'E'.code.toByte() &&
         b[10] == 'B'.code.toByte() && b[11] == 'P'.code.toByte()
 
-    /** Writes every [meta] tag into [bytes] via ExifInterface (supports JPEG + WebP on API 31+). */
+    /** Writes every [meta] tag into [bytes] via ExifInterface (supports JPEG + WebP on API 31+).
+     *  CRITICAL: never copy the hub original's TAG_ORIENTATION. The WebP pass decodes through
+     *  Samsung's BitmapFactory which BAKES the rotation into upright pixels, so the compressed copy
+     *  must always be ORIENTATION_NORMAL. Copying the original's orientation (which describes its
+     *  sideways sensor storage) double-rotates the already-upright pixels. */
     private fun applyExif(bytes: ByteArray, tmp: File, meta: Map<String, String>): ByteArray? {
         return try {
             tmp.writeBytes(bytes)
             val exif = ExifInterface(tmp.absolutePath)
             for ((tag, value) in meta) {
+                if (tag == ExifInterface.TAG_ORIENTATION) continue   // pixels are baked upright — see above
                 try { exif.setAttribute(tag, value) } catch (_: Exception) {}
             }
+            // Force normal orientation so the gallery shows the baked-upright pixels as-is.
+            exif.setAttribute(ExifInterface.TAG_ORIENTATION, ExifInterface.ORIENTATION_NORMAL.toString())
             exif.saveAttributes()
             tmp.readBytes()
         } catch (_: Exception) { null }
