@@ -158,6 +158,23 @@ class MainActivity : AppCompatActivity() {
 
     // ── Log receiver ──────────────────────────────────────────────────────────
 
+    /** Builds a per-line colour-coded CharSequence for the live-log card using the shared classifier. */
+    private fun colorizeLog(lines: Collection<String>): CharSequence {
+        val sb = android.text.SpannableStringBuilder()
+        val it = lines.iterator()
+        while (it.hasNext()) {
+            val line = it.next()
+            val start = sb.length
+            sb.append(line)
+            val color = try { android.graphics.Color.parseColor(com.photosync.shared.LogStyle.colorFor(line)) }
+                        catch (_: Exception) { android.graphics.Color.parseColor(com.photosync.shared.LogStyle.GREY) }
+            sb.setSpan(android.text.style.ForegroundColorSpan(color), start, sb.length,
+                android.text.Spannable.SPAN_EXCLUSIVE_EXCLUSIVE)
+            if (it.hasNext()) sb.append("\n")
+        }
+        return sb
+    }
+
     private val logReceiver = object : BroadcastReceiver() {
         override fun onReceive(context: Context, intent: Intent) {
             val msg = intent.getStringExtra(ClientForegroundService.EXTRA_LOG) ?: return
@@ -165,7 +182,7 @@ class MainActivity : AppCompatActivity() {
             val line = "$time  $msg"
             if (logLines.size >= 100) logLines.removeFirst()
             logLines.addLast(line)
-            tvLog.text = logLines.joinToString("\n")
+            tvLog.text = colorizeLog(logLines)
             scrollLog.post { scrollLog.fullScroll(ScrollView.FOCUS_DOWN) }
         }
     }
@@ -225,7 +242,7 @@ class MainActivity : AppCompatActivity() {
         logLines.clear()
         logLines.addAll(ClientForegroundService.getRecentLogs())
         if (logLines.isNotEmpty()) {
-            tvLog.text = logLines.joinToString("\n")
+            tvLog.text = colorizeLog(logLines)
             scrollLog.post { scrollLog.fullScroll(ScrollView.FOCUS_DOWN) }
         }
 
