@@ -17,7 +17,8 @@ class HubHttpServer(
     private val onFileRequest: ((device: String, name: String) -> ByteArray?)? = null,
     private val onFileStreamRequest: ((device: String, name: String) -> Pair<java.io.InputStream, Long>?)? = null,
     private val onDeleteRequest: ((device: String, name: String) -> Boolean)? = null,
-    private val onPosterRequest: ((device: String, name: String) -> ByteArray?)? = null
+    private val onPosterRequest: ((device: String, name: String) -> ByteArray?)? = null,
+    private val onMetaRequest: ((device: String, name: String) -> Map<String, String>)? = null
 ) : NanoHTTPD(Constants.HUB_HTTP_PORT) {
 
     private val gson = Gson()
@@ -32,6 +33,7 @@ class HubHttpServer(
                 Constants.PATH_HUB_THUMB  -> handleHubThumb(session)
                 Constants.PATH_HUB_FILE   -> handleHubFile(session)
                 Constants.PATH_HUB_POSTER -> handleHubPoster(session)
+                Constants.PATH_HUB_META   -> handleHubMeta(session)
                 Constants.PATH_HUB_DELETE -> handleHubDelete(session)
                 "/push" -> handlePush(session)
                 "/nudge" -> handleNudge()
@@ -187,6 +189,21 @@ class HubHttpServer(
             ?: return newFixedLengthResponse(Response.Status.NOT_FOUND, MIME_PLAINTEXT, "Not found")
         return newFixedLengthResponse(Response.Status.OK, "image/jpeg",
             java.io.ByteArrayInputStream(bytes), bytes.size.toLong())
+    }
+
+    /** Returns ALL EXIF metadata of the original image [name] as a JSON tag→value map, so the
+     *  phone can re-apply pristine metadata (orientation/GPS/dates/…) onto its compressed copy. */
+    private fun handleHubMeta(session: IHTTPSession): Response {
+        if (session.method != Method.GET)
+            return newFixedLengthResponse(Response.Status.METHOD_NOT_ALLOWED, MIME_PLAINTEXT, "GET required")
+        if (!verifyHmacFromHeaders(session))
+            return newFixedLengthResponse(Response.Status.UNAUTHORIZED, MIME_PLAINTEXT, "Unauthorized")
+        val device = session.parameters["device"]?.firstOrNull()
+            ?: return newFixedLengthResponse(Response.Status.BAD_REQUEST, MIME_PLAINTEXT, "Missing device")
+        val name = session.parameters["name"]?.firstOrNull()
+            ?: return newFixedLengthResponse(Response.Status.BAD_REQUEST, MIME_PLAINTEXT, "Missing name")
+        val meta = onMetaRequest?.invoke(device, name) ?: emptyMap()
+        return newFixedLengthResponse(Response.Status.OK, "application/json", gson.toJson(meta))
     }
 
     private fun buildHtmlPage(s: DashboardStatusResponse): String {
