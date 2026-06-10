@@ -103,7 +103,8 @@ class HubForegroundService : LifecycleService() {
                 if (ok) log("Deleted from hub: $device/$name")
                 ok
             },
-            onPosterRequest = { device, name -> usbStorage.videoPosterJpeg(device, name) }
+            onPosterRequest = { device, name -> usbStorage.videoPosterJpeg(device, name) },
+            onMetaRequest = { device, name -> usbStorage.readImageMetadata(device, name) }
         ).also {
             try {
                 it.start()
