@@ -323,7 +323,53 @@ class ClientForegroundService : LifecycleService() {
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
         super.onStartCommand(intent, flags, startId)
+        if (intent?.action == ACTION_RESTORE_FROM_HUB) {
+            lifecycleScope.launch(Dispatchers.IO) { runRestoreFromHub() }
+        }
         return START_STICKY
+    }
+
+    @Volatile private var restoreInProgress = false
+
+    /**
+     * User-initiated full restore from the hub. Runs inside the service so all progress lands on
+     * the live-log card (via [log]) exactly like sync/compression do. Waits up to ~30s for the hub
+     * to be discovered first, so pressing the menu item right after enabling WiFi still works.
+     */
+    private suspend fun runRestoreFromHub() {
+        if (restoreInProgress) { log("↺ Restore already running…"); return }
+        restoreInProgress = true
+        try {
+            // Wait for hub discovery (the menu is often tapped right after WiFi comes up).
+            var ip = liveHubIp ?: liveHubTailscaleIp
+            var waited = 0
+            while (ip == null && waited < 30_000) {
+                if (waited == 0) log("↺ Restore: waiting for hub…")
+                kotlinx.coroutines.delay(2_000); waited += 2_000
+                ip = liveHubIp ?: liveHubTailscaleIp
+            }
+            if (ip == null) { log("↺ Restore: hub not reachable — make sure both are on the hub WiFi"); return }
+
+            val port = liveHubPort
+            val allHub = try { HubFilesClient.fetchFiles(ip, port, limit = 20_000) }
+                         catch (e: Exception) { log("↺ Restore: hub fetch failed — ${e.message}"); return }
+            if (allHub.isEmpty()) { log("↺ Restore: hub returned no files (still warming up?) — try again shortly"); return }
+
+            val mgr = com.photosync.client.media.HubRestoreManager(this)
+            log("↺ Restore: ${allHub.size} hub files — checking what's missing…")
+            val n = mgr.restoreAll(ip, port, android.os.Build.MODEL, allHub) { done, total, name ->
+                if (done % 10 == 0 || done == total) {
+                    log("↺ Restore $done/$total: $name")
+                    updateNotification("Restoring from hub: $done/$total")
+                }
+            }
+            mgr.markDone()
+            log(if (n > 0) "↺ Restore done — $n file(s) restored; WebP/poster runs on next cycle"
+                else "↺ Restore: phone already has everything on the hub")
+            updateNotification("Ready — announcing on network")
+        } catch (t: Throwable) {
+            log("↺ Restore error: ${t.javaClass.simpleName}: ${t.message}")
+        } finally { restoreInProgress = false }
     }
 
     override fun onBind(intent: Intent): IBinder? = super.onBind(intent)
@@ -463,6 +509,7 @@ class ClientForegroundService : LifecycleService() {
 
     companion object {
         const val ACTION_LOG = "com.photosync.client.LOG"
+        const val ACTION_RESTORE_FROM_HUB = "com.photosync.client.RESTORE_FROM_HUB"
         const val EXTRA_LOG = "log_message"
 
         /** Exposed so MainActivity can poll progress state without broadcasts. */
