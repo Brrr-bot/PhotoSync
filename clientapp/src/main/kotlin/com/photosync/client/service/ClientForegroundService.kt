@@ -240,6 +240,20 @@ class ClientForegroundService : LifecycleService() {
                         log("✓ VideoSpace done — ${vs.thumbed} posterised, ${vs.compressed} compressed, ${vs.freedBytes / 1_048_576}MB freed (${vs.skipped} skipped)")
                 } catch (t: Throwable) { log("VideoSpace error: ${t.javaClass.simpleName}: ${t.message}") }
 
+                // One-time refresh of OLD poster placeholders to the new (smaller/translucent) badge.
+                // The hub regenerates each badged poster from the original video and we overwrite the
+                // local poster bytes in place (same name/date) — no whole-video download.
+                try {
+                    if (getSharedPreferences(PREFS_NAME, MODE_PRIVATE).getInt(KEY_POSTER_REFRESH_V, 0) < POSTER_REFRESH_V) {
+                        val n = refreshPostersOnce()
+                        if (n >= 0) {
+                            getSharedPreferences(PREFS_NAME, MODE_PRIVATE).edit()
+                                .putInt(KEY_POSTER_REFRESH_V, POSTER_REFRESH_V).apply()
+                            if (n > 0) log("✓ Poster refresh — $n placeholder(s) updated to new badge")
+                        }
+                    }
+                } catch (t: Throwable) { log("Poster refresh error: ${t.javaClass.simpleName}: ${t.message}") }
+
                 updateNotification("Ready — announcing on network")
                 delay(LOCAL_FIX_INTERVAL_MS)
             }
@@ -370,6 +384,45 @@ class ClientForegroundService : LifecycleService() {
         } catch (t: Throwable) {
             log("↺ Restore error: ${t.javaClass.simpleName}: ${t.message}")
         } finally { restoreInProgress = false }
+    }
+
+    /**
+     * One-time: regenerate every tracked poster placeholder with the current (subtle) badge.
+     * Uses the VideoSpaceManager KEY_RESTORE map ("posterName|device|videoName"); for each entry the
+     * hub renders a fresh badged poster from the original video and we overwrite the local poster
+     * bytes in place (same MediaStore row, name and DATE_TAKEN preserved). No whole-video download.
+     * Returns the count refreshed, or -1 if the hub isn't reachable (so the caller retries later).
+     */
+    private fun refreshPostersOnce(): Int {
+        val ip = liveHubIp ?: liveHubTailscaleIp ?: return -1
+        val port = liveHubPort
+        val prefs = getSharedPreferences("video_space_state", MODE_PRIVATE)
+        val restore = prefs.getStringSet(com.photosync.client.media.VideoSpaceManager.KEY_RESTORE, emptySet()) ?: emptySet()
+        if (restore.isEmpty()) return 0
+        var done = 0
+        for (entry in restore) {
+            val parts = entry.split('|')
+            if (parts.size < 3) continue
+            val posterName = parts[0]; val device = parts[1]; val videoName = parts[2]
+
+            var id = -1L; var dateMs = 0L
+            contentResolver.query(
+                android.provider.MediaStore.Images.Media.EXTERNAL_CONTENT_URI,
+                arrayOf(android.provider.MediaStore.Images.Media._ID, android.provider.MediaStore.Images.Media.DATE_TAKEN),
+                "${android.provider.MediaStore.Images.Media.DISPLAY_NAME} = ?", arrayOf(posterName), null
+            )?.use { if (it.moveToFirst()) { id = it.getLong(0); dateMs = it.getLong(1) } }
+            if (id < 0) continue   // poster no longer on phone (video already restored) — skip
+
+            val badged = com.photosync.client.hub.HubFilesClient.fetchPoster(ip, port, device, videoName) ?: continue
+            val stamped = if (dateMs > 0) com.photosync.client.media.VideoThumbnailer.stampPosterExif(badged, dateMs) else badged
+            val uri = android.content.ContentUris.withAppendedId(
+                android.provider.MediaStore.Images.Media.EXTERNAL_CONTENT_URI, id)
+            try {
+                contentResolver.openOutputStream(uri, "wt")?.use { it.write(stamped) }
+                done++
+            } catch (_: Exception) {}
+        }
+        return done
     }
 
     override fun onBind(intent: Intent): IBinder? = super.onBind(intent)
@@ -532,6 +585,8 @@ class ClientForegroundService : LifecycleService() {
         private const val LOCAL_FIX_INTERVAL_MS  = 60 * 60 * 1000L
         private const val KEY_LOCAL_FIX_VERSION  = "local_fix_version"
         private const val LOCAL_FIX_CODE         = 15 // bump when scan logic changes to force rescan
+        private const val KEY_POSTER_REFRESH_V   = "poster_refresh_version"
+        private const val POSTER_REFRESH_V       = 1  // bump to re-refresh all posters with a new badge style
 
         private val recentLogs = ArrayDeque<String>(100)
 
