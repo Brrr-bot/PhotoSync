@@ -161,6 +161,12 @@ class UsbStorageManager(
             try { stream.readBytes() } catch (_: Exception) { null }
         } else null
 
+        // NEVER store a video poster placeholder on the backup drive — the hub already holds the
+        // full video. Posters carry the "PhotoSync video poster" marker in EXIF Software. They can
+        // slip past the download-time skip if the poster is offered before its video is on USB, so
+        // this is the definitive guard. (Real photos never carry this marker.)
+        if (bufferedBytes != null && isPosterBytes(bufferedBytes)) return false
+
         val fileDateMs: Long? = parseDateFromFilename(file.displayName)
             ?: file.dateTaken.takeIf { it in since2000..now }
             ?: if (bufferedBytes != null) readExifDateFromBytes(bufferedBytes)?.takeIf { it in since2000..now } else null
@@ -1172,8 +1178,86 @@ class UsbStorageManager(
         return Uri.parse(str)
     }
 
+    /** True if [bytes] is a PhotoSync video poster (EXIF Software == marker). */
+    private fun isPosterBytes(bytes: ByteArray): Boolean = try {
+        ExifInterface(bytes.inputStream()).getAttribute(ExifInterface.TAG_SOFTWARE) == POSTER_MARKER
+    } catch (_: Exception) { false }
+
+    /**
+     * Reads EVERY EXIF tag present in the original image [displayName] and returns them as a
+     * tag→value map. Used by the /hub/meta endpoint so the phone can re-apply the full, pristine
+     * metadata (orientation, GPS, all dates, camera/lens/exposure, XMP, …) onto its compressed copy
+     * — compression strips most of this and Samsung shows the wrong rotation/date as a result.
+     */
+    fun readImageMetadata(deviceName: String, displayName: String): Map<String, String> {
+        val out = LinkedHashMap<String, String>()
+        try {
+            val uri = fileUriCache["$deviceName/$displayName"] ?: run {
+                val root = DocumentFile.fromTreeUri(context, treeUri ?: return out) ?: return out
+                val folder = root.findFile(deviceName) ?: return out
+                findFileAnywhere(folder, displayName)?.uri ?: return out
+            }
+            context.contentResolver.openInputStream(uri)?.use { ins ->
+                val exif = ExifInterface(ins)
+                for (tag in ALL_EXIF_TAGS) {
+                    val v = exif.getAttribute(tag)
+                    if (!v.isNullOrBlank()) out[tag] = v
+                }
+            }
+        } catch (_: Exception) {}
+        return out
+    }
+
     companion object {
         const val PREF_USB_URI = "usb_tree_uri"
+        const val POSTER_MARKER = "PhotoSync video poster"
+        /** EXIF tags scraped from hub originals for metadata restore. Mirrors WebPConverter's
+         *  proven set (compiles against this ExifInterface version) plus a few safe additions. */
+        private val ALL_EXIF_TAGS = arrayOf(
+            // Dates
+            ExifInterface.TAG_DATETIME, ExifInterface.TAG_DATETIME_ORIGINAL, ExifInterface.TAG_DATETIME_DIGITIZED,
+            ExifInterface.TAG_OFFSET_TIME, ExifInterface.TAG_OFFSET_TIME_ORIGINAL, ExifInterface.TAG_OFFSET_TIME_DIGITIZED,
+            ExifInterface.TAG_SUBSEC_TIME, ExifInterface.TAG_SUBSEC_TIME_ORIGINAL, ExifInterface.TAG_SUBSEC_TIME_DIGITIZED,
+            // Camera / device / software
+            ExifInterface.TAG_MAKE, ExifInterface.TAG_MODEL, ExifInterface.TAG_SOFTWARE, ExifInterface.TAG_ARTIST,
+            ExifInterface.TAG_COPYRIGHT, ExifInterface.TAG_CAMERA_OWNER_NAME, ExifInterface.TAG_BODY_SERIAL_NUMBER,
+            ExifInterface.TAG_IMAGE_UNIQUE_ID, ExifInterface.TAG_MAKER_NOTE,
+            // Lens
+            ExifInterface.TAG_LENS_MAKE, ExifInterface.TAG_LENS_MODEL, ExifInterface.TAG_LENS_SERIAL_NUMBER,
+            ExifInterface.TAG_LENS_SPECIFICATION, ExifInterface.TAG_FOCAL_LENGTH, ExifInterface.TAG_FOCAL_LENGTH_IN_35MM_FILM,
+            // Exposure
+            ExifInterface.TAG_EXPOSURE_TIME, ExifInterface.TAG_F_NUMBER, ExifInterface.TAG_APERTURE_VALUE,
+            ExifInterface.TAG_SHUTTER_SPEED_VALUE, ExifInterface.TAG_BRIGHTNESS_VALUE, ExifInterface.TAG_EXPOSURE_BIAS_VALUE,
+            ExifInterface.TAG_MAX_APERTURE_VALUE, ExifInterface.TAG_METERING_MODE, ExifInterface.TAG_FLASH,
+            ExifInterface.TAG_FLASH_ENERGY, ExifInterface.TAG_EXPOSURE_PROGRAM, ExifInterface.TAG_EXPOSURE_MODE,
+            ExifInterface.TAG_ISO_SPEED_RATINGS, ExifInterface.TAG_PHOTOGRAPHIC_SENSITIVITY, ExifInterface.TAG_SENSITIVITY_TYPE,
+            ExifInterface.TAG_RECOMMENDED_EXPOSURE_INDEX, ExifInterface.TAG_WHITE_BALANCE, ExifInterface.TAG_LIGHT_SOURCE,
+            ExifInterface.TAG_SCENE_CAPTURE_TYPE, ExifInterface.TAG_SCENE_TYPE, ExifInterface.TAG_SENSING_METHOD,
+            ExifInterface.TAG_CUSTOM_RENDERED, ExifInterface.TAG_GAIN_CONTROL, ExifInterface.TAG_CONTRAST,
+            ExifInterface.TAG_SATURATION, ExifInterface.TAG_SHARPNESS, ExifInterface.TAG_SUBJECT_DISTANCE,
+            ExifInterface.TAG_SUBJECT_DISTANCE_RANGE, ExifInterface.TAG_SUBJECT_AREA, ExifInterface.TAG_SUBJECT_LOCATION,
+            ExifInterface.TAG_DIGITAL_ZOOM_RATIO, ExifInterface.TAG_SPECTRAL_SENSITIVITY,
+            ExifInterface.TAG_FOCAL_PLANE_X_RESOLUTION, ExifInterface.TAG_FOCAL_PLANE_Y_RESOLUTION,
+            ExifInterface.TAG_FOCAL_PLANE_RESOLUTION_UNIT, ExifInterface.TAG_INTEROPERABILITY_INDEX,
+            // Orientation + geometry
+            ExifInterface.TAG_ORIENTATION, ExifInterface.TAG_X_RESOLUTION, ExifInterface.TAG_Y_RESOLUTION,
+            ExifInterface.TAG_RESOLUTION_UNIT, ExifInterface.TAG_COLOR_SPACE,
+            ExifInterface.TAG_PIXEL_X_DIMENSION, ExifInterface.TAG_PIXEL_Y_DIMENSION,
+            // GPS
+            ExifInterface.TAG_GPS_LATITUDE, ExifInterface.TAG_GPS_LATITUDE_REF, ExifInterface.TAG_GPS_LONGITUDE,
+            ExifInterface.TAG_GPS_LONGITUDE_REF, ExifInterface.TAG_GPS_ALTITUDE, ExifInterface.TAG_GPS_ALTITUDE_REF,
+            ExifInterface.TAG_GPS_TIMESTAMP, ExifInterface.TAG_GPS_DATESTAMP, ExifInterface.TAG_GPS_SPEED,
+            ExifInterface.TAG_GPS_SPEED_REF, ExifInterface.TAG_GPS_TRACK, ExifInterface.TAG_GPS_TRACK_REF,
+            ExifInterface.TAG_GPS_IMG_DIRECTION, ExifInterface.TAG_GPS_IMG_DIRECTION_REF, ExifInterface.TAG_GPS_MAP_DATUM,
+            ExifInterface.TAG_GPS_PROCESSING_METHOD, ExifInterface.TAG_GPS_AREA_INFORMATION, ExifInterface.TAG_GPS_DEST_LATITUDE,
+            ExifInterface.TAG_GPS_DEST_LATITUDE_REF, ExifInterface.TAG_GPS_DEST_LONGITUDE, ExifInterface.TAG_GPS_DEST_LONGITUDE_REF,
+            ExifInterface.TAG_GPS_DEST_BEARING, ExifInterface.TAG_GPS_DEST_BEARING_REF, ExifInterface.TAG_GPS_DEST_DISTANCE,
+            ExifInterface.TAG_GPS_DEST_DISTANCE_REF, ExifInterface.TAG_GPS_DOP, ExifInterface.TAG_GPS_MEASURE_MODE,
+            ExifInterface.TAG_GPS_SATELLITES, ExifInterface.TAG_GPS_STATUS, ExifInterface.TAG_GPS_VERSION_ID,
+            // Descriptive / XMP
+            ExifInterface.TAG_XMP, ExifInterface.TAG_IMAGE_DESCRIPTION, ExifInterface.TAG_USER_COMMENT,
+            ExifInterface.TAG_DEVICE_SETTING_DESCRIPTION
+        )
         const val MANIFEST_FILENAME = "photosync_state.json"   // no leading dot — SAF findFile skips hidden files
         // Matches YYYYMMDD_HHMMSS anywhere in a filename (handles plain, (1) suffix, Screenshot_ prefix, etc.)
         // FILENAME_DATE_RE removed — parseDateFromFilename now tries multiple patterns inline
