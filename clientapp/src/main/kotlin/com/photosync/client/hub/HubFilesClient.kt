@@ -3,6 +3,7 @@ package com.photosync.client.hub
 import com.photosync.shared.Constants
 import com.photosync.shared.crypto.HmacAuth
 import org.json.JSONArray
+import org.json.JSONObject
 import java.net.HttpURLConnection
 import java.net.URL
 
@@ -45,6 +46,22 @@ object HubFilesClient {
             val bytes = conn.inputStream.use { it.readBytes() }
             conn.disconnect()
             bytes
+        } catch (_: Exception) { null }
+    }
+
+    /** Fetches ALL EXIF metadata (tag→value) of the hub original [name] for metadata restore. */
+    fun fetchMeta(ip: String, port: Int, device: String, name: String): Map<String, String>? {
+        return try {
+            val enc = java.net.URLEncoder.encode(name, "UTF-8")
+            val devEnc = java.net.URLEncoder.encode(device, "UTF-8")
+            val conn = openGet("http://$ip:$port${Constants.PATH_HUB_META}?device=$devEnc&name=$enc")
+            if (conn.responseCode != 200) return null
+            val body = conn.inputStream.use { it.bufferedReader().readText() }
+            conn.disconnect()
+            val obj = JSONObject(body)
+            val map = HashMap<String, String>()
+            obj.keys().forEach { k -> map[k] = obj.getString(k) }
+            map
         } catch (_: Exception) { null }
     }
 
