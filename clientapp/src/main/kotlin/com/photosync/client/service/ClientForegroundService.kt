@@ -401,36 +401,58 @@ class ClientForegroundService : LifecycleService() {
         val restore = prefs.getStringSet(com.photosync.client.media.VideoSpaceManager.KEY_RESTORE, emptySet()) ?: emptySet()
         if (restore.isEmpty()) return 0
         var done = 0
+        val imgUri = android.provider.MediaStore.Images.Media.EXTERNAL_CONTENT_URI
         for (entry in restore) {
             val parts = entry.split('|')
             if (parts.size < 3) continue
             val posterName = parts[0]; val device = parts[1]; val videoName = parts[2]
 
-            var id = -1L; var msDate = 0L
+            // Read the existing poster's metadata so the replacement keeps its folder + dates.
+            var id = -1L; var msDate = 0L; var rel = "DCIM/Camera/"
             contentResolver.query(
-                android.provider.MediaStore.Images.Media.EXTERNAL_CONTENT_URI,
-                arrayOf(android.provider.MediaStore.Images.Media._ID, android.provider.MediaStore.Images.Media.DATE_TAKEN),
+                imgUri,
+                arrayOf(android.provider.MediaStore.Images.Media._ID,
+                        android.provider.MediaStore.Images.Media.DATE_TAKEN,
+                        android.provider.MediaStore.Images.Media.RELATIVE_PATH),
                 "${android.provider.MediaStore.Images.Media.DISPLAY_NAME} = ?", arrayOf(posterName), null
-            )?.use { if (it.moveToFirst()) { id = it.getLong(0); msDate = it.getLong(1) } }
+            )?.use { if (it.moveToFirst()) { id = it.getLong(0); msDate = it.getLong(1); it.getString(2)?.let { p -> rel = p } } }
             if (id < 0) continue   // poster no longer on phone (video already restored) — skip
 
             // Capture date: the filename (video stem) is the most reliable source and survives an
             // earlier bad refresh that nulled DATE_TAKEN; fall back to the MediaStore value.
             val dateMs = parsePosterDate(posterName).takeIf { it > 0 } ?: msDate
+            val dateSec = if (dateMs > 0) dateMs / 1000L else 0L
 
             val badged = com.photosync.client.hub.HubFilesClient.fetchPoster(ip, port, device, videoName) ?: continue
             val stamped = if (dateMs > 0) com.photosync.client.media.VideoThumbnailer.stampPosterExif(badged, dateMs) else badged
-            val uri = android.content.ContentUris.withAppendedId(
-                android.provider.MediaStore.Images.Media.EXTERNAL_CONTENT_URI, id)
+
+            // In-place byte overwrite NULLS DATE_TAKEN on Samsung (a plain update/scan won't restore
+            // it). The only reliable way to set the date is delete + re-insert with the IS_PENDING
+            // dance + double date-update — the same pattern insertPoster/saveToGallery use.
             try {
-                contentResolver.openOutputStream(uri, "wt")?.use { it.write(stamped) }
-                // Overwriting the bytes nulls DATE_TAKEN on Samsung — re-assert it explicitly
-                // (the app owns the poster row, so a direct update sticks). Without this the
-                // gallery falls back to DATE_MODIFIED = now and all posters sort under today.
-                if (dateMs > 0) {
-                    contentResolver.update(uri, android.content.ContentValues().apply {
+                contentResolver.delete(android.content.ContentUris.withAppendedId(imgUri, id), null, null)
+            } catch (_: Exception) { continue }
+            try {
+                val values = android.content.ContentValues().apply {
+                    put(android.provider.MediaStore.Images.Media.DISPLAY_NAME, posterName)
+                    put(android.provider.MediaStore.Images.Media.MIME_TYPE, "image/jpeg")
+                    put(android.provider.MediaStore.Images.Media.RELATIVE_PATH, rel)
+                    if (dateMs > 0) put(android.provider.MediaStore.Images.Media.DATE_TAKEN, dateMs)
+                    if (dateSec > 0) { put(android.provider.MediaStore.Images.Media.DATE_ADDED, dateSec); put(android.provider.MediaStore.Images.Media.DATE_MODIFIED, dateSec) }
+                    if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) put(android.provider.MediaStore.Images.Media.IS_PENDING, 1)
+                }
+                val nu = contentResolver.insert(imgUri, values) ?: continue
+                contentResolver.openOutputStream(nu)?.use { it.write(stamped) }
+                if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
+                    contentResolver.update(nu, android.content.ContentValues().apply {
+                        put(android.provider.MediaStore.Images.Media.IS_PENDING, 0)
+                        put(android.provider.MediaStore.Images.Media.SIZE, stamped.size.toLong())
+                        if (dateMs > 0) put(android.provider.MediaStore.Images.Media.DATE_TAKEN, dateMs)
+                    }, null, null)
+                    // Samsung resets dates during IS_PENDING→0 — force them again.
+                    if (dateMs > 0) contentResolver.update(nu, android.content.ContentValues().apply {
                         put(android.provider.MediaStore.Images.Media.DATE_TAKEN, dateMs)
-                        put(android.provider.MediaStore.Images.Media.DATE_MODIFIED, dateMs / 1000L)
+                        if (dateSec > 0) { put(android.provider.MediaStore.Images.Media.DATE_ADDED, dateSec); put(android.provider.MediaStore.Images.Media.DATE_MODIFIED, dateSec) }
                     }, null, null)
                 }
                 done++
@@ -625,7 +647,7 @@ class ClientForegroundService : LifecycleService() {
         private const val KEY_LOCAL_FIX_VERSION  = "local_fix_version"
         private const val LOCAL_FIX_CODE         = 15 // bump when scan logic changes to force rescan
         private const val KEY_POSTER_REFRESH_V   = "poster_refresh_version"
-        private const val POSTER_REFRESH_V       = 2  // v2: re-run to fix DATE_TAKEN nulled by v1 (now sets date from filename)
+        private const val POSTER_REFRESH_V       = 3  // v3: delete+reinsert (IS_PENDING) so DATE_TAKEN actually sticks on Samsung
 
         private val recentLogs = ArrayDeque<String>(100)
 
