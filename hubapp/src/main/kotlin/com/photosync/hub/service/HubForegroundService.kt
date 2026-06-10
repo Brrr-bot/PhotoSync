@@ -201,6 +201,26 @@ class HubForegroundService : LifecycleService() {
                 usbStorage.invalidateRecentFilesCache()
             }
         }
+
+        // One-time duplicate cleanup: the reorg passes (and earlier write bugs) left the same
+        // filename in more than one folder. Keep the largest copy of each, delete the rest.
+        if (prefs.getInt(DEDUP_VERSION_KEY, 0) < DEDUP_VERSION) {
+            lifecycleScope.launch(Dispatchers.IO) {
+                delay(20_000L)   // run after reorg so duplicates created by reorg are caught too
+                log("Dedup: scanning USB for duplicate filenames…")
+                val knownDevices = usbStorage.listDeviceNames()
+                var totalDeleted = 0
+                for (device in knownDevices) {
+                    val removed = usbStorage.removeDuplicateFiles(device)
+                    if (removed > 0) log("Dedup: removed $removed duplicate(s) for $device")
+                    totalDeleted += removed
+                }
+                if (totalDeleted == 0) log("Dedup: no duplicates found")
+                else log("Dedup: done — removed $totalDeleted duplicate file(s)")
+                prefs.edit().putInt(DEDUP_VERSION_KEY, DEDUP_VERSION).apply()
+                usbStorage.invalidateRecentFilesCache()
+            }
+        }
     }
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
@@ -441,6 +461,8 @@ class HubForegroundService : LifecycleService() {
         private const val EXIF_REPAIR_VERSION = 3   // v3: re-stamp EXIF now that parseDateFromFilename handles WhatsApp/Signal/ISO patterns
         private const val REORG_VERSION_KEY = "folder_reorg_v"
         private const val REORG_VERSION = 5         // v5: EXIF fallback for flat-root files older than 7 days (camera EXIF vs sync-stamp)
+        private const val DEDUP_VERSION_KEY = "dedup_v"
+        private const val DEDUP_VERSION = 1         // v1: remove same-name files duplicated across folders
 
         private val recentLogs = ArrayDeque<String>(100)
         @Volatile private var currentMode: String = "Idle"
