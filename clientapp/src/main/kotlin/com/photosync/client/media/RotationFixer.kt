@@ -65,6 +65,7 @@ class RotationFixer(private val context: Context) {
                     put(MediaStore.Images.Media.DISPLAY_NAME, r.name)
                     put(MediaStore.Images.Media.MIME_TYPE, "image/jpeg")
                     put(MediaStore.Images.Media.RELATIVE_PATH, r.rel)
+                    put(MediaStore.Images.Media.ORIENTATION, 0)   // pixels are upright — force normal
                     if (dateMs > 0) put(MediaStore.Images.Media.DATE_TAKEN, dateMs)
                     if (dateSec > 0) { put(MediaStore.Images.Media.DATE_ADDED, dateSec); put(MediaStore.Images.Media.DATE_MODIFIED, dateSec) }
                     if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) put(MediaStore.Images.Media.IS_PENDING, 1)
@@ -75,6 +76,7 @@ class RotationFixer(private val context: Context) {
                     context.contentResolver.update(nu, ContentValues().apply {
                         put(MediaStore.Images.Media.IS_PENDING, 0)
                         put(MediaStore.Images.Media.SIZE, stamped.size.toLong())
+                        put(MediaStore.Images.Media.ORIENTATION, 0)
                         if (dateMs > 0) put(MediaStore.Images.Media.DATE_TAKEN, dateMs)
                     }, null, null)
                     if (dateMs > 0) context.contentResolver.update(nu, ContentValues().apply {
