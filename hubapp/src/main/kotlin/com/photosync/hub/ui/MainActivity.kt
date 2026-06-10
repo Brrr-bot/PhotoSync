@@ -8,9 +8,6 @@ import android.net.Uri
 import android.os.Bundle
 import android.os.PowerManager
 import android.provider.Settings
-import android.text.SpannableStringBuilder
-import android.text.Spanned
-import android.text.style.ForegroundColorSpan
 import android.view.View
 import android.widget.ImageButton
 import android.widget.PopupMenu
@@ -18,7 +15,6 @@ import android.widget.ProgressBar
 import android.widget.ScrollView
 import android.widget.TextView
 import androidx.appcompat.app.AppCompatActivity
-import androidx.core.content.ContextCompat
 import com.photosync.hub.BuildConfig
 import com.photosync.hub.R
 import com.photosync.hub.network.TailscaleIpDetector
@@ -131,6 +127,23 @@ class MainActivity : AppCompatActivity() {
 
     // ── Log receiver ──────────────────────────────────────────────────────────
 
+    /** Builds a per-line colour-coded CharSequence for the live-log card using the shared classifier. */
+    private fun colorizeLog(lines: Collection<String>): CharSequence {
+        val sb = android.text.SpannableStringBuilder()
+        val it = lines.iterator()
+        while (it.hasNext()) {
+            val line = it.next()
+            val start = sb.length
+            sb.append(line)
+            val color = try { android.graphics.Color.parseColor(com.photosync.shared.LogStyle.colorFor(line)) }
+                        catch (_: Exception) { android.graphics.Color.parseColor(com.photosync.shared.LogStyle.GREY) }
+            sb.setSpan(android.text.style.ForegroundColorSpan(color), start, sb.length,
+                android.text.Spannable.SPAN_EXCLUSIVE_EXCLUSIVE)
+            if (it.hasNext()) sb.append("\n")
+        }
+        return sb
+    }
+
     private val logReceiver = object : BroadcastReceiver() {
         override fun onReceive(context: Context, intent: Intent) {
             val msg = intent.getStringExtra(HubForegroundService.EXTRA_LOG) ?: return
@@ -138,7 +151,7 @@ class MainActivity : AppCompatActivity() {
             val line = "$time  $msg"
             if (logLines.size >= 100) logLines.removeFirst()
             logLines.addLast(line)
-            renderLog()
+            tvLog.text = colorizeLog(logLines)
             scrollLog.post { scrollLog.fullScroll(ScrollView.FOCUS_DOWN) }
         }
     }
@@ -182,7 +195,7 @@ class MainActivity : AppCompatActivity() {
         logLines.clear()
         logLines.addAll(HubForegroundService.getRecentLogs())
         if (logLines.isNotEmpty()) {
-            renderLog()
+            tvLog.text = colorizeLog(logLines)
             scrollLog.post { scrollLog.fullScroll(ScrollView.FOCUS_DOWN) }
         }
 
@@ -201,40 +214,6 @@ class MainActivity : AppCompatActivity() {
         unregisterReceiver(logReceiver)
         unregisterReceiver(progressReceiver)
         unregisterReceiver(fileBytesReceiver)
-    }
-
-    private fun renderLog() {
-        val out = SpannableStringBuilder()
-        logLines.forEachIndexed { index, line ->
-            if (index > 0) out.append('\n')
-            val start = out.length
-            out.append(line)
-            out.setSpan(
-                ForegroundColorSpan(logColor(line)),
-                start, out.length, Spanned.SPAN_EXCLUSIVE_EXCLUSIVE
-            )
-        }
-        tvLog.text = out
-    }
-
-    private fun logColor(line: String): Int {
-        val text = line.lowercase(Locale.US)
-        return when {
-            text.contains("error") || text.contains("failed") || text.contains("fatal") ->
-                ContextCompat.getColor(this, android.R.color.holo_red_light)
-            text.contains("restore") || text.contains("poster") ->
-                ContextCompat.getColor(this, android.R.color.holo_purple)
-            text.contains("compress") || text.contains("make space") ->
-                ContextCompat.getColor(this, android.R.color.holo_orange_light)
-            text.contains("sync") || text.contains("upload") || text.contains("download") ->
-                ContextCompat.getColor(this, android.R.color.holo_blue_light)
-            text.contains("heard") || text.contains("handshake") || text.contains("tailscale") ->
-                0xFF26C6DA.toInt()
-            text.contains("done") || text.contains("complete") || text.contains("saved") ||
-                text.contains("confirmed") ->
-                ContextCompat.getColor(this, android.R.color.holo_green_light)
-            else -> ContextCompat.getColor(this, android.R.color.white)
-        }
     }
 
     // ── Dropdown menu ─────────────────────────────────────────────────────────
