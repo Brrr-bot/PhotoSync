@@ -102,7 +102,8 @@ class HubForegroundService : LifecycleService() {
                 val ok = usbStorage.deleteFile(device, name)
                 if (ok) log("Deleted from hub: $device/$name")
                 ok
-            }
+            },
+            onPosterRequest = { device, name -> usbStorage.videoPosterJpeg(device, name) }
         ).also {
             try {
                 it.start()
