@@ -60,6 +60,7 @@ class MetadataRestorer(private val context: Context) {
         if (targets.isEmpty()) return 0
 
         var done = 0
+        var consecutiveHubFails = 0
         val tmp = File(context.cacheDir, "meta_restore_tmp")
         targets.forEachIndexed { index, t ->
             try {
@@ -68,7 +69,13 @@ class MetadataRestorer(private val context: Context) {
                 val localBytes = context.contentResolver.openInputStream(uri)?.use { it.readBytes() } ?: return@forEachIndexed
                 if (!isWebp(localBytes)) return@forEachIndexed   // only compressed copies lost metadata
 
-                val meta = HubFilesClient.fetchMeta(ip, port, deviceName, t.name) ?: return@forEachIndexed
+                val meta = HubFilesClient.fetchMeta(ip, port, deviceName, t.name)
+                if (meta == null) {
+                    // Hub unreachable — bail out fast rather than crawl through 10s timeouts per file.
+                    if (++consecutiveHubFails >= 8) throw IllegalStateException("hub unreachable")
+                    return@forEachIndexed
+                }
+                consecutiveHubFails = 0
                 if (meta.isEmpty()) return@forEachIndexed
 
                 // Write all original tags into the local (compressed) bytes.
@@ -104,7 +111,12 @@ class MetadataRestorer(private val context: Context) {
                     }, null, null)
                 }
                 done++
-            } catch (_: Throwable) { /* skip this file */ }
+                // Throttle the delete+reinsert churn so MediaProvider / the gallery stay responsive.
+                if (done % 15 == 0) Thread.sleep(250)
+            } catch (t: Throwable) {
+                if (t is IllegalStateException && t.message == "hub unreachable") throw t   // stop the whole run
+                /* otherwise skip this file */
+            }
             finally { tmp.delete() }
         }
         return done
@@ -117,21 +129,16 @@ class MetadataRestorer(private val context: Context) {
         b[3] == 'F'.code.toByte() && b[8] == 'W'.code.toByte() && b[9] == 'E'.code.toByte() &&
         b[10] == 'B'.code.toByte() && b[11] == 'P'.code.toByte()
 
-    /** Writes every [meta] tag into [bytes] via ExifInterface (supports JPEG + WebP on API 31+).
-     *  CRITICAL: never copy the hub original's TAG_ORIENTATION. The WebP pass decodes through
-     *  Samsung's BitmapFactory which BAKES the rotation into upright pixels, so the compressed copy
-     *  must always be ORIENTATION_NORMAL. Copying the original's orientation (which describes its
-     *  sideways sensor storage) double-rotates the already-upright pixels. */
+    /** Writes every [meta] tag (the full original EXIF, orientation included) verbatim into
+     *  [bytes] via ExifInterface (supports JPEG + WebP on API 31+). The compressed copy keeps the
+     *  original's pixel layout, so its orientation must match the original's exactly. */
     private fun applyExif(bytes: ByteArray, tmp: File, meta: Map<String, String>): ByteArray? {
         return try {
             tmp.writeBytes(bytes)
             val exif = ExifInterface(tmp.absolutePath)
             for ((tag, value) in meta) {
-                if (tag == ExifInterface.TAG_ORIENTATION) continue   // pixels are baked upright — see above
                 try { exif.setAttribute(tag, value) } catch (_: Exception) {}
             }
-            // Force normal orientation so the gallery shows the baked-upright pixels as-is.
-            exif.setAttribute(ExifInterface.TAG_ORIENTATION, ExifInterface.ORIENTATION_NORMAL.toString())
             exif.saveAttributes()
             tmp.readBytes()
         } catch (_: Exception) { null }
