@@ -820,6 +820,46 @@ class UsbStorageManager(
     }
 
     /**
+     * Removes duplicate files within [deviceName]'s folder — i.e. the same displayName appearing
+     * in more than one place (flat root + a date subfolder, or two different date subfolders).
+     * These accumulate from the folder-reorg passes (copy-to-target then delete-source where the
+     * source delete failed, or a file that already existed in another date folder).
+     *
+     * For each duplicated name we keep the single largest copy (the complete file) and delete the
+     * rest. Returns the number of files deleted.
+     */
+    fun removeDuplicateFiles(deviceName: String): Int {
+        var deleted = 0
+        try {
+            val root = DocumentFile.fromTreeUri(context, treeUri ?: return 0) ?: return 0
+            val folder = root.findFile(deviceName) ?: return 0
+
+            // Group every file (flat + one level of subfolders) by its name.
+            val byName = mutableMapOf<String, MutableList<DocumentFile>>()
+            fun add(f: DocumentFile) {
+                if (f.isDirectory) return
+                val name = f.name ?: return
+                byName.getOrPut(name) { mutableListOf() }.add(f)
+            }
+            for (item in folder.listFiles()) {
+                if (item.isDirectory) item.listFiles().forEach { add(it) }
+                else add(item)
+            }
+
+            for ((_, copies) in byName) {
+                if (copies.size < 2) continue
+                // Keep the largest copy; delete the others.
+                val keep = copies.maxByOrNull { it.length() } ?: continue
+                for (dup in copies) {
+                    if (dup.uri == keep.uri) continue
+                    try { if (dup.delete()) deleted++ } catch (_: Exception) {}
+                }
+            }
+        } catch (_: Exception) { /* USB not accessible */ }
+        return deleted
+    }
+
+    /**
      * Returns a map of displayName → epoch-ms for every image file in [deviceName]'s USB folder
      * that has a valid EXIF DateTimeOriginal. Files without EXIF dates are omitted.
      */
@@ -923,11 +963,12 @@ class UsbStorageManager(
         val ext = displayName.substringAfterLast('.', "").lowercase()
         if (ext == "mp4" || ext == "mov") return videoThumbnailForFile(deviceName, displayName, maxPx)
         return try {
+            val bytes = readAnyFile(deviceName, displayName) ?: return null
             // Read EXIF orientation before decoding
-            val orientation = openFileStream(deviceName, displayName)?.first?.use {
+            val orientation = bytes.inputStream().use {
                 ExifInterface(it).getAttributeInt(
                     ExifInterface.TAG_ORIENTATION, ExifInterface.ORIENTATION_NORMAL)
-            } ?: ExifInterface.ORIENTATION_NORMAL
+            }
             val rotation = when (orientation) {
                 ExifInterface.ORIENTATION_ROTATE_90  -> 90f
                 ExifInterface.ORIENTATION_ROTATE_180 -> 180f
@@ -935,19 +976,15 @@ class UsbStorageManager(
                 else                                 -> 0f
             }
             val opts = BitmapFactory.Options().apply { inJustDecodeBounds = true }
-            openFileStream(deviceName, displayName)?.first?.use {
-                BitmapFactory.decodeStream(it, null, opts)
-            } ?: return null
+            BitmapFactory.decodeByteArray(bytes, 0, bytes.size, opts)
             if (opts.outWidth <= 0) return null
             val sample = run {
                 var s = 1; var w = opts.outWidth; var h = opts.outHeight
                 while (w / 2 >= maxPx && h / 2 >= maxPx) { w /= 2; h /= 2; s *= 2 }
                 s
             }
-            val bmp = openFileStream(deviceName, displayName)?.first?.use {
-                BitmapFactory.decodeStream(
-                    it, null, BitmapFactory.Options().apply { inSampleSize = sample })
-            } ?: return null
+            val bmp = BitmapFactory.decodeByteArray(bytes, 0, bytes.size,
+                BitmapFactory.Options().apply { inSampleSize = sample }) ?: return null
             val (w, h) = bmp.width to bmp.height
             var scaled = if (w >= h) {
                 val nh = (h.toFloat() / w * maxPx).toInt().coerceAtLeast(1)
@@ -967,7 +1004,7 @@ class UsbStorageManager(
             scaled.compress(Bitmap.CompressFormat.JPEG, 75, out)
             scaled.recycle()
             out.toByteArray()
-        } catch (_: Throwable) { null }
+        } catch (_: Exception) { null }
     }
 
     /** Extracts a frame from a video file on USB and returns it as a scaled JPEG thumbnail. */
