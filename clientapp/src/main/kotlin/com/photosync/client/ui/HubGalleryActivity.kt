@@ -1,7 +1,6 @@
 package com.photosync.client.ui
 
 import android.content.ContentValues
-import android.content.Context
 import android.content.Intent
 import android.net.Uri
 import android.os.Build
@@ -281,30 +280,30 @@ class HubGalleryActivity : AppCompatActivity() {
     private fun replacePosterWithRestoredVideo(videoName: String) {
         val prefs = getSharedPreferences("video_space_state", Context.MODE_PRIVATE)
 
-        // Find poster name for this video in the restore map ("posterName|device|videoName")
+        // The poster is always "<video stem>.jpg" (VideoSpaceManager.insertPoster). Delete it by
+        // that computed name FIRST — unconditionally — so the placeholder is always removed even
+        // if the restore-map tracking was lost (e.g. prefs cleared). The map lookup below is only
+        // used to tidy the bookkeeping sets.
+        val computedPoster = videoName.substringBeforeLast('.') + ".jpg"
         val restoreSet = prefs.getStringSet(com.photosync.client.media.VideoSpaceManager.KEY_RESTORE, emptySet())!!.toMutableSet()
-        val mapEntry = restoreSet.find { it.endsWith("|$videoName") } ?: run {
-            // No poster was recorded — still mark as user-restored to prevent future posterization
-            val userRestored = prefs.getStringSet(com.photosync.client.media.VideoSpaceManager.KEY_USER_RESTORED, emptySet())!!.toMutableSet()
-            userRestored.add(videoName)
-            prefs.edit().putStringSet(com.photosync.client.media.VideoSpaceManager.KEY_USER_RESTORED, userRestored).apply()
-            return
+        val mapEntry = restoreSet.find { it.endsWith("|$videoName") }
+        val posterName = mapEntry?.substringBefore('|') ?: computedPoster
+
+        // Delete the poster JPEG(s) from MediaStore — both the tracked name and the computed name.
+        for (name in setOf(posterName, computedPoster)) {
+            try {
+                contentResolver.delete(
+                    MediaStore.Images.Media.EXTERNAL_CONTENT_URI,
+                    "${MediaStore.Images.Media.DISPLAY_NAME} = ?",
+                    arrayOf(name)
+                )
+            } catch (_: Exception) {}
         }
-        val posterName = mapEntry.substringBefore('|')
 
-        // Delete the poster JPEG from MediaStore
-        try {
-            contentResolver.delete(
-                MediaStore.Images.Media.EXTERNAL_CONTENT_URI,
-                "${MediaStore.Images.Media.DISPLAY_NAME} = ?",
-                arrayOf(posterName)
-            )
-        } catch (_: Exception) {}
-
-        // Remove from tracking sets; mark video as user-restored
-        restoreSet.remove(mapEntry)
+        // Tidy tracking sets; mark video as user-restored so it's never auto-posterized again.
+        if (mapEntry != null) restoreSet.remove(mapEntry)
         val posterNames = prefs.getStringSet(com.photosync.client.media.VideoSpaceManager.KEY_POSTER_NAMES, emptySet())!!.toMutableSet()
-        posterNames.remove(posterName)
+        posterNames.remove(posterName); posterNames.remove(computedPoster)
         val userRestored = prefs.getStringSet(com.photosync.client.media.VideoSpaceManager.KEY_USER_RESTORED, emptySet())!!.toMutableSet()
         userRestored.add(videoName)
 
