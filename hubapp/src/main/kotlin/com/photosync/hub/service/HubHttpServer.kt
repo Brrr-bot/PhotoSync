@@ -16,7 +16,8 @@ class HubHttpServer(
     private val onThumbRequest: ((device: String, name: String) -> ByteArray?)? = null,
     private val onFileRequest: ((device: String, name: String) -> ByteArray?)? = null,
     private val onFileStreamRequest: ((device: String, name: String) -> Pair<java.io.InputStream, Long>?)? = null,
-    private val onDeleteRequest: ((device: String, name: String) -> Boolean)? = null
+    private val onDeleteRequest: ((device: String, name: String) -> Boolean)? = null,
+    private val onPosterRequest: ((device: String, name: String) -> ByteArray?)? = null
 ) : NanoHTTPD(Constants.HUB_HTTP_PORT) {
 
     private val gson = Gson()
@@ -30,6 +31,7 @@ class HubHttpServer(
                 Constants.PATH_HUB_FILES  -> handleHubFiles(session)
                 Constants.PATH_HUB_THUMB  -> handleHubThumb(session)
                 Constants.PATH_HUB_FILE   -> handleHubFile(session)
+                Constants.PATH_HUB_POSTER -> handleHubPoster(session)
                 Constants.PATH_HUB_DELETE -> handleHubDelete(session)
                 "/push" -> handlePush(session)
                 "/nudge" -> handleNudge()
@@ -145,6 +147,9 @@ class HubHttpServer(
             ?: return newFixedLengthResponse(Response.Status.BAD_REQUEST, MIME_PLAINTEXT, "Missing device")
         val name = session.parameters["name"]?.firstOrNull()
             ?: return newFixedLengthResponse(Response.Status.BAD_REQUEST, MIME_PLAINTEXT, "Missing name")
+        // Surface restore/download activity on the hub's live log + dashboard (the client pulls
+        // files FROM the hub, so without this the hub looks idle during a restore).
+        onLog?.invoke("⬇ Serving $name → ${session.remoteIpAddress ?: "client"}")
         val mime = when (name.substringAfterLast('.').lowercase()) {
             "jpg", "jpeg" -> "image/jpeg"
             "png"  -> "image/png"
@@ -161,6 +166,26 @@ class HubHttpServer(
         val bytes = onFileRequest?.invoke(device, name)
             ?: return newFixedLengthResponse(Response.Status.NOT_FOUND, MIME_PLAINTEXT, "Not found")
         return newFixedLengthResponse(Response.Status.OK, mime,
+            java.io.ByteArrayInputStream(bytes), bytes.size.toLong())
+    }
+
+    /**
+     * Returns a freshly-generated full-size JPEG poster (representative frame + play badge) for the
+     * video [name]. Lets clients refresh old placeholder images with the current badge style without
+     * re-downloading the whole video — the hub extracts the frame locally and sends only the poster.
+     */
+    private fun handleHubPoster(session: IHTTPSession): Response {
+        if (session.method != Method.GET)
+            return newFixedLengthResponse(Response.Status.METHOD_NOT_ALLOWED, MIME_PLAINTEXT, "GET required")
+        if (!verifyHmacFromHeaders(session))
+            return newFixedLengthResponse(Response.Status.UNAUTHORIZED, MIME_PLAINTEXT, "Unauthorized")
+        val device = session.parameters["device"]?.firstOrNull()
+            ?: return newFixedLengthResponse(Response.Status.BAD_REQUEST, MIME_PLAINTEXT, "Missing device")
+        val name = session.parameters["name"]?.firstOrNull()
+            ?: return newFixedLengthResponse(Response.Status.BAD_REQUEST, MIME_PLAINTEXT, "Missing name")
+        val bytes = onPosterRequest?.invoke(device, name)
+            ?: return newFixedLengthResponse(Response.Status.NOT_FOUND, MIME_PLAINTEXT, "Not found")
+        return newFixedLengthResponse(Response.Status.OK, "image/jpeg",
             java.io.ByteArrayInputStream(bytes), bytes.size.toLong())
     }
 
