@@ -15,9 +15,6 @@ import android.os.Handler
 import android.os.Looper
 import android.os.PowerManager
 import android.provider.Settings
-import android.text.SpannableStringBuilder
-import android.text.Spanned
-import android.text.style.ForegroundColorSpan
 import android.view.View
 import android.widget.ImageButton
 import android.widget.ImageView
@@ -34,7 +31,6 @@ import com.photosync.client.BuildConfig
 import com.photosync.client.R
 import com.photosync.client.hub.HubFilesClient
 import com.photosync.client.media.LocalImageProcessor
-import com.photosync.client.media.MakeSpaceManager
 import com.photosync.client.media.MediaStoreHelper
 import com.photosync.client.network.TailscaleIpDetector
 import com.photosync.client.service.ClientForegroundService
@@ -169,7 +165,7 @@ class MainActivity : AppCompatActivity() {
             val line = "$time  $msg"
             if (logLines.size >= 100) logLines.removeFirst()
             logLines.addLast(line)
-            renderLog()
+            tvLog.text = logLines.joinToString("\n")
             scrollLog.post { scrollLog.fullScroll(ScrollView.FOCUS_DOWN) }
         }
     }
@@ -229,7 +225,7 @@ class MainActivity : AppCompatActivity() {
         logLines.clear()
         logLines.addAll(ClientForegroundService.getRecentLogs())
         if (logLines.isNotEmpty()) {
-            renderLog()
+            tvLog.text = logLines.joinToString("\n")
             scrollLog.post { scrollLog.fullScroll(ScrollView.FOCUS_DOWN) }
         }
 
@@ -264,14 +260,6 @@ class MainActivity : AppCompatActivity() {
         popup.menuInflater.inflate(R.menu.menu_client, popup.menu)
         popup.setOnMenuItemClickListener { item ->
             when (item.itemId) {
-                R.id.action_make_space -> {
-                    runMakeSpaceNow()
-                    true
-                }
-                R.id.action_restore_from_hub -> {
-                    runRestoreFromHubNow()
-                    true
-                }
                 R.id.action_start -> {
                     startForegroundService(Intent(this, ClientForegroundService::class.java))
                     true
@@ -298,6 +286,10 @@ class MainActivity : AppCompatActivity() {
                 }
                 R.id.action_cleanup_duplicates -> {
                     cleanupDuplicateOriginals()
+                    true
+                }
+                R.id.action_restore_hub -> {
+                    restoreFromHubNow()
                     true
                 }
                 R.id.action_run_fix -> {
@@ -551,6 +543,43 @@ class MainActivity : AppCompatActivity() {
         }.start()
     }
 
+    /**
+     * User-initiated full restore from the hub: downloads every hub-backed file that is missing
+     * from the phone and re-inserts it into MediaStore. This is the ONLY entry point for a full
+     * restore — it never runs automatically (auto-restore caused an infinite re-download loop with
+     * VideoSpaceManager posterisation). Posterised videos (whose poster image is still on the
+     * phone) are skipped so the loop cannot re-form.
+     */
+    private fun restoreFromHubNow() {
+        Toast.makeText(this, "Restoring from hub…", Toast.LENGTH_SHORT).show()
+        Thread {
+            val ip = effectiveHubIp()
+            if (ip == null) {
+                runOnUiThread { Toast.makeText(this, "Hub not reachable — connect to the hub first", Toast.LENGTH_LONG).show() }
+                return@Thread
+            }
+            val port = ClientForegroundService.liveHubPort
+            try {
+                val allHub = HubFilesClient.fetchFiles(ip, port, limit = 20_000)
+                val mgr = com.photosync.client.media.HubRestoreManager(this)
+                val n = mgr.restoreAll(ip, port, Build.MODEL, allHub) { done, total, name ->
+                    if (done % 25 == 0 || done == total) {
+                        runOnUiThread { Toast.makeText(this, "Restore $done/$total: $name", Toast.LENGTH_SHORT).show() }
+                    }
+                }
+                mgr.markDone()
+                runOnUiThread {
+                    Toast.makeText(this,
+                        if (n > 0) "Restored $n file(s) from hub — compression runs on next cycle"
+                        else "Phone already has everything on the hub",
+                        Toast.LENGTH_LONG).show()
+                }
+            } catch (t: Throwable) {
+                runOnUiThread { Toast.makeText(this, "Restore failed: ${t.message}", Toast.LENGTH_LONG).show() }
+            }
+        }.start()
+    }
+
     // ── Fix & check sequence ──────────────────────────────────────────────────
 
     /**
@@ -701,125 +730,7 @@ class MainActivity : AppCompatActivity() {
         return enabled.split(":").any { it.equals(serviceName, ignoreCase = true) }
     }
 
-    // ── Make Space ───────────────────────────────────────────────────────────
-
-    /**
-     * Manually triggers Make Space:
-     *  - Files < 1 month confirmed on hub  -> compress to WebP 85%
-     *  - Files >= 1 month confirmed on hub -> replace with placeholder (dark overlay + cloud icon)
-     * Skips files the user has previously restored as originals from the hub.
-     */
-    private fun runMakeSpaceNow() {
-        val ip = effectiveHubIp()
-        if (ip == null) {
-            com.photosync.client.service.ClientForegroundService.staticLog("Make Space: hub not connected")
-            return
-        }
-        com.photosync.client.service.ClientForegroundService.staticLog("Make Space starting…")
-        Thread {
-            val summary = com.photosync.client.media.MakeSpaceManager(this).process { done, total, name ->
-                com.photosync.client.service.ClientForegroundService.staticLog(
-                    "Make Space $done/$total: $name")
-            }
-            val mb = summary.freedBytes / 1_048_576
-            val msg = buildString {
-                append("Make Space done — ")
-                if (summary.compressed > 0) append("${summary.compressed} compressed  ")
-                if (summary.posterized > 0)  append("${summary.posterized} posterized  ")
-                append("${mb} MB freed")
-                if (summary.skipped > 0) append("  (${summary.skipped} skipped)")
-            }
-            com.photosync.client.service.ClientForegroundService.staticLog(msg)
-        }.start()
-    }
-
-    private fun runRestoreFromHubNow() {
-        if (!restoreRunning.compareAndSet(false, true)) {
-            ClientForegroundService.staticLog("Restore already running")
-            Toast.makeText(this, "Restore already running", Toast.LENGTH_SHORT).show()
-            return
-        }
-        val ip = effectiveHubIp()
-        if (ip == null) {
-            restoreRunning.set(false)
-            com.photosync.client.service.ClientForegroundService.staticLog("Restore: hub not connected")
-            Toast.makeText(this, "Hub not connected", Toast.LENGTH_SHORT).show()
-            return
-        }
-        val port = ClientForegroundService.liveHubPort
-        Toast.makeText(this, "Restoring from hub...", Toast.LENGTH_SHORT).show()
-        com.photosync.client.service.ClientForegroundService.staticLog("Restore from Hub starting...")
-        Thread {
-            try {
-                val files = com.photosync.client.hub.HubFilesClient.fetchFiles(ip, port, limit = 20_000)
-                if (files.isEmpty()) {
-                    com.photosync.client.service.ClientForegroundService.staticLog("Restore: hub returned no files")
-                    return@Thread
-                }
-
-                val mgr = com.photosync.client.media.HubRestoreManager(this)
-                val estimate = mgr.estimate(files, android.os.Build.MODEL)
-                val totalForThisPhone = estimate.imageCount + estimate.videoRecentCount + estimate.videoOldCount
-                if (totalForThisPhone == 0) {
-                    com.photosync.client.service.ClientForegroundService.staticLog(
-                        "Restore: no hub files matched ${android.os.Build.MODEL}")
-                    return@Thread
-                }
-
-                com.photosync.client.service.ClientForegroundService.staticLog(
-                    "Restore estimate: ${estimate.imageCount} images, ${estimate.videoRecentCount} videos, ${estimate.videoOldCount} old videos")
-                val result = mgr.restoreAll(ip, port, android.os.Build.MODEL, files) { done, total, name ->
-                    ClientForegroundService.staticLog("Restore $done/$total: $name")
-                }
-                com.photosync.client.service.ClientForegroundService.staticLog(
-                    "Restore done: ${result.restored}/${result.toDownload} restored, ${result.failed} failed")
-                if (result.failed == 0) {
-                    mgr.markDone()
-                }
-            } catch (t: Throwable) {
-                com.photosync.client.service.ClientForegroundService.staticLog(
-                    "Restore error: ${t.javaClass.simpleName}: ${t.message}")
-            } finally {
-                restoreRunning.set(false)
-            }
-        }.start()
-    }
-
-    private fun renderLog() {
-        val out = SpannableStringBuilder()
-        logLines.forEachIndexed { index, line ->
-            if (index > 0) out.append('\n')
-            val start = out.length
-            out.append(line)
-            out.setSpan(
-                ForegroundColorSpan(logColor(line)),
-                start, out.length, Spanned.SPAN_EXCLUSIVE_EXCLUSIVE
-            )
-        }
-        tvLog.text = out
-    }
-
-    private fun logColor(line: String): Int {
-        val text = line.lowercase(Locale.US)
-        return when {
-            text.contains("error") || text.contains("failed") || text.contains("fatal") ->
-                ContextCompat.getColor(this, android.R.color.holo_red_light)
-            text.contains("restore") || text.contains("poster") ->
-                ContextCompat.getColor(this, android.R.color.holo_purple)
-            text.contains("compress") || text.contains("make space") || text.contains("localfix") ->
-                ContextCompat.getColor(this, android.R.color.holo_orange_light)
-            text.contains("sync") || text.contains("upload") || text.contains("download") ->
-                ContextCompat.getColor(this, android.R.color.holo_blue_light)
-            text.contains("handshake") || text.contains("hub ") || text.contains("tailscale") ->
-                0xFF26C6DA.toInt()
-            text.contains("done") || text.contains("complete") || text.contains("saved") ->
-                ContextCompat.getColor(this, android.R.color.holo_green_light)
-            else -> ContextCompat.getColor(this, android.R.color.white)
-        }
-    }
-
     companion object {
-        private val restoreRunning = java.util.concurrent.atomic.AtomicBoolean(false)
         private const val REQ_WRITE_ACCESS       = 1001
         private const val REQ_DELETE_ORIGINALS   = 1002
         private const val REQ_CLEANUP_DUPLICATES = 1003
