@@ -341,7 +341,47 @@ class ClientForegroundService : LifecycleService() {
         if (intent?.action == ACTION_RESTORE_FROM_HUB) {
             lifecycleScope.launch(Dispatchers.IO) { runRestoreFromHub() }
         }
+        if (intent?.action == ACTION_RESTORE_METADATA) {
+            lifecycleScope.launch(Dispatchers.IO) { runRestoreMetadata() }
+        }
         return START_STICKY
+    }
+
+    @Volatile private var metaRestoreInProgress = false
+
+    /**
+     * User-initiated: re-apply full original metadata (orientation/GPS/dates/…) from the hub
+     * originals onto the phone's compressed copies. Fixes rotation/date on WebP photos. Logs to the
+     * live card. Waits briefly for the hub to be discovered.
+     */
+    private suspend fun runRestoreMetadata() {
+        if (metaRestoreInProgress) { log("⟳ Metadata restore already running…"); return }
+        metaRestoreInProgress = true
+        try {
+            var ip = liveHubIp ?: liveHubTailscaleIp
+            var waited = 0
+            while (ip == null && waited < 30_000) {
+                if (waited == 0) log("⟳ Metadata restore: waiting for hub…")
+                kotlinx.coroutines.delay(2_000); waited += 2_000
+                ip = liveHubIp ?: liveHubTailscaleIp
+            }
+            if (ip == null) { log("⟳ Metadata restore: hub not reachable"); return }
+            val port = liveHubPort
+            val hub = try { HubFilesClient.fetchFiles(ip, port, limit = 20_000) } catch (e: Exception) { log("⟳ Metadata restore: hub fetch failed — ${e.message}"); return }
+            if (hub.isEmpty()) { log("⟳ Metadata restore: hub returned no files — try again shortly"); return }
+            log("⟳ Metadata restore: scanning compressed photos against ${hub.size} hub originals…")
+            val n = com.photosync.client.media.MetadataRestorer(this).restore(ip, port, android.os.Build.MODEL, hub) { done, total, name ->
+                if (done % 10 == 0 || done == total) {
+                    log("⟳ Metadata $done/$total: $name")
+                    updateNotification("Restoring metadata: $done/$total")
+                }
+            }
+            log(if (n > 0) "✓ Metadata restore done — $n photo(s) re-tagged from hub originals"
+                else "⟳ Metadata restore: nothing needed (no compressed photos with hub originals)")
+            updateNotification("Ready — announcing on network")
+        } catch (t: Throwable) {
+            log("⟳ Metadata restore error: ${t.javaClass.simpleName}: ${t.message}")
+        } finally { metaRestoreInProgress = false }
     }
 
     @Volatile private var restoreInProgress = false
@@ -624,6 +664,7 @@ class ClientForegroundService : LifecycleService() {
     companion object {
         const val ACTION_LOG = "com.photosync.client.LOG"
         const val ACTION_RESTORE_FROM_HUB = "com.photosync.client.RESTORE_FROM_HUB"
+        const val ACTION_RESTORE_METADATA = "com.photosync.client.RESTORE_METADATA"
         const val EXTRA_LOG = "log_message"
 
         /** Exposed so MainActivity can poll progress state without broadcasts. */
