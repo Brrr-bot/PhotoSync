@@ -4,6 +4,10 @@ import android.content.Context
 import android.content.SharedPreferences
 import android.graphics.Bitmap
 import android.graphics.BitmapFactory
+import android.graphics.Canvas
+import android.graphics.Color
+import android.graphics.Paint
+import android.graphics.Path
 import android.media.MediaMetadataRetriever
 import android.media.MediaScannerConnection
 import android.net.Uri
@@ -1093,6 +1097,67 @@ class UsbStorageManager(
                 out.toByteArray()
             } finally { try { mmr.release() } catch (_: Throwable) {} }
         } catch (_: Throwable) { null }
+    }
+
+    /**
+     * Generates a full-size JPEG poster for video [displayName]: a representative frame with the
+     * play badge drawn on it (same subtle style as the client). Used by the /hub/poster endpoint so
+     * clients can refresh old placeholder images without re-downloading the whole video.
+     */
+    fun videoPosterJpeg(deviceName: String, displayName: String, maxPx: Int = 1280): ByteArray? {
+        return try {
+            val uri = fileUriCache["$deviceName/$displayName"] ?: run {
+                val root = DocumentFile.fromTreeUri(context, treeUri ?: return null) ?: return null
+                val folder = root.findFile(deviceName) ?: return null
+                findFileAnywhere(folder, displayName)?.uri ?: return null
+            }
+            val mmr = MediaMetadataRetriever()
+            try {
+                mmr.setDataSource(context, uri)
+                val durationUs = (mmr.extractMetadata(MediaMetadataRetriever.METADATA_KEY_DURATION)
+                    ?.toLongOrNull() ?: 0L) * 1000L
+                val frameUs = if (durationUs > 2_000_000L) 1_000_000L else 0L
+                val frame = mmr.getFrameAtTime(frameUs, MediaMetadataRetriever.OPTION_CLOSEST_SYNC)
+                    ?: mmr.frameAtTime ?: return null
+                val w = frame.width; val h = frame.height
+                if (w <= 0 || h <= 0) { frame.recycle(); return null }
+                val scaledBase = if (maxOf(w, h) <= maxPx) frame else {
+                    if (w >= h) Bitmap.createScaledBitmap(frame, maxPx, (h.toFloat() / w * maxPx).toInt().coerceAtLeast(1), true)
+                    else        Bitmap.createScaledBitmap(frame, (w.toFloat() / h * maxPx).toInt().coerceAtLeast(1), maxPx, true)
+                }
+                if (scaledBase !== frame) frame.recycle()
+                val badged = drawPlayBadge(scaledBase)
+                val out = ByteArrayOutputStream()
+                badged.compress(Bitmap.CompressFormat.JPEG, 85, out)
+                if (badged !== scaledBase) scaledBase.recycle()
+                badged.recycle()
+                out.toByteArray()
+            } finally { try { mmr.release() } catch (_: Throwable) {} }
+        } catch (_: Throwable) { null }
+    }
+
+    /** Subtle, translucent, optically-centred play badge — kept in sync with the client's
+     *  VideoThumbnailer.drawPlayBadge so refreshed posters match newly-created ones. */
+    private fun drawPlayBadge(src: Bitmap): Bitmap {
+        val bmp = if (src.isMutable) src else src.copy(Bitmap.Config.ARGB_8888, true)
+        val canvas = Canvas(bmp)
+        val cx = bmp.width / 2f
+        val cy = bmp.height / 2f
+        val r  = kotlin.math.min(bmp.width, bmp.height) * 0.10f
+        canvas.drawCircle(cx, cy, r, Paint(Paint.ANTI_ALIAS_FLAG).apply { color = Color.argb(70, 0, 0, 0) })
+        canvas.drawCircle(cx, cy, r, Paint(Paint.ANTI_ALIAS_FLAG).apply {
+            color = Color.argb(130, 255, 255, 255); style = Paint.Style.STROKE; strokeWidth = r * 0.07f
+        })
+        val tri = r * 0.5f
+        val dx  = r * 0.10f
+        val path = Path().apply {
+            moveTo(cx - tri * 0.45f + dx, cy - tri)
+            lineTo(cx - tri * 0.45f + dx, cy + tri)
+            lineTo(cx + tri * 0.9f  + dx, cy)
+            close()
+        }
+        canvas.drawPath(path, Paint(Paint.ANTI_ALIAS_FLAG).apply { color = Color.argb(210, 255, 255, 255) })
+        return bmp
     }
 
     data class HubFileEntry(
