@@ -216,6 +216,21 @@ class ClientForegroundService : LifecycleService() {
                 )
                 if (fixed > 0) log("LocalFix complete — fixed $fixed image(s)")
 
+                // One-time refresh of OLD poster placeholders to the new (smaller/translucent) badge.
+                // Runs BEFORE the (slow) WebP pass so poster dates/badges update promptly. The hub
+                // regenerates each badged poster from the original video; we overwrite the local
+                // poster bytes in place and re-assert DATE_TAKEN from the filename.
+                try {
+                    if (getSharedPreferences(PREFS_NAME, MODE_PRIVATE).getInt(KEY_POSTER_REFRESH_V, 0) < POSTER_REFRESH_V) {
+                        val n = refreshPostersOnce()
+                        if (n >= 0) {
+                            getSharedPreferences(PREFS_NAME, MODE_PRIVATE).edit()
+                                .putInt(KEY_POSTER_REFRESH_V, POSTER_REFRESH_V).apply()
+                            if (n > 0) log("✓ Poster refresh — $n placeholder(s) updated to new badge")
+                        }
+                    }
+                } catch (t: Throwable) { log("Poster refresh error: ${t.javaClass.simpleName}: ${t.message}") }
+
                 // Compress backed-up images to WebP — hub already confirmed these on USB.
                 // Single compression step on the phone (no lossy hub pass first).
                 try {
@@ -239,20 +254,6 @@ class ClientForegroundService : LifecycleService() {
                     if (vs.thumbed > 0 || vs.compressed > 0)
                         log("✓ VideoSpace done — ${vs.thumbed} posterised, ${vs.compressed} compressed, ${vs.freedBytes / 1_048_576}MB freed (${vs.skipped} skipped)")
                 } catch (t: Throwable) { log("VideoSpace error: ${t.javaClass.simpleName}: ${t.message}") }
-
-                // One-time refresh of OLD poster placeholders to the new (smaller/translucent) badge.
-                // The hub regenerates each badged poster from the original video and we overwrite the
-                // local poster bytes in place (same name/date) — no whole-video download.
-                try {
-                    if (getSharedPreferences(PREFS_NAME, MODE_PRIVATE).getInt(KEY_POSTER_REFRESH_V, 0) < POSTER_REFRESH_V) {
-                        val n = refreshPostersOnce()
-                        if (n >= 0) {
-                            getSharedPreferences(PREFS_NAME, MODE_PRIVATE).edit()
-                                .putInt(KEY_POSTER_REFRESH_V, POSTER_REFRESH_V).apply()
-                            if (n > 0) log("✓ Poster refresh — $n placeholder(s) updated to new badge")
-                        }
-                    }
-                } catch (t: Throwable) { log("Poster refresh error: ${t.javaClass.simpleName}: ${t.message}") }
 
                 updateNotification("Ready — announcing on network")
                 delay(LOCAL_FIX_INTERVAL_MS)
@@ -405,13 +406,17 @@ class ClientForegroundService : LifecycleService() {
             if (parts.size < 3) continue
             val posterName = parts[0]; val device = parts[1]; val videoName = parts[2]
 
-            var id = -1L; var dateMs = 0L
+            var id = -1L; var msDate = 0L
             contentResolver.query(
                 android.provider.MediaStore.Images.Media.EXTERNAL_CONTENT_URI,
                 arrayOf(android.provider.MediaStore.Images.Media._ID, android.provider.MediaStore.Images.Media.DATE_TAKEN),
                 "${android.provider.MediaStore.Images.Media.DISPLAY_NAME} = ?", arrayOf(posterName), null
-            )?.use { if (it.moveToFirst()) { id = it.getLong(0); dateMs = it.getLong(1) } }
+            )?.use { if (it.moveToFirst()) { id = it.getLong(0); msDate = it.getLong(1) } }
             if (id < 0) continue   // poster no longer on phone (video already restored) — skip
+
+            // Capture date: the filename (video stem) is the most reliable source and survives an
+            // earlier bad refresh that nulled DATE_TAKEN; fall back to the MediaStore value.
+            val dateMs = parsePosterDate(posterName).takeIf { it > 0 } ?: msDate
 
             val badged = com.photosync.client.hub.HubFilesClient.fetchPoster(ip, port, device, videoName) ?: continue
             val stamped = if (dateMs > 0) com.photosync.client.media.VideoThumbnailer.stampPosterExif(badged, dateMs) else badged
@@ -419,10 +424,44 @@ class ClientForegroundService : LifecycleService() {
                 android.provider.MediaStore.Images.Media.EXTERNAL_CONTENT_URI, id)
             try {
                 contentResolver.openOutputStream(uri, "wt")?.use { it.write(stamped) }
+                // Overwriting the bytes nulls DATE_TAKEN on Samsung — re-assert it explicitly
+                // (the app owns the poster row, so a direct update sticks). Without this the
+                // gallery falls back to DATE_MODIFIED = now and all posters sort under today.
+                if (dateMs > 0) {
+                    contentResolver.update(uri, android.content.ContentValues().apply {
+                        put(android.provider.MediaStore.Images.Media.DATE_TAKEN, dateMs)
+                        put(android.provider.MediaStore.Images.Media.DATE_MODIFIED, dateMs / 1000L)
+                    }, null, null)
+                }
                 done++
             } catch (_: Exception) {}
         }
         return done
+    }
+
+    /** Parses a capture date (epoch ms) from a poster/video filename, or 0 if none. Handles
+     *  YYYYMMDD_HHMMSS, YYYYMMDD / YYYY-MM-DD, and a 13-digit epoch embedded in the name. */
+    private fun parsePosterDate(name: String): Long {
+        val stem = name.substringBeforeLast('.')
+        val now = System.currentTimeMillis()
+        val since2000 = 946_684_800_000L
+        fun ok(ms: Long) = if (ms in since2000..now) ms else 0L
+        Regex("""(\d{8})[_-](\d{6})""").find(stem)?.let { m ->
+            runCatching {
+                java.text.SimpleDateFormat("yyyyMMddHHmmss", java.util.Locale.US).apply { isLenient = false }
+                    .parse(m.groupValues[1] + m.groupValues[2])?.time
+            }.getOrNull()?.let { if (ok(it) > 0) return it }
+        }
+        Regex("""(\d{13})""").find(stem)?.let { m ->
+            m.groupValues[1].toLongOrNull()?.let { if (ok(it) > 0) return it }
+        }
+        Regex("""(\d{4})-?(\d{2})-?(\d{2})""").find(stem)?.let { m ->
+            runCatching {
+                java.text.SimpleDateFormat("yyyyMMdd", java.util.Locale.US).apply { isLenient = false }
+                    .parse(m.groupValues[1] + m.groupValues[2] + m.groupValues[3])?.time
+            }.getOrNull()?.let { if (ok(it) > 0) return it }
+        }
+        return 0L
     }
 
     override fun onBind(intent: Intent): IBinder? = super.onBind(intent)
@@ -586,7 +625,7 @@ class ClientForegroundService : LifecycleService() {
         private const val KEY_LOCAL_FIX_VERSION  = "local_fix_version"
         private const val LOCAL_FIX_CODE         = 15 // bump when scan logic changes to force rescan
         private const val KEY_POSTER_REFRESH_V   = "poster_refresh_version"
-        private const val POSTER_REFRESH_V       = 1  // bump to re-refresh all posters with a new badge style
+        private const val POSTER_REFRESH_V       = 2  // v2: re-run to fix DATE_TAKEN nulled by v1 (now sets date from filename)
 
         private val recentLogs = ArrayDeque<String>(100)
 
