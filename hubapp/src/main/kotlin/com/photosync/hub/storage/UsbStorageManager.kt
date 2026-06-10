@@ -33,6 +33,9 @@ class UsbStorageManager(
     @Volatile private var cacheRefreshInProgress: Boolean = false
     // URI map built during scan: "deviceName/displayName" -> Uri for instant thumbnail reads
     @Volatile private var fileUriCache: Map<String, Uri> = emptyMap()
+    // Size map built during the same scan: "deviceName/displayName" -> byte length, so file
+    // streaming can report Content-Length without a slow per-file SAF length() call.
+    @Volatile private var fileSizeCache: Map<String, Long> = emptyMap()
     private val CACHE_TTL_MS = 60_000L
 
     fun invalidateRecentFilesCache() {
@@ -59,6 +62,7 @@ class UsbStorageManager(
     private fun refreshRecentFilesCache() {
         val result = mutableListOf<HubFileEntry>()
         val uriMap = mutableMapOf<String, Uri>()
+        val sizeMap = mutableMapOf<String, Long>()
         try {
             val root = DocumentFile.fromTreeUri(context, treeUri ?: return) ?: return
             val imageExts = setOf("jpg", "jpeg", "png", "webp", "heic", "heif", "mp4", "mov")
@@ -72,8 +76,10 @@ class UsbStorageManager(
                     // Use the capture date from the filename (most reliable), fall back to
                     // file modification time only when the filename has no parseable date.
                     val dateMs = parseDateFromFilename(name) ?: f.lastModified()
-                    result += HubFileEntry(deviceName, name, f.length(), dateMs)
+                    val len = f.length()
+                    result += HubFileEntry(deviceName, name, len, dateMs)
                     uriMap["$deviceName/$name"] = f.uri
+                    sizeMap["$deviceName/$name"] = len
                 }
                 for (child in deviceDir.listFiles()) {
                     if (child.isDirectory) child.listFiles().forEach { collect(it) }
@@ -84,6 +90,7 @@ class UsbStorageManager(
         result.sortByDescending { it.lastModifiedMs }
         recentFilesCache = result
         fileUriCache = uriMap
+        fileSizeCache = sizeMap
         recentFilesCacheTime = System.currentTimeMillis()
     }
 
@@ -454,7 +461,8 @@ class UsbStorageManager(
             // client restore pulls hundreds of files and times out. The cache makes it instant.
             fileUriCache["$deviceName/$displayName"]?.let { uri ->
                 runCatching {
-                    val len = DocumentFile.fromSingleUri(context, uri)?.length() ?: -1L
+                    val len = fileSizeCache["$deviceName/$displayName"]
+                        ?: DocumentFile.fromSingleUri(context, uri)?.length() ?: -1L
                     if (len > 0) {
                         val stream = context.contentResolver.openInputStream(uri)
                         if (stream != null) return Pair(stream, len)
