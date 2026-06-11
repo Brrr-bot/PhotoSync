@@ -16,9 +16,12 @@ data class HubFileEntry(
 
 object HubFilesClient {
 
-    fun fetchFiles(ip: String, port: Int, limit: Int = 50): List<HubFileEntry> {
+    // 30 s default — over Tailscale/DERP (or mobile data) the full file list can take several
+    // seconds to arrive, well past the 10 s used for small requests, which would otherwise return
+    // an empty list and make restores fail remotely ("not found on hub").
+    fun fetchFiles(ip: String, port: Int, limit: Int = 50, timeoutMs: Int = 30_000): List<HubFileEntry> {
         return try {
-            val conn = openGet("http://$ip:$port${Constants.PATH_HUB_FILES}?limit=$limit")
+            val conn = openGet("http://$ip:$port${Constants.PATH_HUB_FILES}?limit=$limit", timeoutMs = timeoutMs)
             if (conn.responseCode != 200) return emptyList()
             val body = conn.inputStream.use { it.bufferedReader().readText() }
             conn.disconnect()
