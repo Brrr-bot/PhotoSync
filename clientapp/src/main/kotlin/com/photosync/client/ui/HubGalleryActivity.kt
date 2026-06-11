@@ -25,6 +25,7 @@ import com.photosync.client.R
 import com.photosync.client.hub.HubFileEntry
 import com.photosync.client.hub.HubFilesClient
 import com.photosync.client.media.VideoTranscoder
+import com.photosync.client.util.RemoteLogger
 import java.io.File
 import java.text.SimpleDateFormat
 import java.util.Date
@@ -297,32 +298,45 @@ class HubGalleryActivity : AppCompatActivity() {
      */
     private fun restoreVideo(ip: String, entry: HubFileEntry) {
         Toast.makeText(this, "Downloading ${entry.displayName}…", Toast.LENGTH_SHORT).show()
+        RemoteLogger.i("HubRestore: video '${entry.displayName}' requested")
         Thread {
             val raw = File(cacheDir, "hub_dl_${entry.displayName}")
             val txc = File(cacheDir, "hub_tx_${entry.displayName.substringBeforeLast('.')}.mp4")
             try {
                 val ok = HubFilesClient.fetchFileToFile(ip, hubPort, entry.deviceName, entry.displayName, raw)
                 if (!ok || !raw.exists() || raw.length() == 0L) {
+                    RemoteLogger.i("HubRestore: download failed for ${entry.displayName} (ok=$ok len=${raw.length()})")
                     runOnUiThread { Toast.makeText(this, "Download failed", Toast.LENGTH_SHORT).show() }
                     return@Thread
                 }
+                RemoteLogger.i("HubRestore: downloaded ${entry.displayName} ${raw.length() / 1_048_576}MB")
 
                 runOnUiThread { Toast.makeText(this, "Compressing ${entry.displayName}…", Toast.LENGTH_SHORT).show() }
 
-                // Compress as usual (H.265). Use the transcode only if it actually came out smaller;
-                // otherwise keep the original bytes so we never inflate the file.
+                // Compress as usual (H.265). Use the transcode only if it actually came out smaller
+                // AND is a valid, complete file; otherwise keep the original bytes so we never save
+                // a truncated/inflated video.
                 val rawUri = Uri.fromFile(raw)
                 val transcoded = try {
                     VideoTranscoder.transcode(this, rawUri, txc.absolutePath) &&
                         txc.exists() && txc.length() in 1 until raw.length()
-                } catch (_: Throwable) { false }
+                } catch (t: Throwable) {
+                    RemoteLogger.i("HubRestore: transcode threw ${t.javaClass.simpleName}"); false
+                }
                 val finalFile = if (transcoded) txc else raw
+                RemoteLogger.i("HubRestore: transcoded=$transcoded final=${finalFile.length() / 1_048_576}MB")
 
-                val dateMs = parseDateFromName(entry.displayName).takeIf { it > 0 }
+                // Authoritative date: the poster placeholder already on the phone carries the
+                // correct capture date — reuse it so the restored video lands on the SAME day,
+                // never "today". Fall back to filename timestamp, then hub mtime.
+                val posterName = entry.displayName.substringBeforeLast('.') + ".jpg"
+                val dateMs = readImageDateTaken(posterName).takeIf { it > 0 }
+                    ?: parseDateFromName(entry.displayName).takeIf { it > 0 }
                     ?: entry.lastModifiedMs.takeIf { it > 0 }
                     ?: System.currentTimeMillis()
 
                 val saved = insertVideoFromFile(finalFile, entry.displayName, dateMs)
+                RemoteLogger.i("HubRestore: insert saved=$saved date=$dateMs")
                 if (saved) {
                     // Drop the poster placeholder and mark the video user-restored so
                     // VideoSpaceManager never re-posterizes it.
@@ -332,12 +346,29 @@ class HubGalleryActivity : AppCompatActivity() {
                     if (saved) Toast.makeText(this, "Restored video: ${entry.displayName}", Toast.LENGTH_LONG).show()
                     else Toast.makeText(this, "Failed to save video", Toast.LENGTH_SHORT).show()
                 }
-            } catch (_: Throwable) {
+            } catch (t: Throwable) {
+                RemoteLogger.i("HubRestore: error on ${entry.displayName} — ${t.javaClass.simpleName}: ${t.message}")
                 runOnUiThread { Toast.makeText(this, "Restore failed", Toast.LENGTH_SHORT).show() }
             } finally {
                 raw.delete(); txc.delete()
             }
         }.start()
+    }
+
+    /** Reads DATE_TAKEN (fallback DATE_ADDED) for an image already in MediaStore, or 0 if absent. */
+    private fun readImageDateTaken(displayName: String): Long {
+        return try {
+            contentResolver.query(
+                MediaStore.Images.Media.EXTERNAL_CONTENT_URI,
+                arrayOf(MediaStore.Images.Media.DATE_TAKEN, MediaStore.Images.Media.DATE_ADDED),
+                "${MediaStore.Images.Media.DISPLAY_NAME} = ?", arrayOf(displayName), null
+            )?.use { c ->
+                if (c.moveToFirst()) {
+                    val taken = c.getLong(0)
+                    if (taken > 0) taken else c.getLong(1) * 1000L
+                } else 0L
+            } ?: 0L
+        } catch (_: Exception) { 0L }
     }
 
     /**
@@ -360,25 +391,33 @@ class HubGalleryActivity : AppCompatActivity() {
                 }
             }
             val uri = contentResolver.insert(collection, values) ?: return false
-            contentResolver.openOutputStream(uri)?.use { out ->
-                src.inputStream().use { it.copyTo(out, 64 * 1024) }
-            } ?: return false
-            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
-                contentResolver.update(uri, ContentValues().apply {
-                    put(MediaStore.Video.Media.IS_PENDING, 0)
-                    put(MediaStore.Video.Media.SIZE, src.length())
-                    put(MediaStore.Video.Media.DATE_TAKEN, dateMs)
-                    put(MediaStore.Video.Media.DATE_ADDED, dateSec)
-                    put(MediaStore.Video.Media.DATE_MODIFIED, dateSec)
-                }, null, null)
-                // Samsung resets dates on IS_PENDING→0 — force them again
-                contentResolver.update(uri, ContentValues().apply {
-                    put(MediaStore.Video.Media.DATE_TAKEN, dateMs)
-                    put(MediaStore.Video.Media.DATE_ADDED, dateSec)
-                    put(MediaStore.Video.Media.DATE_MODIFIED, dateSec)
-                }, null, null)
+            try {
+                contentResolver.openOutputStream(uri)?.use { out ->
+                    src.inputStream().use { it.copyTo(out, 64 * 1024) }
+                } ?: throw java.io.IOException("openOutputStream null")
+                if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
+                    contentResolver.update(uri, ContentValues().apply {
+                        put(MediaStore.Video.Media.IS_PENDING, 0)
+                        put(MediaStore.Video.Media.SIZE, src.length())
+                        put(MediaStore.Video.Media.DATE_TAKEN, dateMs)
+                        put(MediaStore.Video.Media.DATE_ADDED, dateSec)
+                        put(MediaStore.Video.Media.DATE_MODIFIED, dateSec)
+                    }, null, null)
+                    // Samsung resets dates on IS_PENDING→0 — force them again
+                    contentResolver.update(uri, ContentValues().apply {
+                        put(MediaStore.Video.Media.DATE_TAKEN, dateMs)
+                        put(MediaStore.Video.Media.DATE_ADDED, dateSec)
+                        put(MediaStore.Video.Media.DATE_MODIFIED, dateSec)
+                    }, null, null)
+                }
+                true
+            } catch (e: Exception) {
+                // Never leave a half-written/pending row behind — it shows in the gallery as a
+                // broken, today-dated placeholder. Delete the orphan and report failure.
+                RemoteLogger.i("HubRestore: insert write failed (${e.javaClass.simpleName}), removing orphan row")
+                runCatching { contentResolver.delete(uri, null, null) }
+                false
             }
-            true
         } catch (_: Exception) { false }
     }
 
