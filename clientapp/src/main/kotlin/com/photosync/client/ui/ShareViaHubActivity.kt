@@ -19,7 +19,10 @@ import androidx.core.content.FileProvider
 import com.photosync.client.R
 import com.photosync.client.hub.HubFilesClient
 import com.photosync.client.media.MediaStoreHelper
+import com.photosync.client.media.VideoSpaceManager
+import com.photosync.client.media.VideoTranscoder
 import com.photosync.client.service.ClientForegroundService
+import com.photosync.client.util.RemoteLogger
 import java.io.File
 
 /**
@@ -141,10 +144,13 @@ class ShareViaHubActivity : AppCompatActivity() {
         finish()
 
         Thread {
+            RemoteLogger.i("ShareRestore: download original '$fileName'")
             val match = findOnHub(ip, port, fileName) ?: run {
+                RemoteLogger.i("ShareRestore: '$fileName' not found on hub")
                 postError(fileName, "\"$fileName\" not found on hub")
                 return@Thread
             }
+            RemoteLogger.i("ShareRestore: matched hub file '${match.displayName}'")
 
             val tmpFile = File(cacheDir, "restore_${match.displayName}")
             var lastDlProgressMs = 0L
@@ -158,6 +164,18 @@ class ShareViaHubActivity : AppCompatActivity() {
             if (!ok || tmpFile.length() == 0L) {
                 tmpFile.delete()
                 postError(fileName, "Download failed")
+                return@Thread
+            }
+
+            // Posterized-video restore: the shared item is the poster ".jpg" but the hub original
+            // is the VIDEO. We must NOT write video bytes into the poster's image row (that creates
+            // a broken 32 MB "jpg"). Instead transcode + insert as a real video and drop the poster.
+            val sharedIsImage = isImageName(fileName)
+            val matchIsVideo  = isVideoName(match.displayName)
+            if (sharedIsImage && matchIsVideo) {
+                val restored = restorePosterizedVideo(fileName, match.displayName, tmpFile)
+                tmpFile.delete()
+                postRestoreResult(fileName, restored)
                 return@Thread
             }
 
@@ -197,6 +215,163 @@ class ShareViaHubActivity : AppCompatActivity() {
             if (restored) postDone(fileName, "Original saved to phone", pi, actionLabel = "Open App")
             else postError(fileName, "Failed to save file")
         }.start()
+    }
+
+    /** Final notification for a restore: "Open App" on success, error otherwise. */
+    private fun postRestoreResult(fileName: String, restored: Boolean) {
+        if (!restored) { postError(fileName, "Failed to restore video"); return }
+        val dismissIntent = Intent(this, MainActivity::class.java).apply {
+            flags = Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_CLEAR_TOP
+        }
+        val pi = PendingIntent.getActivity(
+            this, notifId + 1, dismissIntent,
+            PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE
+        )
+        postDone(fileName, "Original video restored", pi, actionLabel = "Open App")
+    }
+
+    /**
+     * Restores a posterized video: [downloaded] holds the hub's original video bytes (named
+     * [videoName]); [posterName] is the local poster ".jpg" placeholder. Transcodes to H.265 like
+     * VideoSpaceManager, inserts the result as a real video with the poster's capture date, then
+     * deletes the poster and marks the video user-restored so it is never auto-posterized again.
+     */
+    private fun restorePosterizedVideo(posterName: String, videoName: String, downloaded: File): Boolean {
+        val txc = File(cacheDir, "restx_${videoName.substringBeforeLast('.')}.mp4")
+        try {
+            // Compress as usual — keep the transcode only if it is valid and actually smaller.
+            val transcoded = try {
+                VideoTranscoder.transcode(this, Uri.fromFile(downloaded), txc.absolutePath) &&
+                    txc.exists() && txc.length() in 1 until downloaded.length()
+            } catch (t: Throwable) {
+                RemoteLogger.i("ShareRestore: transcode threw ${t.javaClass.simpleName}"); false
+            }
+            val finalFile = if (transcoded) txc else downloaded
+            RemoteLogger.i("ShareRestore: transcoded=$transcoded ${finalFile.length() / 1_048_576}MB")
+
+            // The poster already carries the correct capture date — reuse it so the restored video
+            // lands on the right day, never "today".
+            val dateMs = readImageDateTaken(posterName).takeIf { it > 0 }
+                ?: parseDateFromName(videoName).takeIf { it > 0 }
+                ?: System.currentTimeMillis()
+
+            val saved = insertVideoFromFile(finalFile, videoName, dateMs)
+            RemoteLogger.i("ShareRestore: insert video saved=$saved date=$dateMs")
+            if (saved) {
+                deletePosterPlaceholder(posterName, videoName)
+                val prefs = getSharedPreferences("compression_state", MODE_PRIVATE)
+                prefs.edit().putStringSet("restored_original_names",
+                    prefs.getStringSet("restored_original_names", emptySet())!!.toMutableSet()
+                        .apply { add(videoName) }).apply()
+            }
+            return saved
+        } finally {
+            txc.delete()
+        }
+    }
+
+    /** Deletes the local poster ".jpg" and clears VideoSpaceManager tracking so the restored
+     *  video isn't re-posterized on the next cycle. Mirrors HubGalleryActivity logic. */
+    private fun deletePosterPlaceholder(posterName: String, videoName: String) {
+        try {
+            contentResolver.delete(
+                MediaStore.Images.Media.EXTERNAL_CONTENT_URI,
+                "${MediaStore.Images.Media.DISPLAY_NAME} = ?", arrayOf(posterName)
+            )
+        } catch (_: Exception) {}
+
+        val prefs = getSharedPreferences("video_space_state", MODE_PRIVATE)
+        val restoreSet = prefs.getStringSet(VideoSpaceManager.KEY_RESTORE, emptySet())!!.toMutableSet()
+        restoreSet.removeAll { it.endsWith("|$videoName") || it.startsWith("$posterName|") }
+        val posterNames = prefs.getStringSet(VideoSpaceManager.KEY_POSTER_NAMES, emptySet())!!.toMutableSet()
+        posterNames.remove(posterName)
+        val userRestored = prefs.getStringSet(VideoSpaceManager.KEY_USER_RESTORED, emptySet())!!.toMutableSet()
+        userRestored.add(videoName)
+        prefs.edit()
+            .putStringSet(VideoSpaceManager.KEY_RESTORE, restoreSet)
+            .putStringSet(VideoSpaceManager.KEY_POSTER_NAMES, posterNames)
+            .putStringSet(VideoSpaceManager.KEY_USER_RESTORED, userRestored)
+            .apply()
+    }
+
+    /** Streams [src] into the Video MediaStore as [name] with [dateMs] (IS_PENDING + double date
+     *  update for Samsung), deleting the orphan row if the write fails. */
+    private fun insertVideoFromFile(src: File, name: String, dateMs: Long): Boolean {
+        return try {
+            val dateSec = dateMs / 1000L
+            val collection = MediaStore.Video.Media.getContentUri(MediaStore.VOLUME_EXTERNAL_PRIMARY)
+            val values = ContentValues().apply {
+                put(MediaStore.Video.Media.DISPLAY_NAME, name)
+                put(MediaStore.Video.Media.MIME_TYPE, "video/mp4")
+                put(MediaStore.Video.Media.DATE_TAKEN, dateMs)
+                put(MediaStore.Video.Media.DATE_ADDED, dateSec)
+                put(MediaStore.Video.Media.DATE_MODIFIED, dateSec)
+                if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
+                    put(MediaStore.Video.Media.RELATIVE_PATH, Environment.DIRECTORY_DCIM + "/Camera")
+                    put(MediaStore.Video.Media.IS_PENDING, 1)
+                }
+            }
+            val uri = contentResolver.insert(collection, values) ?: return false
+            try {
+                contentResolver.openOutputStream(uri)?.use { out ->
+                    src.inputStream().use { it.copyTo(out, 64 * 1024) }
+                } ?: throw java.io.IOException("openOutputStream null")
+                if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
+                    contentResolver.update(uri, ContentValues().apply {
+                        put(MediaStore.Video.Media.IS_PENDING, 0)
+                        put(MediaStore.Video.Media.SIZE, src.length())
+                        put(MediaStore.Video.Media.DATE_TAKEN, dateMs)
+                        put(MediaStore.Video.Media.DATE_ADDED, dateSec)
+                        put(MediaStore.Video.Media.DATE_MODIFIED, dateSec)
+                    }, null, null)
+                    contentResolver.update(uri, ContentValues().apply {
+                        put(MediaStore.Video.Media.DATE_TAKEN, dateMs)
+                        put(MediaStore.Video.Media.DATE_ADDED, dateSec)
+                        put(MediaStore.Video.Media.DATE_MODIFIED, dateSec)
+                    }, null, null)
+                }
+                true
+            } catch (e: Exception) {
+                runCatching { contentResolver.delete(uri, null, null) }
+                false
+            }
+        } catch (_: Exception) { false }
+    }
+
+    private fun readImageDateTaken(displayName: String): Long = try {
+        contentResolver.query(
+            MediaStore.Images.Media.EXTERNAL_CONTENT_URI,
+            arrayOf(MediaStore.Images.Media.DATE_TAKEN, MediaStore.Images.Media.DATE_ADDED),
+            "${MediaStore.Images.Media.DISPLAY_NAME} = ?", arrayOf(displayName), null
+        )?.use { c ->
+            if (c.moveToFirst()) c.getLong(0).takeIf { it > 0 } ?: (c.getLong(1) * 1000L) else 0L
+        } ?: 0L
+    } catch (_: Exception) { 0L }
+
+    private fun isImageName(name: String) =
+        name.substringAfterLast('.', "").lowercase() in setOf("jpg", "jpeg", "png", "webp", "heic", "heif")
+
+    private fun isVideoName(name: String) =
+        name.substringAfterLast('.', "").lowercase() in setOf("mp4", "mov", "mkv", "avi", "3gp", "webm")
+
+    private fun parseDateFromName(name: String): Long {
+        val stem = name.substringBeforeLast('.')
+        Regex("(20\\d{2})(\\d{2})(\\d{2})[_\\-](\\d{2})(\\d{2})(\\d{2})").find(stem)?.let { m ->
+            val (y, mo, d, h, mi, s) = m.destructured
+            try {
+                return java.time.LocalDateTime.of(y.toInt(), mo.toInt(), d.toInt(),
+                        h.toInt(), mi.toInt(), s.toInt())
+                    .atZone(java.time.ZoneId.systemDefault()).toInstant().toEpochMilli()
+            } catch (_: Exception) {}
+        }
+        Regex("(20\\d{2})(\\d{2})(\\d{2})").find(stem)?.let { m ->
+            val (y, mo, d) = m.destructured
+            try {
+                return java.time.LocalDate.of(y.toInt(), mo.toInt(), d.toInt())
+                    .atStartOfDay(java.time.ZoneId.systemDefault()).toInstant().toEpochMilli()
+            } catch (_: Exception) {}
+        }
+        return 0L
     }
 
     // ── Notification helpers ──────────────────────────────────────────────
