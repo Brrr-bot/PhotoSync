@@ -269,6 +269,8 @@ class HubGalleryActivity : AppCompatActivity() {
             }
         }
 
+        RemoteLogger.i("HubRestore: tapped '${entry.displayName}' isVideo=${isVideoName(entry.displayName)} " +
+            "matchedVideo=${videoEntry?.displayName ?: "none"}")
         if (videoEntry != null) restoreVideo(ip, videoEntry)
         else                    restoreImage(ip, entry)
     }
@@ -279,6 +281,7 @@ class HubGalleryActivity : AppCompatActivity() {
         Thread {
             val bytes = HubFilesClient.fetchFile(ip, hubPort, entry.deviceName, entry.displayName)
             if (bytes == null) {
+                RemoteLogger.i("HubRestore: image fetch 404/null for '${entry.displayName}' (not on hub)")
                 runOnUiThread { Toast.makeText(this, "Download failed", Toast.LENGTH_SHORT).show() }
                 return@Thread
             }
