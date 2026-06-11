@@ -19,6 +19,7 @@ import androidx.core.content.FileProvider
 import com.photosync.client.R
 import com.photosync.client.hub.HubFilesClient
 import com.photosync.client.media.MediaStoreHelper
+import com.photosync.client.media.Mp4DateEditor
 import com.photosync.client.media.VideoSpaceManager
 import com.photosync.client.media.VideoTranscoder
 import com.photosync.client.service.ClientForegroundService
@@ -255,19 +256,46 @@ class ShareViaHubActivity : AppCompatActivity() {
                 ?: parseDateFromName(videoName).takeIf { it > 0 }
                 ?: System.currentTimeMillis()
 
-            val saved = insertVideoFromFile(finalFile, videoName, dateMs)
-            RemoteLogger.i("ShareRestore: insert video saved=$saved date=$dateMs")
-            if (saved) {
+            val uri = insertVideoFromFile(finalFile, videoName, dateMs)
+            RemoteLogger.i("ShareRestore: insert video saved=${uri != null} date=$dateMs")
+            if (uri != null) {
+                // Samsung re-reads the MP4's internal creation_time (mvhd/tkhd/mdhd) on every scan
+                // and overrides DATE_TAKEN — and a transcode stamps "now" into those atoms, so the
+                // video would otherwise show as today. Patch the atoms to the real date, then sync
+                // MediaStore + rescan so the gallery lands it on the correct day.
+                val patched = try { Mp4DateEditor.setCreationTime(this, uri, dateMs) } catch (_: Throwable) { false }
+                RemoteLogger.i("ShareRestore: mp4 date atoms patched=$patched -> $dateMs")
+                if (patched) {
+                    val dateSec = dateMs / 1000L
+                    runCatching {
+                        contentResolver.update(uri, ContentValues().apply {
+                            put(MediaStore.Video.Media.DATE_TAKEN, dateMs)
+                            put(MediaStore.Video.Media.DATE_ADDED, dateSec)
+                            put(MediaStore.Video.Media.DATE_MODIFIED, dateSec)
+                        }, null, null)
+                    }
+                    rescanVideo(uri)
+                }
                 deletePosterPlaceholder(posterName, videoName)
                 val prefs = getSharedPreferences("compression_state", MODE_PRIVATE)
                 prefs.edit().putStringSet("restored_original_names",
                     prefs.getStringSet("restored_original_names", emptySet())!!.toMutableSet()
                         .apply { add(videoName) }).apply()
             }
-            return saved
+            return uri != null
         } finally {
             txc.delete()
         }
+    }
+
+    /** Forces a MediaStore rescan of the file so Samsung re-reads the now-correct internal date. */
+    private fun rescanVideo(uri: Uri) {
+        try {
+            val path = contentResolver.query(uri, arrayOf(MediaStore.Video.Media.DATA), null, null, null)
+                ?.use { if (it.moveToFirst()) it.getString(0) else null }
+            if (path != null) android.media.MediaScannerConnection.scanFile(
+                this, arrayOf(path), arrayOf("video/mp4"), null)
+        } catch (_: Exception) {}
     }
 
     /** Deletes the local poster ".jpg" and clears VideoSpaceManager tracking so the restored
@@ -295,8 +323,8 @@ class ShareViaHubActivity : AppCompatActivity() {
     }
 
     /** Streams [src] into the Video MediaStore as [name] with [dateMs] (IS_PENDING + double date
-     *  update for Samsung), deleting the orphan row if the write fails. */
-    private fun insertVideoFromFile(src: File, name: String, dateMs: Long): Boolean {
+     *  update for Samsung). Returns the inserted Uri, or null (orphan row deleted) on failure. */
+    private fun insertVideoFromFile(src: File, name: String, dateMs: Long): Uri? {
         return try {
             val dateSec = dateMs / 1000L
             val collection = MediaStore.Video.Media.getContentUri(MediaStore.VOLUME_EXTERNAL_PRIMARY)
@@ -311,7 +339,7 @@ class ShareViaHubActivity : AppCompatActivity() {
                     put(MediaStore.Video.Media.IS_PENDING, 1)
                 }
             }
-            val uri = contentResolver.insert(collection, values) ?: return false
+            val uri = contentResolver.insert(collection, values) ?: return null
             try {
                 contentResolver.openOutputStream(uri)?.use { out ->
                     src.inputStream().use { it.copyTo(out, 64 * 1024) }
@@ -330,12 +358,12 @@ class ShareViaHubActivity : AppCompatActivity() {
                         put(MediaStore.Video.Media.DATE_MODIFIED, dateSec)
                     }, null, null)
                 }
-                true
+                uri
             } catch (e: Exception) {
                 runCatching { contentResolver.delete(uri, null, null) }
-                false
+                null
             }
-        } catch (_: Exception) { false }
+        } catch (_: Exception) { null }
     }
 
     private fun readImageDateTaken(displayName: String): Long = try {
