@@ -344,20 +344,8 @@ class ClientForegroundService : LifecycleService() {
         if (intent?.action == ACTION_RESTORE_METADATA) {
             lifecycleScope.launch(Dispatchers.IO) { runRestoreMetadata() }
         }
-        if (intent?.action == ACTION_FIX_ROTATION) {
-            lifecycleScope.launch(Dispatchers.IO) { runFixRotation() }
-        }
         return START_STICKY
     }
-
-    /**
-     * "Fix Orientation" repair. Orientation can only be recovered from the ORIGINAL (the broken
-     * copy has sensor pixels tagged NORMAL — there is nothing local to recover the true rotation
-     * from without guessing). So this delegates to the hub-based metadata restore, which copies the
-     * original's orientation/EXIF verbatim onto the compressed copy. The old local RotationFixer
-     * (which stripped orientation to NORMAL on a false "baked-upright" premise) has been removed.
-     */
-    private suspend fun runFixRotation() = runRestoreMetadata()
 
     @Volatile private var metaRestoreInProgress = false
 
@@ -677,7 +665,6 @@ class ClientForegroundService : LifecycleService() {
         const val ACTION_LOG = "com.photosync.client.LOG"
         const val ACTION_RESTORE_FROM_HUB = "com.photosync.client.RESTORE_FROM_HUB"
         const val ACTION_RESTORE_METADATA = "com.photosync.client.RESTORE_METADATA"
-        const val ACTION_FIX_ROTATION = "com.photosync.client.FIX_ROTATION"
         const val EXTRA_LOG = "log_message"
 
         /** Exposed so MainActivity can poll progress state without broadcasts. */
