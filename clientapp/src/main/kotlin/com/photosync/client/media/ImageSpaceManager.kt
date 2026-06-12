@@ -48,16 +48,30 @@ class ImageSpaceManager(private val context: Context) {
         }
         val compressedNames = prefs.getStringSet(KEY_COMPRESSED, emptySet())!!.toMutableSet()
 
-        // Phone images worth compressing: backed up on the hub, not already WebP, and big enough to
-        // be an uncompressed original. The SIZE gate (not a name list) is what reliably distinguishes
-        // "original vs already-compressed" and self-corrects after restores. compressedNames now only
-        // holds files we tried but couldn't shrink, so we don't retry them every cycle.
-        val phoneImages = MediaStoreHelper(context).getMediaSince(0).filter { f ->
-            f.mimeType.startsWith("image/") &&
-            f.mimeType != "image/webp" &&
-            f.displayName in hubNames &&
-            f.size > MIN_COMPRESS_BYTES &&
-            f.displayName !in compressedNames
+        // Query the Images table DIRECTLY (not getMediaSince, which pre-filters out anything in the
+        // various "already compressed" tracking sets — exactly the restored originals we need to
+        // re-process). Candidates = anything backed up on the hub whose MIME isn't already WebP. The
+        // real "is it already compressed?" decision is made per-file from its MAGIC BYTES below, not
+        // from size or a name list. compressedNames only holds files we TRIED but couldn't shrink.
+        data class Img(val id: Long, val displayName: String, val dateTaken: Long)
+        val phoneImages = ArrayList<Img>()
+        context.contentResolver.query(
+            MediaStore.Images.Media.EXTERNAL_CONTENT_URI,
+            arrayOf(MediaStore.Images.Media._ID, MediaStore.Images.Media.DISPLAY_NAME,
+                    MediaStore.Images.Media.MIME_TYPE, MediaStore.Images.Media.DATE_TAKEN),
+            null, null, null
+        )?.use { c ->
+            val iId = c.getColumnIndexOrThrow(MediaStore.Images.Media._ID)
+            val iNm = c.getColumnIndexOrThrow(MediaStore.Images.Media.DISPLAY_NAME)
+            val iMt = c.getColumnIndexOrThrow(MediaStore.Images.Media.MIME_TYPE)
+            val iDt = c.getColumnIndexOrThrow(MediaStore.Images.Media.DATE_TAKEN)
+            while (c.moveToNext()) {
+                val name = c.getString(iNm) ?: continue
+                val mime = c.getString(iMt) ?: ""
+                if (!mime.startsWith("image/") || mime == "image/webp") continue
+                if (name !in hubNames || name in compressedNames) continue
+                phoneImages.add(Img(c.getLong(iId), name, c.getLong(iDt)))
+            }
         }
 
         var compressed = 0
@@ -70,6 +84,15 @@ class ImageSpaceManager(private val context: Context) {
             try {
                 val uri = ContentUris.withAppendedId(
                     MediaStore.Images.Media.EXTERNAL_CONTENT_URI, image.id)
+
+                // Cheap content check: read just the header. If it's ALREADY WebP (a legacy
+                // WebP-bytes-in-.jpg copy), it's compressed — leave it (don't re-decode the whole
+                // file). Only a real JPEG/PNG original is read in full and compressed.
+                val header = context.contentResolver.openInputStream(uri)?.use { ins ->
+                    val h = ByteArray(12); val n = ins.read(h); if (n == 12) h else null
+                } ?: run { skipped++; continue }
+                if (isWebp(header)) { skipped++; continue }
+
                 val originalBytes = context.contentResolver.openInputStream(uri)
                     ?.use { it.readBytes() } ?: run { skipped++; continue }
 
@@ -98,12 +121,16 @@ class ImageSpaceManager(private val context: Context) {
         return Summary(compressed, skipped, freedBytes)
     }
 
+    /** True if [b] starts with the RIFF????WEBP magic — i.e. the bytes are already a WebP image. */
+    private fun isWebp(b: ByteArray): Boolean =
+        b.size >= 12 && b[0] == 'R'.code.toByte() && b[1] == 'I'.code.toByte() &&
+        b[2] == 'F'.code.toByte() && b[3] == 'F'.code.toByte() && b[8] == 'W'.code.toByte() &&
+        b[9] == 'E'.code.toByte() && b[10] == 'B'.code.toByte() && b[11] == 'P'.code.toByte()
+
     companion object {
         private const val KEY_COMPRESSED = "compressed_image_names"
         // Bump to force a full re-run on all devices (clears stale compressed-tracking).
         const val COMPRESS_VERSION = 2
         const val KEY_COMPRESS_VERSION = "image_compress_version"
-        // A compressed copy is well under this; a file at/above it is an uncompressed original.
-        private const val MIN_COMPRESS_BYTES = 800_000L
     }
 }
