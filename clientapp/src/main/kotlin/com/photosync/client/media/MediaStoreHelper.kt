@@ -315,6 +315,20 @@ class MediaStoreHelper(private val context: Context) {
             raw?.let { parseExifDateStr(it) } ?: 0L
         } catch (_: Exception) { 0L }
 
+        // Orientation comes straight from the file's EXIF (WebPConverter copied it verbatim from the
+        // original). Set the MediaStore ORIENTATION column to match so the gallery rotates correctly
+        // immediately, without waiting for a rescan. -1 = unknown → leave the column untouched.
+        val exifOrientationDeg = try {
+            when (ExifInterface(ByteArrayInputStream(compressedBytes))
+                .getAttributeInt(ExifInterface.TAG_ORIENTATION, ExifInterface.ORIENTATION_UNDEFINED)) {
+                ExifInterface.ORIENTATION_NORMAL    -> 0
+                ExifInterface.ORIENTATION_ROTATE_90 -> 90
+                ExifInterface.ORIENTATION_ROTATE_180-> 180
+                ExifInterface.ORIENTATION_ROTATE_270-> 270
+                else -> -1
+            }
+        } catch (_: Exception) { -1 }
+
         val effectiveDateTaken = when {
             exifDateTaken > 0     -> exifDateTaken      // from EXIF in the file — most reliable
             providedDateTaken > 0 -> providedDateTaken  // hub-supplied fallback
@@ -359,6 +373,7 @@ class MediaStoreHelper(private val context: Context) {
                     put(MediaStore.MediaColumns.DATE_TAKEN, effectiveDateTaken)
                     if (dateAdded > 0)    put(MediaStore.MediaColumns.DATE_ADDED, dateAdded)
                     if (dateModified > 0) put(MediaStore.MediaColumns.DATE_MODIFIED, dateModified)
+                    if (exifOrientationDeg >= 0) put(MediaStore.MediaColumns.ORIENTATION, exifOrientationDeg)
                 }, null, null)
             } catch (_: Exception) {}
             // Set the physical file mtime = original DATE_ADDED so that if the MediaStore
@@ -387,6 +402,7 @@ class MediaStoreHelper(private val context: Context) {
             put(MediaStore.MediaColumns.DISPLAY_NAME, displayName)
             put(MediaStore.MediaColumns.MIME_TYPE,    mimeType)
             put(MediaStore.MediaColumns.DATE_TAKEN,   effectiveDateTaken)
+            if (exifOrientationDeg >= 0) put(MediaStore.MediaColumns.ORIENTATION, exifOrientationDeg)
             if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
                 put(MediaStore.MediaColumns.RELATIVE_PATH, safeRelativePath)
                 put(MediaStore.MediaColumns.IS_PENDING, 1)
@@ -431,6 +447,7 @@ class MediaStoreHelper(private val context: Context) {
                         put(MediaStore.MediaColumns.SIZE,       compressedBytes.size.toLong())
                         put(MediaStore.MediaColumns.DATE_TAKEN, effectiveDateTaken)
                         if (dateAdded > 0) put(MediaStore.MediaColumns.DATE_ADDED, dateAdded)
+                        if (exifOrientationDeg >= 0) put(MediaStore.MediaColumns.ORIENTATION, exifOrientationDeg)
                     }, null, null)
                     // Separate update to force original timestamps — Android may reset them
                     // during IS_PENDING transition, so this must come after
