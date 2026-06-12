@@ -63,7 +63,16 @@ class VideoSpaceManager(private val context: Context) {
             RemoteLogger.i("VideoSpace: quality upgrade to v$COMPRESS_VERSION — re-transcoding all videos")
         }
         val compressedNames  = prefs.getStringSet(KEY_COMPRESSED_NAMES, emptySet())!!.toMutableSet()
-        val userRestoredNames = prefs.getStringSet(KEY_USER_RESTORED, emptySet())!!
+        // Restored/downloaded videos: name -> restore time (ms). They are kept as the full original
+        // for a 24 h grace period, then become eligible for HEVC compression on a later run. They are
+        // NEVER posterised (the user pulled them back on purpose — posterising would loop).
+        val userRestoredAt = HashMap<String, Long>()
+        prefs.getStringSet(KEY_USER_RESTORED, emptySet())!!.forEach { e ->
+            val i = e.lastIndexOf('|')
+            if (i > 0) userRestoredAt[e.substring(0, i)] = e.substring(i + 1).toLongOrNull() ?: 0L
+            else userRestoredAt[e] = 0L   // legacy bare name → eligible immediately
+        }
+        val restoredToClear = mutableSetOf<String>()
 
         val videos = queryVideos()
         var thumbed = 0; var compressed = 0; var skipped = 0; var freed = 0L
@@ -76,9 +85,6 @@ class VideoSpaceManager(private val context: Context) {
                 val hubEntry = hubByName[v.name]
                 if (hubEntry == null || hubEntry.size < v.size) { skipped++; return@forEachIndexed }
 
-                // User explicitly restored this video from the hub — never auto-posterize it again.
-                if (v.name in userRestoredNames) { skipped++; return@forEachIndexed }
-
                 // Determine age from filename first — more reliable than DATE_TAKEN which
                 // Samsung zeros out during IS_PENDING transitions.
                 val now = System.currentTimeMillis()
@@ -89,7 +95,13 @@ class VideoSpaceManager(private val context: Context) {
                 val ageMs = now - captureMs
                 val videoUri = ContentUris.withAppendedId(MediaStore.Video.Media.EXTERNAL_CONTENT_URI, v.id)
 
-                if (ageMs > OLD_AGE_MS) {
+                // Restored/downloaded video: keep the full original through a 24 h grace, then it is
+                // eligible to be transcoded to HEVC (never posterised).
+                val restoredAt = userRestoredAt[v.name]
+                val restoredEligible = restoredAt != null && (now - restoredAt) >= RESTORE_GRACE_MS
+                if (restoredAt != null && !restoredEligible) { skipped++; return@forEachIndexed }
+
+                if (!restoredEligible && ageMs > OLD_AGE_MS) {
                     // Old video -> replace with a JPEG poster so the gallery keeps a thumbnail.
                     // DATE FIX: never fall back to dateAddedSec as poster date (that causes all
                     // posters to appear on the day the video was added, not when it was captured).
@@ -110,8 +122,9 @@ class VideoSpaceManager(private val context: Context) {
                     val deleted = try { context.contentResolver.delete(videoUri, null, null) > 0 } catch (_: Exception) { false }
                     if (deleted) { thumbed++; freed += (v.size - stampedPoster.size).coerceAtLeast(0L) }
                     else { skipped++ }
-                } else if (v.name !in compressedNames && v.id.toString() !in compressedIds) {
-                    // Recent video -> transcode to smaller MP4, preserve filename + original date
+                } else if (restoredEligible || (v.name !in compressedNames && v.id.toString() !in compressedIds)) {
+                    // Recent video, OR a restored original past its 24 h grace -> transcode to HEVC,
+                    // preserving filename + original date.
                     val tmp = File(context.cacheDir, "vtrans_${v.id}.mp4")
                     try {
                         val okT = VideoTranscoder.transcode(context, videoUri, tmp.absolutePath)
@@ -124,11 +137,22 @@ class VideoSpaceManager(private val context: Context) {
                         }
                     } finally { tmp.delete() }
                     compressedNames.add(v.name)   // mark regardless to avoid repeated transcode
+                    // Once a restored original has been compressed it's a normal video again — drop
+                    // the restored marker so it isn't held out / re-processed forever.
+                    if (restoredEligible) restoredToClear.add(v.name)
                 }
             } catch (_: Throwable) { skipped++ }
         }
 
         prefs.edit().putStringSet(KEY_COMPRESSED_NAMES, compressedNames).apply()
+        if (restoredToClear.isNotEmpty()) {
+            val cur = prefs.getStringSet(KEY_USER_RESTORED, emptySet())!!
+            val kept = cur.filterNot { e ->
+                val name = e.substringBefore('|')
+                name in restoredToClear
+            }.toSet()
+            prefs.edit().putStringSet(KEY_USER_RESTORED, kept).apply()
+        }
         return Summary(thumbed, compressed, skipped, freed)
     }
 
@@ -559,6 +583,7 @@ class VideoSpaceManager(private val context: Context) {
             "line", "wechat", "kakaotalk", "signal", "snapchat", "tiktok", "twitter", "download"
         )
         private const val OLD_AGE_MS           = 30L * 24 * 60 * 60 * 1000
+        private const val RESTORE_GRACE_MS     = 24L * 60 * 60 * 1000  // keep a restored original 24 h before compressing
         private const val KEY_COMPRESSED       = "compressed_video_ids"    // legacy: stores IDs
         private const val KEY_COMPRESSED_NAMES = "compressed_video_names"  // v316+: stores display names
         internal const val KEY_RESTORE         = "poster_restore_map"
