@@ -544,6 +544,13 @@ class LocalImageProcessor(private val context: Context) {
                 jpegBytes[2] == 'F'.code.toByte() && jpegBytes[3] == 'F'.code.toByte() &&
                 jpegBytes[8] == 'W'.code.toByte() && jpegBytes[9] == 'E'.code.toByte() &&
                 jpegBytes[10] == 'B'.code.toByte() && jpegBytes[11] == 'P'.code.toByte()
+            // Preserve the ORIGINAL orientation verbatim. A WebP→JPEG re-encode below drops EXIF,
+            // so capture the source orientation first and write it back — never normalise it (that
+            // was the bug that rotated portrait photos sideways).
+            val srcOrientation = try {
+                ExifInterface(ByteArrayInputStream(jpegBytes))
+                    .getAttributeInt(ExifInterface.TAG_ORIENTATION, ExifInterface.ORIENTATION_NORMAL)
+            } catch (_: Exception) { ExifInterface.ORIENTATION_NORMAL }
             val srcBytes = if (isWebP) {
                 val bmp = android.graphics.BitmapFactory.decodeByteArray(jpegBytes, 0, jpegBytes.size)
                 if (bmp != null) {
@@ -556,8 +563,7 @@ class LocalImageProcessor(private val context: Context) {
             tmp = File.createTempFile("ps_fix_", ".jpg", context.cacheDir)
             tmp.writeBytes(srcBytes)
             ExifInterface(tmp.absolutePath).apply {
-                setAttribute(ExifInterface.TAG_ORIENTATION,
-                    ExifInterface.ORIENTATION_NORMAL.toString())
+                setAttribute(ExifInterface.TAG_ORIENTATION, srcOrientation.toString())
                 if (dateTakenMs > 0) {
                     val fmt = SimpleDateFormat("yyyy:MM:dd HH:mm:ss", Locale.US)
                         .format(Date(dateTakenMs))
