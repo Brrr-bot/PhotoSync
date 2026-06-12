@@ -42,14 +42,14 @@ object WebPConverter {
             try {
                 tmp.writeBytes(webpBytes)
                 ExifInterface(tmp.absolutePath).also { dst ->
+                    // Copy EVERY tag — including TAG_ORIENTATION — verbatim from the original.
+                    // BitmapFactory.decodeByteArray does NOT apply EXIF rotation: the decoded
+                    // pixels are the raw sensor pixels, identical in orientation to the source.
+                    // So the WebP must carry the SAME orientation tag as the original (e.g. 6),
+                    // otherwise portrait photos display sideways. Never normalise/bake here.
                     for (tag in TAGS) {
-                        if (tag == ExifInterface.TAG_ORIENTATION) continue   // see note below
                         srcExif.getAttribute(tag)?.let { dst.setAttribute(tag, it) }
                     }
-                    // BitmapFactory.decodeByteArray bakes the source EXIF rotation into upright
-                    // pixels, so the WebP is always upright — it must carry ORIENTATION_NORMAL.
-                    // Copying the source orientation (e.g. 6) would double-rotate it in viewers.
-                    dst.setAttribute(ExifInterface.TAG_ORIENTATION, ExifInterface.ORIENTATION_NORMAL.toString())
                     dst.saveAttributes()
                 }
                 tmp.readBytes()
