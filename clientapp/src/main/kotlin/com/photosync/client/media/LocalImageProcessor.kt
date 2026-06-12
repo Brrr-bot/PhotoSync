@@ -658,66 +658,6 @@ class LocalImageProcessor(private val context: Context) {
         return null
     }
 
-    /**
-     * Last-resort date fix: reads the file bytes, deletes the existing MediaStore row,
-     * and re-inserts with the app as owner so DATE_TAKEN sticks on Samsung Android 13+.
-     * Only used when both IS_PENDING and direct ContentValues strategies fail (i.e. the
-     * row was inserted by the media scanner, not by this app).
-     */
-    private fun reinsertWithDate(id: Long, mimeType: String, relativePath: String,
-                                  displayName: String, dateTakenMs: Long): Boolean {
-        val uri = android.content.ContentUris.withAppendedId(
-            android.provider.MediaStore.Images.Media.EXTERNAL_CONTENT_URI, id)
-        val bytes = try {
-            context.contentResolver.openInputStream(uri)?.use { it.readBytes() }
-        } catch (_: Exception) { null } ?: return false
-        if (bytes.isEmpty()) return false
-
-        val deleted = try { context.contentResolver.delete(uri, null, null) > 0 }
-                      catch (_: Exception) { false }
-        if (!deleted) return false
-
-        val safeMime = mimeType.ifEmpty { "image/jpeg" }
-        val safeRelPath = relativePath.ifEmpty { "DCIM/" }
-        val dateSec = dateTakenMs / 1000L
-        val values = android.content.ContentValues().apply {
-            put(android.provider.MediaStore.MediaColumns.DISPLAY_NAME, displayName)
-            put(android.provider.MediaStore.MediaColumns.MIME_TYPE, safeMime)
-            put(android.provider.MediaStore.MediaColumns.RELATIVE_PATH, safeRelPath)
-            put(android.provider.MediaStore.MediaColumns.DATE_TAKEN, dateTakenMs)
-            put(android.provider.MediaStore.MediaColumns.DATE_ADDED, dateSec)
-            put(android.provider.MediaStore.MediaColumns.DATE_MODIFIED, dateSec)
-            if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.Q)
-                put(android.provider.MediaStore.MediaColumns.IS_PENDING, 1)
-        }
-        val newUri = try {
-            context.contentResolver.insert(
-                android.provider.MediaStore.Images.Media.EXTERNAL_CONTENT_URI, values)
-        } catch (_: Exception) { null } ?: return false
-
-        return try {
-            context.contentResolver.openOutputStream(newUri)?.use { it.write(bytes) } ?: return false
-            if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.Q) {
-                context.contentResolver.update(newUri, android.content.ContentValues().apply {
-                    put(android.provider.MediaStore.MediaColumns.IS_PENDING, 0)
-                    put(android.provider.MediaStore.MediaColumns.DATE_TAKEN, dateTakenMs)
-                    put(android.provider.MediaStore.MediaColumns.DATE_ADDED, dateSec)
-                    put(android.provider.MediaStore.MediaColumns.DATE_MODIFIED, dateSec)
-                }, null, null)
-                // Second update — Samsung resets dates during IS_PENDING transition.
-                context.contentResolver.update(newUri, android.content.ContentValues().apply {
-                    put(android.provider.MediaStore.MediaColumns.DATE_TAKEN, dateTakenMs)
-                    put(android.provider.MediaStore.MediaColumns.DATE_ADDED, dateSec)
-                    put(android.provider.MediaStore.MediaColumns.DATE_MODIFIED, dateSec)
-                }, null, null)
-            }
-            true
-        } catch (_: Exception) {
-            runCatching { context.contentResolver.delete(newUri, null, null) }
-            false
-        }
-    }
-
     private fun markChecked(id: Long) {
         pendingChecked.add(id.toString())
         if (pendingChecked.size >= 50) flushChecked()
