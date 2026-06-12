@@ -686,7 +686,7 @@ class ClientForegroundService : LifecycleService() {
         private const val SYNC_INTERVAL_MS      = 5 * 60 * 1000L
         private const val LOCAL_FIX_INTERVAL_MS  = 60 * 60 * 1000L
         private const val KEY_LOCAL_FIX_VERSION  = "local_fix_version"
-        private const val LOCAL_FIX_CODE         = 18 // bump when scan logic changes to force rescan
+        private const val LOCAL_FIX_CODE         = 19 // bump when scan logic changes to force rescan
         private const val KEY_POSTER_REFRESH_V   = "poster_refresh_version"
         private const val POSTER_REFRESH_V       = 3  // v3: delete+reinsert (IS_PENDING) so DATE_TAKEN actually sticks on Samsung
 
