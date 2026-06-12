@@ -13,16 +13,17 @@ import java.text.SimpleDateFormat
 import java.util.Locale
 
 /**
- * User-initiated: re-applies the FULL original metadata (orientation, GPS, all dates, camera/lens/
- * exposure, XMP, …) from the pristine hub backup onto the phone's COMPRESSED copies.
+ * User-initiated ("Restore metadata from hub"): MIGRATES every already-compressed photo on the
+ * phone to the current spec by re-downloading its pristine ORIGINAL from the hub and re-compressing
+ * it with the current converter, then storing it via MediaStoreHelper.replaceFile.
  *
- * Why: the WebP compression pass keeps EXIF dates but Samsung's gallery loses orientation/date on
- * the re-encoded `.jpg`-named WebP (MediaStore `orientation`/`datetaken` come back NULL → photos
- * show rotated and sort wrong). The hub holds the untouched original with every tag intact, so we
- * scrape it back and re-publish the local file so MediaStore honours it.
+ * Result per file: a real `.webp` (image/webp), full original metadata copied LOSSLESSLY (EXIF incl.
+ * vendor MakerNotes, ICC profile, XMP), correct orientation, and DATE_ADDED = capture date so the
+ * gallery date/order finally sticks on Samsung. Running it across the whole library also surfaces
+ * any edge cases in the pipeline.
  *
- * Only WebP-format files are touched — those are the compressed copies that lost metadata; original
- * JPEGs on the phone still carry their own EXIF and are left alone.
+ * Only WebP-format copies are touched; true original JPEGs on the phone keep their own EXIF.
+ * Skips files whose original isn't on the hub, or where re-compression yields no size benefit.
  */
 class MetadataRestorer(private val context: Context) {
 
@@ -61,129 +62,55 @@ class MetadataRestorer(private val context: Context) {
 
         var done = 0
         var consecutiveHubFails = 0
-        val tmp = File(context.cacheDir, "meta_restore_tmp")
+        val store = MediaStoreHelper(context)
         targets.forEachIndexed { index, t ->
             try {
                 progress?.invoke(index + 1, targets.size, t.name)
                 val uri = ContentUris.withAppendedId(MediaStore.Images.Media.EXTERNAL_CONTENT_URI, t.id)
                 val localBytes = context.contentResolver.openInputStream(uri)?.use { it.readBytes() } ?: return@forEachIndexed
-                if (!isWebp(localBytes)) return@forEachIndexed   // only compressed copies lost metadata
+                // Only re-process COMPRESSED copies (WebP, incl. the legacy WebP-in-.jpg files).
+                // True original JPEGs on the phone still carry their own metadata — leave them.
+                if (!isWebp(localBytes)) return@forEachIndexed
 
-                val meta = HubFilesClient.fetchMeta(ip, port, deviceName, t.name)
-                if (meta == null) {
-                    // Hub unreachable — bail out fast rather than crawl through 10s timeouts per file.
+                // Pull the PRISTINE original from the hub and re-compress it with the current
+                // converter, then store it via replaceFile. This migrates every old compressed photo
+                // to the new spec in one pass: a real .webp file, full metadata copied losslessly from
+                // the original (EXIF incl. MakerNotes, ICC, XMP), and DATE_ADDED = capture date so the
+                // gallery date/orientation finally stick. Running it over the whole library also
+                // surfaces any edge cases in the new pipeline.
+                val original = HubFilesClient.fetchFile(ip, port, deviceName, t.name)
+                if (original == null) {
+                    // Hub unreachable — bail out fast rather than crawl through timeouts per file.
                     if (++consecutiveHubFails >= 8) throw IllegalStateException("hub unreachable")
                     return@forEachIndexed
                 }
                 consecutiveHubFails = 0
-                if (meta.isEmpty()) return@forEachIndexed
+                if (original.isEmpty() || original.size > MAX_ORIGINAL_BYTES) return@forEachIndexed
 
-                // The compressed copy's pixels are never rotated (BitmapFactory/Bitmap.compress do
-                // not bake EXIF rotation), so they are always in the original's sensor orientation.
-                // Therefore the correct orientation is simply the ORIGINAL's orientation — copy it
-                // verbatim, never guess from aspect ratios.
-                val orientation = meta[ExifInterface.TAG_ORIENTATION]?.toIntOrNull()
-                    ?: ExifInterface.ORIENTATION_NORMAL
+                val webp = WebPConverter.convert(original, context.cacheDir) ?: return@forEachIndexed
+                if (webp.size >= original.size) return@forEachIndexed   // no size benefit — skip
 
-                // Write all original tags into the local (compressed) bytes, but with the computed
-                // orientation (and without the original's pixel-size tags).
-                val stamped = applyExif(localBytes, tmp, meta, orientation) ?: return@forEachIndexed
-                val orientationDeg = when (orientation) {
-                    ExifInterface.ORIENTATION_ROTATE_90  -> 90
-                    ExifInterface.ORIENTATION_ROTATE_180 -> 180
-                    ExifInterface.ORIENTATION_ROTATE_270 -> 270
-                    else -> 0
-                }
-
-                // Capture date: original EXIF DateTimeOriginal > filename > existing MediaStore value.
-                val dateMs = parseExifDate(meta[ExifInterface.TAG_DATETIME_ORIGINAL] ?: meta[ExifInterface.TAG_DATETIME])
-                    .takeIf { it > 0 } ?: parseNameDate(t.name).takeIf { it > 0 } ?: t.taken
-                val dateSec = if (dateMs > 0) dateMs / 1000L else 0L
-
-                // Delete + re-insert so MediaStore re-reads the EXIF (orientation/date) on publish —
-                // an in-place overwrite leaves orientation/datetaken NULL on Samsung 13.
-                contentResolver().delete(uri, null, null)
-                val values = ContentValues().apply {
-                    put(MediaStore.Images.Media.DISPLAY_NAME, t.name)
-                    put(MediaStore.Images.Media.MIME_TYPE, "image/jpeg")   // keep .jpg name + JPEG MIME (bytes are WebP; viewers read magic)
-                    put(MediaStore.Images.Media.RELATIVE_PATH, t.rel)
-                    put(MediaStore.Images.Media.ORIENTATION, orientationDeg)
-                    if (dateMs > 0) put(MediaStore.Images.Media.DATE_TAKEN, dateMs)
-                    if (dateSec > 0) { put(MediaStore.Images.Media.DATE_ADDED, dateSec); put(MediaStore.Images.Media.DATE_MODIFIED, dateSec) }
-                    if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) put(MediaStore.Images.Media.IS_PENDING, 1)
-                }
-                val nu = contentResolver().insert(MediaStore.Images.Media.EXTERNAL_CONTENT_URI, values) ?: return@forEachIndexed
-                contentResolver().openOutputStream(nu)?.use { it.write(stamped) }
-                if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
-                    contentResolver().update(nu, ContentValues().apply {
-                        put(MediaStore.Images.Media.IS_PENDING, 0)
-                        put(MediaStore.Images.Media.SIZE, stamped.size.toLong())
-                        put(MediaStore.Images.Media.ORIENTATION, orientationDeg)
-                        if (dateMs > 0) put(MediaStore.Images.Media.DATE_TAKEN, dateMs)
-                    }, null, null)
-                    if (dateMs > 0) contentResolver().update(nu, ContentValues().apply {
-                        put(MediaStore.Images.Media.DATE_TAKEN, dateMs)
-                        if (dateSec > 0) { put(MediaStore.Images.Media.DATE_ADDED, dateSec); put(MediaStore.Images.Media.DATE_MODIFIED, dateSec) }
-                    }, null, null)
-                }
+                // replaceFile renames to .webp + image/webp, app-owned, and reads the capture date
+                // straight out of the EXIF the converter just copied in (DATE_TAKEN + DATE_ADDED).
+                store.replaceFile(t.id, "image/webp", webp, t.taken)
                 done++
-                // Throttle the delete+reinsert churn so MediaProvider / the gallery stay responsive.
-                if (done % 15 == 0) Thread.sleep(250)
-            } catch (t: Throwable) {
-                if (t is IllegalStateException && t.message == "hub unreachable") throw t   // stop the whole run
+                // Throttle so MediaProvider / the gallery stay responsive during the mass rewrite.
+                if (done % 10 == 0) Thread.sleep(200)
+            } catch (th: Throwable) {
+                if (th is IllegalStateException && th.message == "hub unreachable") throw th   // stop the whole run
                 /* otherwise skip this file */
             }
-            finally { tmp.delete() }
         }
         return done
     }
-
-    private fun contentResolver() = context.contentResolver
 
     private fun isWebp(b: ByteArray): Boolean =
         b.size > 12 && b[0] == 'R'.code.toByte() && b[1] == 'I'.code.toByte() && b[2] == 'F'.code.toByte() &&
         b[3] == 'F'.code.toByte() && b[8] == 'W'.code.toByte() && b[9] == 'E'.code.toByte() &&
         b[10] == 'B'.code.toByte() && b[11] == 'P'.code.toByte()
 
-    // Tags NOT copied verbatim from the original: pixel-size tags (the compressed copy is smaller)
-    // and orientation (computed per-image because compression may have baked the rotation in).
-    private val skipTags = setOf(
-        ExifInterface.TAG_PIXEL_X_DIMENSION, ExifInterface.TAG_PIXEL_Y_DIMENSION,
-        ExifInterface.TAG_IMAGE_WIDTH, ExifInterface.TAG_IMAGE_LENGTH,
-        ExifInterface.TAG_ORIENTATION
-    )
-
-    /** Copies the full original EXIF (minus pixel-size + orientation) and stamps [orientation]. */
-    private fun applyExif(bytes: ByteArray, tmp: File, meta: Map<String, String>, orientation: Int): ByteArray? {
-        return try {
-            tmp.writeBytes(bytes)
-            val exif = ExifInterface(tmp.absolutePath)
-            for ((tag, value) in meta) {
-                if (tag in skipTags) continue
-                try { exif.setAttribute(tag, value) } catch (_: Exception) {}
-            }
-            exif.setAttribute(ExifInterface.TAG_ORIENTATION, orientation.toString())
-            exif.saveAttributes()
-            tmp.readBytes()
-        } catch (_: Exception) { null }
-    }
-
-    private fun parseExifDate(raw: String?): Long {
-        if (raw.isNullOrBlank() || raw.startsWith("0000")) return 0L
-        return try {
-            SimpleDateFormat("yyyy:MM:dd HH:mm:ss", Locale.US).apply { isLenient = false }.parse(raw.trim())?.time ?: 0L
-        } catch (_: Exception) { 0L }
-    }
-
-    private fun parseNameDate(name: String): Long {
-        val stem = name.substringBeforeLast('.')
-        val now = System.currentTimeMillis(); val since2000 = 946_684_800_000L
-        Regex("""(\d{8})[_-](\d{6})""").find(stem)?.let { m ->
-            runCatching {
-                SimpleDateFormat("yyyyMMddHHmmss", Locale.US).apply { isLenient = false }.parse(m.groupValues[1] + m.groupValues[2])?.time
-            }.getOrNull()?.let { if (it in since2000..now) return it }
-        }
-        Regex("""(\d{13})""").find(stem)?.let { m -> m.groupValues[1].toLongOrNull()?.let { if (it in since2000..now) return it } }
-        return 0L
+    companion object {
+        // Skip absurdly large originals — the re-compress decodes the whole image in memory.
+        private const val MAX_ORIGINAL_BYTES = 50L * 1024 * 1024
     }
 }
