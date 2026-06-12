@@ -38,13 +38,25 @@ class ImageSpaceManager(private val context: Context) {
         // Set of display names confirmed backed up on hub USB
         val hubNames = hubFiles.map { it.displayName }.toHashSet()
 
+        // One-time clear of stale tracking when the logic version bumps. A "Restore from hub" or
+        // download re-introduces the full ORIGINAL of a file previously marked compressed, which then
+        // sticks as a large .jpg forever (ImageSpace skipped it by name). Clearing lets those
+        // originals be re-compressed.
+        if (prefs.getInt(KEY_COMPRESS_VERSION, 0) < COMPRESS_VERSION) {
+            prefs.edit().remove(KEY_COMPRESSED).putInt(KEY_COMPRESS_VERSION, COMPRESS_VERSION).apply()
+            RemoteLogger.i("ImageSpace: cleared stale compressed-tracking for v$COMPRESS_VERSION")
+        }
         val compressedNames = prefs.getStringSet(KEY_COMPRESSED, emptySet())!!.toMutableSet()
 
-        // All phone images not yet converted to WebP and not already compressed
+        // Phone images worth compressing: backed up on the hub, not already WebP, and big enough to
+        // be an uncompressed original. The SIZE gate (not a name list) is what reliably distinguishes
+        // "original vs already-compressed" and self-corrects after restores. compressedNames now only
+        // holds files we tried but couldn't shrink, so we don't retry them every cycle.
         val phoneImages = MediaStoreHelper(context).getMediaSince(0).filter { f ->
             f.mimeType.startsWith("image/") &&
             f.mimeType != "image/webp" &&
             f.displayName in hubNames &&
+            f.size > MIN_COMPRESS_BYTES &&
             f.displayName !in compressedNames
         }
 
@@ -72,7 +84,9 @@ class ImageSpaceManager(private val context: Context) {
                 val store = MediaStoreHelper(context)
                 store.replaceFile(image.id, "image/webp", webpBytes, image.dateTaken)
                 freedBytes += (originalBytes.size - webpBytes.size).toLong()
-                compressedNames.add(image.displayName)
+                // Do NOT add to compressedNames on success — the file is now image/webp and excluded
+                // by MIME next cycle. Leaving its name out means that if a restore later brings the
+                // original back, it gets re-compressed instead of being stuck.
                 compressed++
             } catch (t: Throwable) {
                 RemoteLogger.i("ImageSpace error ${image.displayName}: ${t.javaClass.simpleName}: ${t.message}")
@@ -86,8 +100,10 @@ class ImageSpaceManager(private val context: Context) {
 
     companion object {
         private const val KEY_COMPRESSED = "compressed_image_names"
-        // Bump to force a full re-run on all devices
-        const val COMPRESS_VERSION = 1
+        // Bump to force a full re-run on all devices (clears stale compressed-tracking).
+        const val COMPRESS_VERSION = 2
         const val KEY_COMPRESS_VERSION = "image_compress_version"
+        // A compressed copy is well under this; a file at/above it is an uncompressed original.
+        private const val MIN_COMPRESS_BYTES = 800_000L
     }
 }
