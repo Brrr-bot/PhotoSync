@@ -303,6 +303,12 @@ class VideoSpaceManager(private val context: Context) {
                             ?.use { if (it.moveToFirst()) it.getString(0) else null }
                     } catch (_: Exception) { null }
                     if (path != null) runCatching {
+                        // CRITICAL: set the file's mtime to the capture time. The transcoder writes the
+                        // file "now", and Samsung's media scanner falls back to the file mtime for
+                        // DATE_TAKEN when it can't read the mvhd — which would put the clip under the
+                        // processing time (sorting it as the newest item). Making mtime == capture time
+                        // means every source (mvhd atom, file mtime, MediaStore) agrees to the second.
+                        java.io.File(path).setLastModified(takenMs)
                         android.media.MediaScannerConnection.scanFile(context, arrayOf(path), arrayOf("video/mp4"), null)
                     }
                 }
@@ -477,21 +483,23 @@ class VideoSpaceManager(private val context: Context) {
         // old transcode. Samsung reads that and overrides DATE_TAKEN, so a MediaStore-only fix
         // reverts. We edit the atoms in place (fast, local, no network) then sync MediaStore +
         // rescan. Self-terminating: once the internal date is correct, the >24h test is false.
-        // 2h tolerance: a filename timestamp (YYYYMMDD_HHMMSS) matches a correctly-dated video
-        // to within seconds, so anything off by >2h is genuinely wrong. (24h was too loose — it
-        // missed videos shifted by ~1 day, e.g. a June-1 clip stamped June-2.)
-        // Only repair videos whose filename carries an exact timestamp — that's the reliable
-        // source. We never overwrite a date based on DATE_ADDED (which can legitimately differ
-        // from capture time for downloaded clips), avoiding false "fixes".
-        val tolMs = 2 * 60 * 60 * 1000L
+        // 2-minute tolerance: a camera filename timestamp (YYYYMMDD_HHMMSS) IS the capture second,
+        // so a correctly-dated clip matches to within seconds. A transcode that lands the clip on its
+        // processing time is typically only tens of minutes off (e.g. a 10:17 clip stamped 10:48),
+        // which a loose 2h window silently let through — that made compressed clips sort under the
+        // wrong minute. We want the date correct to the second, so anything off by >2 min is wrong.
+        // Camera/screenshot only: DOWNLOAD-folder videos keep their download date (never the embedded
+        // filename date), matching the image rule.
+        val tolMs = 2 * 60 * 1000L
         val toFix = videos.count { v ->
             val correct = parseDateFromName(v.name)
-            correct > 0 && kotlin.math.abs(v.takenMs - correct) > tolMs
+            !isDownloadFolder(v.relativePath) && correct > 0 && kotlin.math.abs(v.takenMs - correct) > tolMs
         }
         if (toFix > 0) RemoteLogger.i("VideoDateRepair: $toFix videos need date fix")
         val newRepaired = mutableSetOf<String>()
 
         for (v in videos) {
+            if (isDownloadFolder(v.relativePath)) continue   // downloaded clips keep their download date
             val correctMs = parseDateFromName(v.name).takeIf { it > 0 } ?: continue
             if (kotlin.math.abs(v.takenMs - correctMs) < tolMs) continue
             val uri = ContentUris.withAppendedId(MediaStore.Video.Media.EXTERNAL_CONTENT_URI, v.id)
@@ -511,8 +519,11 @@ class VideoSpaceManager(private val context: Context) {
                 }, null, null)
             } catch (_: Exception) {}
 
-            // 3. Rescan the file so the media DB re-reads the now-correct internal date.
+            // 3. Set the file mtime to the capture time, THEN rescan. Samsung's scanner falls back to
+            //    the file mtime for DATE_TAKEN when it can't read the mvhd, so mtime must agree or the
+            //    rescan would re-stamp the clip with its (later) write time and the fix wouldn't stick.
             if (path != null) try {
+                java.io.File(path).setLastModified(correctMs)
                 android.media.MediaScannerConnection.scanFile(context, arrayOf(path), arrayOf("video/mp4"), null)
             } catch (_: Exception) {}
 
@@ -534,7 +545,19 @@ class VideoSpaceManager(private val context: Context) {
         parseDateFromName(v.name).takeIf { it > 0 }?.let { return it }
         return if (v.dateAddedSec > 0) v.dateAddedSec * 1000L else 0L
     }
+
+    /** True if a video lives in a chat/social/download app folder — those keep their download date,
+     *  never the original capture date embedded in the filename (matches the image rule). */
+    private fun isDownloadFolder(relativePath: String): Boolean {
+        val p = relativePath.lowercase()
+        return DOWNLOAD_FOLDER_HINTS.any { p.contains(it) }
+    }
+
     companion object {
+        private val DOWNLOAD_FOLDER_HINTS = listOf(
+            "whatsapp", "zalo", "telegram", "messenger", "facebook", "instagram", "viber",
+            "line", "wechat", "kakaotalk", "signal", "snapchat", "tiktok", "twitter", "download"
+        )
         private const val OLD_AGE_MS           = 30L * 24 * 60 * 60 * 1000
         private const val KEY_COMPRESSED       = "compressed_video_ids"    // legacy: stores IDs
         private const val KEY_COMPRESSED_NAMES = "compressed_video_names"  // v316+: stores display names
