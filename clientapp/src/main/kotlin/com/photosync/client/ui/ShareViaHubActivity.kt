@@ -204,6 +204,16 @@ class ShareViaHubActivity : AppCompatActivity() {
                 val processed = spacePrefs.getStringSet("processed_names", emptySet())!!.toMutableSet()
                 processed.remove(fileName)
                 spacePrefs.edit().putStringSet("processed_names", processed).apply()
+
+                // A downloaded ORIGINAL video: mark it restored-now so VideoSpaceManager keeps it for
+                // a 24 h grace, then transcodes it to HEVC on a later run (never posterises).
+                if (mime.startsWith("video/")) {
+                    val vsPrefs = getSharedPreferences("video_space_state", MODE_PRIVATE)
+                    val ur = vsPrefs.getStringSet(VideoSpaceManager.KEY_USER_RESTORED, emptySet())!!
+                        .filterNot { it == fileName || it.startsWith("$fileName|") }.toMutableSet()
+                    ur.add("$fileName|${System.currentTimeMillis()}")
+                    vsPrefs.edit().putStringSet(VideoSpaceManager.KEY_USER_RESTORED, ur).apply()
+                }
             }
 
             val dismissIntent = Intent(this, MainActivity::class.java).apply {
@@ -238,17 +248,11 @@ class ShareViaHubActivity : AppCompatActivity() {
      * deletes the poster and marks the video user-restored so it is never auto-posterized again.
      */
     private fun restorePosterizedVideo(posterName: String, videoName: String, downloaded: File): Boolean {
-        val txc = File(cacheDir, "restx_${videoName.substringBeforeLast('.')}.mp4")
-        try {
-            // Compress as usual — keep the transcode only if it is valid and actually smaller.
-            val transcoded = try {
-                VideoTranscoder.transcode(this, Uri.fromFile(downloaded), txc.absolutePath) &&
-                    txc.exists() && txc.length() in 1 until downloaded.length()
-            } catch (t: Throwable) {
-                RemoteLogger.i("ShareRestore: transcode threw ${t.javaClass.simpleName}"); false
-            }
-            val finalFile = if (transcoded) txc else downloaded
-            RemoteLogger.i("ShareRestore: transcoded=$transcoded ${finalFile.length() / 1_048_576}MB")
+        run {
+            // Restore the FULL original (no transcode here). VideoSpaceManager keeps it for a 24 h
+            // grace, then transcodes it to HEVC on a later run — so the user gets the original first.
+            val finalFile = downloaded
+            RemoteLogger.i("ShareRestore: restoring original ${finalFile.length() / 1_048_576}MB")
 
             // The poster already carries the correct capture date — reuse it so the restored video
             // lands on the right day, never "today".
@@ -283,8 +287,6 @@ class ShareViaHubActivity : AppCompatActivity() {
                         .apply { add(videoName) }).apply()
             }
             return uri != null
-        } finally {
-            txc.delete()
         }
     }
 
@@ -313,8 +315,11 @@ class ShareViaHubActivity : AppCompatActivity() {
         restoreSet.removeAll { it.endsWith("|$videoName") || it.startsWith("$posterName|") }
         val posterNames = prefs.getStringSet(VideoSpaceManager.KEY_POSTER_NAMES, emptySet())!!.toMutableSet()
         posterNames.remove(posterName)
-        val userRestored = prefs.getStringSet(VideoSpaceManager.KEY_USER_RESTORED, emptySet())!!.toMutableSet()
-        userRestored.add(videoName)
+        // Mark restored with a timestamp: VideoSpaceManager keeps the original for a 24 h grace then
+        // transcodes it (never posterises). Drop any prior bare/old entry for this video first.
+        val userRestored = prefs.getStringSet(VideoSpaceManager.KEY_USER_RESTORED, emptySet())!!
+            .filterNot { it == videoName || it.startsWith("$videoName|") }.toMutableSet()
+        userRestored.add("$videoName|${System.currentTimeMillis()}")
         prefs.edit()
             .putStringSet(VideoSpaceManager.KEY_RESTORE, restoreSet)
             .putStringSet(VideoSpaceManager.KEY_POSTER_NAMES, posterNames)
