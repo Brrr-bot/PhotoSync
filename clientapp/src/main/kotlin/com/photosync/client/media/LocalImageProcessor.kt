@@ -67,6 +67,7 @@ class LocalImageProcessor(private val context: Context) {
         var fixed = 0
 
         for (image in images) {
+          try {
             done++
             if (done % 25 == 0) onProgress?.invoke(done, total, "Scanning $done/$total…")
 
@@ -239,6 +240,12 @@ class LocalImageProcessor(private val context: Context) {
 
                 else -> markChecked(image.id)
             }
+          } catch (t: Throwable) {
+            // A MediaStore row can vanish mid-scan (a concurrent compress/restore deletes+reinserts
+            // it under a new id). Never let one image crash the whole foreground service — skip it.
+            RemoteLogger.i("LocalFix: skipped ${image.displayName} — ${t.javaClass.simpleName}: ${t.message}")
+            runCatching { markChecked(image.id) }
+          }
         }
 
         // Second pass: fix DATE_TAKEN on files we created (compressed_new_ids) via EXIF stamp.
@@ -268,7 +275,11 @@ class LocalImageProcessor(private val context: Context) {
             context.contentResolver.update(uri, ContentValues().apply {
                 put(MediaStore.MediaColumns.DATE_TAKEN, dateTakenMs)
             }, null, null) > 0
-        } catch (_: SecurityException) { false }
+        } catch (_: Throwable) {
+            // SecurityException (no access) OR IllegalStateException/FileNotFound when the row was
+            // deleted mid-scan by a concurrent compress/restore. Never crash — just report failure.
+            false
+        }
     }
 
     /**
@@ -285,6 +296,7 @@ class LocalImageProcessor(private val context: Context) {
         var fixed = 0
         val all = queryAllImages()
         for (image in all) {
+          try {
             if (image.id.toString() !in ownedIds) continue
             // Date from filename, or fall back to hub's lastModifiedMs for descriptive-name
             // files (screenshots etc.) that carry no date in their filename.
@@ -343,6 +355,9 @@ class LocalImageProcessor(private val context: Context) {
                     fixed++
                 }
             }
+          } catch (t: Throwable) {
+            RemoteLogger.i("LocalFix(owned): skipped ${image.displayName} — ${t.javaClass.simpleName}")
+          }
         }
         return fixed
     }
