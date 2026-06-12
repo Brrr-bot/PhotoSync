@@ -235,6 +235,20 @@ class LocalImageProcessor(private val context: Context) {
                         dateFixed = true
                     }
 
+                    // Strategy D — the reliable one for NON-OWNED files (WhatsApp/Zalo/Telegram/
+                    // downloads): Strategies A–C bake the date into the file EXIF but Samsung often
+                    // refuses to populate DATE_TAKEN for a row it owns, leaving it NULL so the photo
+                    // sorts under "today". Verify the column actually stuck; if not, delete + reinsert
+                    // as OWNER with the stamped bytes — the same retention method MetadataRestorer and
+                    // replaceFile use. The bytes are written verbatim so orientation/EXIF are kept.
+                    if (effectiveDateTaken > 0 && !dateTakenStuck(image.id, effectiveDateTaken)) {
+                        if (reinsertAsOwnerWithDate(image.id, image.mimeType, image.relativePath,
+                                image.displayName, effectiveDateTaken)) {
+                            onProgress?.invoke(done, total, "Date set (reinsert): ${image.displayName}")
+                            dateFixed = true
+                        }
+                    }
+
                     if (dateFixed) fixed++
                     // Only mark checked on success — retry next run if all strategies failed.
                     if (dateFixed || authoritativeDate == 0L) markChecked(image.id)
@@ -656,6 +670,78 @@ class LocalImageProcessor(private val context: Context) {
             } catch (_: Exception) { null }
         }
         return null
+    }
+
+    /** True if the row's MediaStore DATE_TAKEN is within 24 h of [expectedMs] (i.e. it stuck). */
+    private fun dateTakenStuck(id: Long, expectedMs: Long): Boolean {
+        return try {
+            val uri = android.content.ContentUris.withAppendedId(
+                android.provider.MediaStore.Images.Media.EXTERNAL_CONTENT_URI, id)
+            context.contentResolver.query(uri, arrayOf(android.provider.MediaStore.MediaColumns.DATE_TAKEN),
+                null, null, null)?.use { c ->
+                if (c.moveToFirst()) {
+                    val dt = c.getLong(0)
+                    dt > 0 && Math.abs(dt - expectedMs) < 24 * 60 * 60 * 1000L
+                } else false
+            } ?: false
+        } catch (_: Exception) { false }
+    }
+
+    /**
+     * Reliable date fix for files this app does not own: reads the current (already EXIF-stamped)
+     * bytes verbatim, deletes the row, and re-inserts as OWNER with IS_PENDING + a double date
+     * update so DATE_TAKEN sticks on Samsung 13+. Bytes are written unchanged, so orientation and
+     * all other EXIF are preserved. Same retention method as MetadataRestorer / replaceFile.
+     */
+    private fun reinsertAsOwnerWithDate(id: Long, mimeType: String, relativePath: String,
+                                        displayName: String, dateTakenMs: Long): Boolean {
+        val uri = android.content.ContentUris.withAppendedId(
+            android.provider.MediaStore.Images.Media.EXTERNAL_CONTENT_URI, id)
+        val bytes = try {
+            context.contentResolver.openInputStream(uri)?.use { it.readBytes() }
+        } catch (_: Exception) { null } ?: return false
+        if (bytes.isEmpty()) return false
+
+        val deleted = try { context.contentResolver.delete(uri, null, null) > 0 } catch (_: Exception) { false }
+        if (!deleted) return false
+
+        val dateSec = dateTakenMs / 1000L
+        val values = android.content.ContentValues().apply {
+            put(android.provider.MediaStore.MediaColumns.DISPLAY_NAME, displayName)
+            put(android.provider.MediaStore.MediaColumns.MIME_TYPE, mimeType.ifEmpty { "image/jpeg" })
+            put(android.provider.MediaStore.MediaColumns.RELATIVE_PATH, relativePath.ifEmpty { "DCIM/" })
+            put(android.provider.MediaStore.MediaColumns.DATE_TAKEN, dateTakenMs)
+            put(android.provider.MediaStore.MediaColumns.DATE_ADDED, dateSec)
+            put(android.provider.MediaStore.MediaColumns.DATE_MODIFIED, dateSec)
+            if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.Q)
+                put(android.provider.MediaStore.MediaColumns.IS_PENDING, 1)
+        }
+        val newUri = try {
+            context.contentResolver.insert(
+                android.provider.MediaStore.Images.Media.EXTERNAL_CONTENT_URI, values)
+        } catch (_: Exception) { null } ?: return false
+
+        return try {
+            context.contentResolver.openOutputStream(newUri)?.use { it.write(bytes) } ?: return false
+            if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.Q) {
+                context.contentResolver.update(newUri, android.content.ContentValues().apply {
+                    put(android.provider.MediaStore.MediaColumns.IS_PENDING, 0)
+                    put(android.provider.MediaStore.MediaColumns.DATE_TAKEN, dateTakenMs)
+                    put(android.provider.MediaStore.MediaColumns.DATE_ADDED, dateSec)
+                    put(android.provider.MediaStore.MediaColumns.DATE_MODIFIED, dateSec)
+                }, null, null)
+                // Samsung resets dates during the IS_PENDING transition — force them again.
+                context.contentResolver.update(newUri, android.content.ContentValues().apply {
+                    put(android.provider.MediaStore.MediaColumns.DATE_TAKEN, dateTakenMs)
+                    put(android.provider.MediaStore.MediaColumns.DATE_ADDED, dateSec)
+                    put(android.provider.MediaStore.MediaColumns.DATE_MODIFIED, dateSec)
+                }, null, null)
+            }
+            true
+        } catch (_: Exception) {
+            runCatching { context.contentResolver.delete(newUri, null, null) }
+            false
+        }
     }
 
     private fun markChecked(id: Long) {
