@@ -96,28 +96,25 @@ class LocalImageProcessor(private val context: Context) {
             val exifDateRaw  = exif.getAttribute(ExifInterface.TAG_DATETIME_ORIGINAL)
             val exifDateMs   = exifDateRaw?.let { parseExifDate(it) }
             val filenameDateMs = parseDateFromFilename(image.displayName)
-            val explicitDateMs = parseExplicitDateFromFilename(image.displayName)
             val dateAddedMs  = if (image.dateAdded > 0) image.dateAdded * 1000L else 0L
 
-            // An EXPLICIT date filename (YYYYMMDD[_HHMMSS], e.g. WhatsApp IMG-20260324-WA0001) is the
-            // real capture date and is trusted VERBATIM. Downloaded/forwarded media is legitimately
-            // added long after capture, so it routinely differs from DATE_ADDED by far more than 24 h
-            // — conserve that date, never discard it.
-            //
-            // The 24 h sanity check applies ONLY to the ambiguous 13-digit-epoch pattern, which some
-            // apps (Zalo, Telegram) reuse for internal message IDs that merely look like timestamps.
-            val safeFilenameDateMs = when {
-                explicitDateMs != null -> explicitDateMs
-                filenameDateMs != null && dateAddedMs > 0 ->
-                    if (Math.abs(filenameDateMs - dateAddedMs) > 24 * 60 * 60 * 1000L) null else filenameDateMs
-                else -> filenameDateMs
-            }
+            // Media saved by chat/social/download apps (WhatsApp, Zalo, Telegram, Messenger,
+            // browser Downloads, …) must keep its DOWNLOAD date (DATE_ADDED) — NOT any original
+            // capture date embedded in the filename or EXIF. A photo received today belongs under
+            // today even if it was originally shot months ago. So for these folders the download
+            // date is authoritative and overrides everything.
+            val isDownloadedAppImage = isDownloadFolder(image.relativePath)
+
+            // Sanity check for camera-style files: some apps reuse 13-digit message IDs / date-like
+            // numbers in filenames that aren't capture dates. If the filename date differs from
+            // DATE_ADDED by more than 24 h, treat it as unreliable and fall back to DATE_ADDED.
+            val safeFilenameDateMs = if (filenameDateMs != null && dateAddedMs > 0) {
+                if (Math.abs(filenameDateMs - dateAddedMs) > 24 * 60 * 60 * 1000L) null else filenameDateMs
+            } else filenameDateMs
 
             // Authoritative capture date — what the gallery SHOULD sort by.
-            // Trust the file's own EXIF first, then the filename, then the hub's
-            // lastModifiedMs for files with no date in EXIF or name (e.g. screenshots
-            // with descriptive names like "michael and his bicycle.jpg").
             val authoritativeDate = when {
+                isDownloadedAppImage       -> dateAddedMs   // download date wins for app-saved media
                 exifDateMs != null         -> exifDateMs
                 safeFilenameDateMs != null -> safeFilenameDateMs
                 else -> hubByName[image.displayName]?.lastModifiedMs?.takeIf { it > 0 } ?: 0L
@@ -233,20 +230,6 @@ class LocalImageProcessor(private val context: Context) {
                     if (!dateFixed && tryUpdateDateTaken(image.id, effectiveDateTaken)) {
                         onProgress?.invoke(done, total, "Date updated: ${image.displayName}")
                         dateFixed = true
-                    }
-
-                    // Strategy D — the reliable one for NON-OWNED files (WhatsApp/Zalo/Telegram/
-                    // downloads): Strategies A–C bake the date into the file EXIF but Samsung often
-                    // refuses to populate DATE_TAKEN for a row it owns, leaving it NULL so the photo
-                    // sorts under "today". Verify the column actually stuck; if not, delete + reinsert
-                    // as OWNER with the stamped bytes — the same retention method MetadataRestorer and
-                    // replaceFile use. The bytes are written verbatim so orientation/EXIF are kept.
-                    if (effectiveDateTaken > 0 && !dateTakenStuck(image.id, effectiveDateTaken)) {
-                        if (reinsertAsOwnerWithDate(image.id, image.mimeType, image.relativePath,
-                                image.displayName, effectiveDateTaken)) {
-                            onProgress?.invoke(done, total, "Date set (reinsert): ${image.displayName}")
-                            dateFixed = true
-                        }
                     }
 
                     if (dateFixed) fixed++
@@ -646,102 +629,11 @@ class LocalImageProcessor(private val context: Context) {
         return null
     }
 
-    /**
-     * Like [parseDateFromFilename] but ONLY matches an unambiguous explicit-date pattern
-     * (YYYYMMDD optionally followed by _HHMMSS). Excludes the 13-digit-epoch pattern, which can be
-     * an app-internal message ID. Such an explicit date is the real capture date and is trusted
-     * verbatim even when it differs from DATE_ADDED (downloaded/forwarded media is added later).
-     */
-    fun parseExplicitDateFromFilename(name: String): Long? {
-        val stem = name.substringBeforeLast(".").replace(Regex("""\s*\(\d+\)\s*"""), "").trim()
-        // YYYYMMDD + _/- + HHMMSS
-        Regex("""(\d{8})[_\-](\d{6})""").find(stem)?.let { m ->
-            val year = m.groupValues[1].substring(0, 4).toIntOrNull() ?: return@let
-            if (year in 2000..2035) return try {
-                SimpleDateFormat("yyyyMMddHHmmss", Locale.US).parse(m.groupValues[1] + m.groupValues[2])?.time
-            } catch (_: Exception) { null }
-        }
-        // YYYYMMDD only (e.g. WhatsApp IMG-20260324-WA0001). A 2000–2035 year start can't occur
-        // inside a 13-digit epoch (those start with 1.x e12 → "17…"), so this won't false-match IDs.
-        Regex("""(\d{8})""").find(stem)?.let { m ->
-            val year = m.groupValues[1].substring(0, 4).toIntOrNull() ?: return null
-            if (year in 2000..2035) return try {
-                SimpleDateFormat("yyyyMMdd", Locale.US).parse(m.groupValues[1])?.time
-            } catch (_: Exception) { null }
-        }
-        return null
-    }
-
-    /** True if the row's MediaStore DATE_TAKEN is within 24 h of [expectedMs] (i.e. it stuck). */
-    private fun dateTakenStuck(id: Long, expectedMs: Long): Boolean {
-        return try {
-            val uri = android.content.ContentUris.withAppendedId(
-                android.provider.MediaStore.Images.Media.EXTERNAL_CONTENT_URI, id)
-            context.contentResolver.query(uri, arrayOf(android.provider.MediaStore.MediaColumns.DATE_TAKEN),
-                null, null, null)?.use { c ->
-                if (c.moveToFirst()) {
-                    val dt = c.getLong(0)
-                    dt > 0 && Math.abs(dt - expectedMs) < 24 * 60 * 60 * 1000L
-                } else false
-            } ?: false
-        } catch (_: Exception) { false }
-    }
-
-    /**
-     * Reliable date fix for files this app does not own: reads the current (already EXIF-stamped)
-     * bytes verbatim, deletes the row, and re-inserts as OWNER with IS_PENDING + a double date
-     * update so DATE_TAKEN sticks on Samsung 13+. Bytes are written unchanged, so orientation and
-     * all other EXIF are preserved. Same retention method as MetadataRestorer / replaceFile.
-     */
-    private fun reinsertAsOwnerWithDate(id: Long, mimeType: String, relativePath: String,
-                                        displayName: String, dateTakenMs: Long): Boolean {
-        val uri = android.content.ContentUris.withAppendedId(
-            android.provider.MediaStore.Images.Media.EXTERNAL_CONTENT_URI, id)
-        val bytes = try {
-            context.contentResolver.openInputStream(uri)?.use { it.readBytes() }
-        } catch (_: Exception) { null } ?: return false
-        if (bytes.isEmpty()) return false
-
-        val deleted = try { context.contentResolver.delete(uri, null, null) > 0 } catch (_: Exception) { false }
-        if (!deleted) return false
-
-        val dateSec = dateTakenMs / 1000L
-        val values = android.content.ContentValues().apply {
-            put(android.provider.MediaStore.MediaColumns.DISPLAY_NAME, displayName)
-            put(android.provider.MediaStore.MediaColumns.MIME_TYPE, mimeType.ifEmpty { "image/jpeg" })
-            put(android.provider.MediaStore.MediaColumns.RELATIVE_PATH, relativePath.ifEmpty { "DCIM/" })
-            put(android.provider.MediaStore.MediaColumns.DATE_TAKEN, dateTakenMs)
-            put(android.provider.MediaStore.MediaColumns.DATE_ADDED, dateSec)
-            put(android.provider.MediaStore.MediaColumns.DATE_MODIFIED, dateSec)
-            if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.Q)
-                put(android.provider.MediaStore.MediaColumns.IS_PENDING, 1)
-        }
-        val newUri = try {
-            context.contentResolver.insert(
-                android.provider.MediaStore.Images.Media.EXTERNAL_CONTENT_URI, values)
-        } catch (_: Exception) { null } ?: return false
-
-        return try {
-            context.contentResolver.openOutputStream(newUri)?.use { it.write(bytes) } ?: return false
-            if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.Q) {
-                context.contentResolver.update(newUri, android.content.ContentValues().apply {
-                    put(android.provider.MediaStore.MediaColumns.IS_PENDING, 0)
-                    put(android.provider.MediaStore.MediaColumns.DATE_TAKEN, dateTakenMs)
-                    put(android.provider.MediaStore.MediaColumns.DATE_ADDED, dateSec)
-                    put(android.provider.MediaStore.MediaColumns.DATE_MODIFIED, dateSec)
-                }, null, null)
-                // Samsung resets dates during the IS_PENDING transition — force them again.
-                context.contentResolver.update(newUri, android.content.ContentValues().apply {
-                    put(android.provider.MediaStore.MediaColumns.DATE_TAKEN, dateTakenMs)
-                    put(android.provider.MediaStore.MediaColumns.DATE_ADDED, dateSec)
-                    put(android.provider.MediaStore.MediaColumns.DATE_MODIFIED, dateSec)
-                }, null, null)
-            }
-            true
-        } catch (_: Exception) {
-            runCatching { context.contentResolver.delete(newUri, null, null) }
-            false
-        }
+    /** True if [relativePath] is a chat/social/download app folder whose media should keep its
+     *  download date (DATE_ADDED), not any embedded original capture date. */
+    private fun isDownloadFolder(relativePath: String): Boolean {
+        val p = relativePath.lowercase()
+        return DOWNLOAD_FOLDER_HINTS.any { p.contains(it) }
     }
 
     private fun markChecked(id: Long) {
@@ -800,5 +692,11 @@ class LocalImageProcessor(private val context: Context) {
         private const val PREFS_NAME = "local_fix_state"
         private const val KEY_CHECKED = "checked_ids"
         private const val MAX_BUFFERED_IMAGE_BYTES = 32L * 1024 * 1024
+        // RELATIVE_PATH substrings for chat/social/download apps — media here keeps its download
+        // date (DATE_ADDED), never an embedded original capture date.
+        private val DOWNLOAD_FOLDER_HINTS = listOf(
+            "whatsapp", "zalo", "telegram", "messenger", "facebook", "instagram", "viber",
+            "line", "wechat", "kakaotalk", "signal", "snapchat", "tiktok", "twitter", "download"
+        )
     }
 }
