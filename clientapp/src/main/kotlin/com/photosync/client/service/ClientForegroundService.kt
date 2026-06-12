@@ -350,26 +350,14 @@ class ClientForegroundService : LifecycleService() {
         return START_STICKY
     }
 
-    @Volatile private var rotationFixInProgress = false
-
-    /** Local, no-hub repair of compressed-photo orientation (resets baked-upright WebP to normal). */
-    private suspend fun runFixRotation() {
-        if (rotationFixInProgress) { log("↻ Rotation fix already running…"); return }
-        rotationFixInProgress = true
-        try {
-            log("↻ Fixing photo rotation (compressed copies)…")
-            val n = com.photosync.client.media.RotationFixer(this).fix { done, total, name ->
-                if (done % 20 == 0 || done == total) {
-                    log("↻ Rotation $done/$total: $name")
-                    updateNotification("Fixing rotation: $done/$total")
-                }
-            }
-            log("✓ Rotation fix done — $n photo(s) set upright")
-            updateNotification("Ready — announcing on network")
-        } catch (t: Throwable) {
-            log("↻ Rotation fix error: ${t.javaClass.simpleName}: ${t.message}")
-        } finally { rotationFixInProgress = false }
-    }
+    /**
+     * "Fix Orientation" repair. Orientation can only be recovered from the ORIGINAL (the broken
+     * copy has sensor pixels tagged NORMAL — there is nothing local to recover the true rotation
+     * from without guessing). So this delegates to the hub-based metadata restore, which copies the
+     * original's orientation/EXIF verbatim onto the compressed copy. The old local RotationFixer
+     * (which stripped orientation to NORMAL on a false "baked-upright" premise) has been removed.
+     */
+    private suspend fun runFixRotation() = runRestoreMetadata()
 
     @Volatile private var metaRestoreInProgress = false
 
