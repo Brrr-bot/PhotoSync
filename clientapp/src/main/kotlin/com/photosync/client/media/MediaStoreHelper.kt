@@ -336,14 +336,28 @@ class MediaStoreHelper(private val context: Context) {
             dateAdded > 0         -> dateAdded * 1000L
             else                  -> System.currentTimeMillis()
         }
+        val captureSec = effectiveDateTaken / 1000L
+
+        // STANDARD STORAGE (the durable fix): keep compressed images as a WELL-FORMED WebP file —
+        // real ".webp" name + image/webp MIME — so Android's scanner reads its EXIF and never
+        // re-nulls the date the way it does for WebP-bytes-in-a-.jpg row. The new row is app-OWNED
+        // (insert path) and we set DATE_ADDED = capture date (the field the gallery falls back to and
+        // that survives Samsung's rescans). The hub upload-check matches by name-stem so the
+        // .jpg→.webp rename is not treated as a new file.
+        val storeAsWebp = !isVideo && mimeType == "image/webp"
+        if (storeAsWebp && !displayName.endsWith(".webp", ignoreCase = true)) {
+            displayName = displayName.substringBeforeLast('.') + ".webp"
+        }
 
         // ── Strategy A: TRUE in-place overwrite (preferred) ──────────────────────
         // Write bytes directly to the existing file — same ID, same name, no duplicates.
         // CRITICAL: separate byte-write from metadata-update so a metadata failure (Samsung
         // blocks MIME_TYPE update on camera-owned files) doesn't fall through to Strategy B,
         // which would delete the correctly-written file and re-insert as "(2)".
+        // Skip in-place overwrite when storing as .webp — the file must be renamed + re-owned, which
+        // only the insert path (Strategy B) can do.
         var wroteBytes = false
-        try {
+        if (!storeAsWebp) try {
             val realPath = resolveRealPath(origUri)
             wroteBytes = if (realPath != null && Build.VERSION.SDK_INT >= Build.VERSION_CODES.R
                     && android.os.Environment.isExternalStorageManager()) {
@@ -407,8 +421,11 @@ class MediaStoreHelper(private val context: Context) {
                 put(MediaStore.MediaColumns.RELATIVE_PATH, safeRelativePath)
                 put(MediaStore.MediaColumns.IS_PENDING, 1)
             }
-            // DATE_ADDED is seconds; Android may override it but setting it gives the best chance
-            if (dateAdded > 0) put(MediaStore.MediaColumns.DATE_ADDED, dateAdded)
+            // DATE_ADDED is seconds; Android may override it but setting it gives the best chance.
+            // For WebP we deliberately set it to the CAPTURE date (not the import time): it is the
+            // field the gallery sorts by when Samsung nulls DATE_TAKEN, and it survives rescans.
+            if (storeAsWebp) put(MediaStore.MediaColumns.DATE_ADDED, captureSec)
+            else if (dateAdded > 0) put(MediaStore.MediaColumns.DATE_ADDED, dateAdded)
         }
 
         val collection = when {
@@ -442,25 +459,30 @@ class MediaStoreHelper(private val context: Context) {
                 // DATE_TAKEN is set here as a ContentValues fallback; the hub also stamped
                 // DateTimeOriginal into the JPEG EXIF so the MediaStore scanner reads it too.
                 if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
+                    // For WebP use the CAPTURE date for DATE_ADDED/DATE_MODIFIED (durable sort field);
+                    // otherwise preserve the original's import timestamps.
+                    val addSec = if (storeAsWebp) captureSec else dateAdded
+                    val modSec = if (storeAsWebp) captureSec else dateModified
                     context.contentResolver.update(newUri, ContentValues().apply {
                         put(MediaStore.MediaColumns.IS_PENDING, 0)
                         put(MediaStore.MediaColumns.SIZE,       compressedBytes.size.toLong())
                         put(MediaStore.MediaColumns.DATE_TAKEN, effectiveDateTaken)
-                        if (dateAdded > 0) put(MediaStore.MediaColumns.DATE_ADDED, dateAdded)
+                        if (addSec > 0) put(MediaStore.MediaColumns.DATE_ADDED, addSec)
                         if (exifOrientationDeg >= 0) put(MediaStore.MediaColumns.ORIENTATION, exifOrientationDeg)
                     }, null, null)
                     // Separate update to force original timestamps — Android may reset them
                     // during IS_PENDING transition, so this must come after
-                    if (dateAdded > 0 || dateModified > 0) {
+                    if (addSec > 0 || modSec > 0) {
                         context.contentResolver.update(newUri, ContentValues().apply {
-                            if (dateAdded > 0) put(MediaStore.MediaColumns.DATE_ADDED, dateAdded)
-                            if (dateModified > 0) put(MediaStore.MediaColumns.DATE_MODIFIED, dateModified)
+                            if (addSec > 0) put(MediaStore.MediaColumns.DATE_ADDED, addSec)
+                            if (modSec > 0) put(MediaStore.MediaColumns.DATE_MODIFIED, modSec)
                         }, null, null)
                     }
-                    // Set the physical file mtime = original DATE_ADDED so the scanner
-                    // cannot overwrite it with the current time on a future rescan.
-                    if (dateAdded > 0) resolveRealPath(newUri)?.let { path ->
-                        try { java.io.File(path).setLastModified(dateAdded * 1000L) } catch (_: Exception) {}
+                    // Set the physical file mtime = the date we want preserved so a future scan
+                    // can't overwrite DATE_ADDED with "now".
+                    val mtimeMs = if (storeAsWebp) effectiveDateTaken else dateAdded * 1000L
+                    if (mtimeMs > 0) resolveRealPath(newUri)?.let { path ->
+                        try { java.io.File(path).setLastModified(mtimeMs) } catch (_: Exception) {}
                     }
                 }
                 markReplaced(originalId, newId, displayName)
