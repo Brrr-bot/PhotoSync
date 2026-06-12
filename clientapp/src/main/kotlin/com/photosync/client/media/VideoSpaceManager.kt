@@ -283,6 +283,31 @@ class VideoSpaceManager(private val context: Context) {
                     if (v.dateModifiedSec > 0) put(MediaStore.Video.Media.DATE_MODIFIED, v.dateModifiedSec)
                 }, null, null)
             }
+            // CRITICAL: the transcoder stamps "now" into the new MP4's internal creation_time
+            // (mvhd/tkhd/mdhd). Samsung re-reads that on every scan and overrides DATE_TAKEN, so the
+            // compressed video would appear under TODAY instead of its real shoot date. Patch the
+            // atoms to takenMs in place — same data-retention step used everywhere we write a video.
+            if (takenMs > 0) {
+                val patched = try { Mp4DateEditor.setCreationTime(context, newUri, takenMs) } catch (_: Throwable) { false }
+                if (patched) {
+                    val sec = takenMs / 1000L
+                    runCatching {
+                        context.contentResolver.update(newUri, ContentValues().apply {
+                            put(MediaStore.Video.Media.DATE_TAKEN, takenMs)
+                            if (v.dateAddedSec > 0) put(MediaStore.Video.Media.DATE_ADDED, v.dateAddedSec)
+                            put(MediaStore.Video.Media.DATE_MODIFIED, sec)
+                        }, null, null)
+                    }
+                    val path = try {
+                        context.contentResolver.query(newUri, arrayOf(MediaStore.Video.Media.DATA), null, null, null)
+                            ?.use { if (it.moveToFirst()) it.getString(0) else null }
+                    } catch (_: Exception) { null }
+                    if (path != null) runCatching {
+                        android.media.MediaScannerConnection.scanFile(context, arrayOf(path), arrayOf("video/mp4"), null)
+                    }
+                }
+                RemoteLogger.i("VideoSpace: compressed ${v.name} date-atoms patched=$patched -> $takenMs")
+            }
             true
         } catch (_: Exception) {
             runCatching { context.contentResolver.delete(newUri, null, null) }
