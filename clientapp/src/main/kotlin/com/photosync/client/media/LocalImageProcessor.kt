@@ -97,6 +97,7 @@ class LocalImageProcessor(private val context: Context) {
             val exifDateRaw  = exif.getAttribute(ExifInterface.TAG_DATETIME_ORIGINAL)
             val exifDateMs   = exifDateRaw?.let { parseExifDate(it) }
             val filenameDateMs = parseDateFromFilename(image.displayName)
+            val explicitDateMs = parseExplicitDateFromFilename(image.displayName)
             val dateAddedMs  = if (image.dateAdded > 0) image.dateAdded * 1000L else 0L
 
             // Media saved by chat/social/download apps (WhatsApp, Zalo, Telegram, Messenger,
@@ -106,18 +107,21 @@ class LocalImageProcessor(private val context: Context) {
             // date is authoritative and overrides everything.
             val isDownloadedAppImage = isDownloadFolder(image.relativePath)
 
-            // Sanity check for camera-style files: some apps reuse 13-digit message IDs / date-like
-            // numbers in filenames that aren't capture dates. If the filename date differs from
-            // DATE_ADDED by more than 24 h, treat it as unreliable and fall back to DATE_ADDED.
+            // 24 h sanity check ONLY for the ambiguous 13-digit-epoch pattern (some apps reuse those
+            // as message IDs). An EXPLICIT YYYYMMDD[_HHMMSS] filename (a real camera/screenshot
+            // timestamp) is trusted verbatim — these files are routinely added long after capture
+            // (e.g. restored from the hub today but shot in May), so they must NOT be forced to
+            // DATE_ADDED or they'd all pile up under the restore day.
             val safeFilenameDateMs = if (filenameDateMs != null && dateAddedMs > 0) {
                 if (Math.abs(filenameDateMs - dateAddedMs) > 24 * 60 * 60 * 1000L) null else filenameDateMs
             } else filenameDateMs
 
             // Authoritative capture date — what the gallery SHOULD sort by.
             val authoritativeDate = when {
-                isDownloadedAppImage       -> dateAddedMs   // download date wins for app-saved media
-                exifDateMs != null         -> exifDateMs
-                safeFilenameDateMs != null -> safeFilenameDateMs
+                isDownloadedAppImage       -> dateAddedMs        // download date wins for app-saved media
+                exifDateMs != null         -> exifDateMs         // real EXIF capture date
+                explicitDateMs != null     -> explicitDateMs     // camera YYYYMMDD_HHMMSS = capture date, verbatim
+                safeFilenameDateMs != null -> safeFilenameDateMs // ambiguous 13-digit, 24h-checked
                 else -> hubByName[image.displayName]?.lastModifiedMs?.takeIf { it > 0 } ?: 0L
             }
             // Value to write if a fix is needed: authoritative source, else fall back to
@@ -398,6 +402,10 @@ class LocalImageProcessor(private val context: Context) {
 
             // Write directly to the file (MANAGE_EXTERNAL_STORAGE required).
             f.writeBytes(stamped)
+            // Set the file mtime to the capture date too: Samsung's scanner falls back to the file
+            // mtime for DATE_TAKEN when it can't read the EXIF, so mtime must agree or the rescan
+            // re-stamps the photo with "now" and it piles up under today/the import day.
+            runCatching { f.setLastModified(dateTakenMs) }
 
             // Update MediaStore DATE_TAKEN and trigger rescan so Samsung re-reads the EXIF.
             val uri = android.content.ContentUris.withAppendedId(
@@ -641,6 +649,26 @@ class LocalImageProcessor(private val context: Context) {
             } catch (_: Exception) { null }
         }
 
+        return null
+    }
+
+    /** Only an unambiguous explicit-date filename (YYYYMMDD optionally + _HHMMSS) — the real capture
+     *  timestamp for camera/screenshot files. Excludes the 13-digit-epoch pattern (app message IDs).
+     *  Trusted verbatim even when it's far from DATE_ADDED (restored/imported long after capture). */
+    fun parseExplicitDateFromFilename(name: String): Long? {
+        val stem = name.substringBeforeLast(".").replace(Regex("""\s*\(\d+\)\s*"""), "").trim()
+        Regex("""(\d{8})[_\-](\d{6})""").find(stem)?.let { m ->
+            val year = m.groupValues[1].substring(0, 4).toIntOrNull() ?: return@let
+            if (year in 2000..2035) return try {
+                SimpleDateFormat("yyyyMMddHHmmss", Locale.US).parse(m.groupValues[1] + m.groupValues[2])?.time
+            } catch (_: Exception) { null }
+        }
+        Regex("""(\d{8})""").find(stem)?.let { m ->
+            val year = m.groupValues[1].substring(0, 4).toIntOrNull() ?: return null
+            if (year in 2000..2035) return try {
+                SimpleDateFormat("yyyyMMdd", Locale.US).parse(m.groupValues[1])?.time
+            } catch (_: Exception) { null }
+        }
         return null
     }
 
