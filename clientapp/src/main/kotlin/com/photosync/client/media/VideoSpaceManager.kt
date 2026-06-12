@@ -122,24 +122,31 @@ class VideoSpaceManager(private val context: Context) {
                     val deleted = try { context.contentResolver.delete(videoUri, null, null) > 0 } catch (_: Exception) { false }
                     if (deleted) { thumbed++; freed += (v.size - stampedPoster.size).coerceAtLeast(0L) }
                     else { skipped++ }
-                } else if (restoredEligible || (v.name !in compressedNames && v.id.toString() !in compressedIds)) {
-                    // Recent video, OR a restored original past its 24 h grace -> transcode to HEVC,
-                    // preserving filename + original date.
+                } else if (isHevc(videoUri)) {
+                    // Already HEVC — nothing to do. Decided by the ACTUAL codec in the file, not a
+                    // name list, so a video can never get stuck "marked done" while still H.264.
+                    if (restoredEligible) restoredToClear.add(v.name)
+                    skipped++
+                } else if (restoredEligible || v.name !in compressedNames) {
+                    // Recent H.264 video, OR a restored original past its 24 h grace -> transcode to
+                    // HEVC, preserving filename + original date.
                     val tmp = File(context.cacheDir, "vtrans_${v.id}.mp4")
+                    var shrank = false
                     try {
                         val okT = VideoTranscoder.transcode(context, videoUri, tmp.absolutePath)
                         if (okT && tmp.exists() && tmp.length() in 1 until (v.size * 9 / 10)) {
                             val bytes = tmp.readBytes()
                             val savedBytes = v.size - bytes.size
                             if (replaceCompressedVideo(v, bytes)) {
-                                compressed++; freed += savedBytes.coerceAtLeast(0L)
+                                compressed++; freed += savedBytes.coerceAtLeast(0L); shrank = true
                             }
                         }
                     } finally { tmp.delete() }
-                    compressedNames.add(v.name)   // mark regardless to avoid repeated transcode
-                    // Once a restored original has been compressed it's a normal video again — drop
-                    // the restored marker so it isn't held out / re-processed forever.
-                    if (restoredEligible) restoredToClear.add(v.name)
+                    // Only remember files we genuinely COULDN'T shrink, so we don't retry them every
+                    // cycle. A successful transcode is now HEVC and is recognised by the codec check
+                    // above — no name tracking needed, so a future restored original re-compresses.
+                    if (!shrank) compressedNames.add(v.name)
+                    else if (restoredEligible) restoredToClear.add(v.name)
                 }
             } catch (_: Throwable) { skipped++ }
         }
@@ -577,6 +584,28 @@ class VideoSpaceManager(private val context: Context) {
         return DOWNLOAD_FOLDER_HINTS.any { p.contains(it) }
     }
 
+    /**
+     * True if the video's actual video track is already HEVC (H.265). Decided from the container's
+     * track format, so the "is it compressed?" question is answered by real content — not a name
+     * list that can drift out of sync (the bug that left H.264 files marked "done").
+     * On any read failure returns false (treat as not-yet-HEVC and let transcode decide).
+     */
+    private fun isHevc(uri: Uri): Boolean = try {
+        val ex = android.media.MediaExtractor()
+        try {
+            ex.setDataSource(context, uri, null)
+            var hevc = false
+            for (i in 0 until ex.trackCount) {
+                val mime = ex.getTrackFormat(i).getString(android.media.MediaFormat.KEY_MIME) ?: continue
+                if (mime.startsWith("video/")) {
+                    hevc = mime.equals("video/hevc", true) || mime.contains("hevc", true)
+                    break
+                }
+            }
+            hevc
+        } finally { ex.release() }
+    } catch (_: Throwable) { false }
+
     companion object {
         private val DOWNLOAD_FOLDER_HINTS = listOf(
             "whatsapp", "zalo", "telegram", "messenger", "facebook", "instagram", "viber",
@@ -593,6 +622,6 @@ class VideoSpaceManager(private val context: Context) {
         internal const val KEY_USER_RESTORED   = "user_restored_videos"
         private const val KEY_VIDEO_DATES_REPAIRED = "compressed_video_dates_repaired"
         private const val KEY_COMPRESS_VERSION  = "compress_version"
-        private const val COMPRESS_VERSION      = 2  // bump → clears compressed_video_names so H.265 re-runs
+        private const val COMPRESS_VERSION      = 3  // bump → clears compressed_video_names so H.265 re-runs
     }
 }
