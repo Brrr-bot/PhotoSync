@@ -314,20 +314,11 @@ class HubGalleryActivity : AppCompatActivity() {
                 }
                 RemoteLogger.i("HubRestore: downloaded ${entry.displayName} ${raw.length() / 1_048_576}MB")
 
-                runOnUiThread { Toast.makeText(this, "Compressing ${entry.displayName}…", Toast.LENGTH_SHORT).show() }
-
-                // Compress as usual (H.265). Use the transcode only if it actually came out smaller
-                // AND is a valid, complete file; otherwise keep the original bytes so we never save
-                // a truncated/inflated video.
-                val rawUri = Uri.fromFile(raw)
-                val transcoded = try {
-                    VideoTranscoder.transcode(this, rawUri, txc.absolutePath) &&
-                        txc.exists() && txc.length() in 1 until raw.length()
-                } catch (t: Throwable) {
-                    RemoteLogger.i("HubRestore: transcode threw ${t.javaClass.simpleName}"); false
-                }
-                val finalFile = if (transcoded) txc else raw
-                RemoteLogger.i("HubRestore: transcoded=$transcoded final=${finalFile.length() / 1_048_576}MB")
+                // Restore the FULL original (no transcode here). VideoSpaceManager keeps it for a
+                // 24 h grace, then transcodes it to HEVC on a later run — so the user gets the
+                // original at full quality first.
+                val finalFile = raw
+                RemoteLogger.i("HubRestore: restoring original ${finalFile.length() / 1_048_576}MB")
 
                 // Authoritative date: the poster placeholder already on the phone carries the
                 // correct capture date — reuse it so the restored video lands on the SAME day,
@@ -500,8 +491,11 @@ class HubGalleryActivity : AppCompatActivity() {
         if (mapEntry != null) restoreSet.remove(mapEntry)
         val posterNames = prefs.getStringSet(com.photosync.client.media.VideoSpaceManager.KEY_POSTER_NAMES, emptySet())!!.toMutableSet()
         posterNames.remove(posterName); posterNames.remove(computedPoster)
-        val userRestored = prefs.getStringSet(com.photosync.client.media.VideoSpaceManager.KEY_USER_RESTORED, emptySet())!!.toMutableSet()
-        userRestored.add(videoName)
+        // Mark restored with a timestamp — VideoSpaceManager keeps the original 24 h, then transcodes
+        // it to HEVC (never re-posterises). Drop any prior bare/old entry for this video first.
+        val userRestored = prefs.getStringSet(com.photosync.client.media.VideoSpaceManager.KEY_USER_RESTORED, emptySet())!!
+            .filterNot { it == videoName || it.startsWith("$videoName|") }.toMutableSet()
+        userRestored.add("$videoName|${System.currentTimeMillis()}")
 
         prefs.edit()
             .putStringSet(com.photosync.client.media.VideoSpaceManager.KEY_RESTORE, restoreSet)
