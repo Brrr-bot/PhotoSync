@@ -27,36 +27,147 @@ object WebPConverter {
     fun convert(sourceBytes: ByteArray, cacheDir: File): ByteArray? {
         if (Build.VERSION.SDK_INT < Build.VERSION_CODES.S) return null
         return try {
-            val srcExif = ExifInterface(ByteArrayInputStream(sourceBytes))
-
             val bitmap = BitmapFactory.decodeByteArray(sourceBytes, 0, sourceBytes.size)
                 ?: return null
+            val w = bitmap.width
+            val h = bitmap.height
 
             val out = ByteArrayOutputStream()
             bitmap.compress(Bitmap.CompressFormat.WEBP_LOSSY, QUALITY, out)
             bitmap.recycle()
-            val webpBytes = out.toByteArray()
+            val simpleWebp = out.toByteArray()
 
-            // Copy all EXIF tags from the source into the WebP
-            val tmp = File.createTempFile("ps_webp_", ".webp", cacheDir)
-            try {
-                tmp.writeBytes(webpBytes)
-                ExifInterface(tmp.absolutePath).also { dst ->
-                    // Copy EVERY tag — including TAG_ORIENTATION — verbatim from the original.
-                    // BitmapFactory.decodeByteArray does NOT apply EXIF rotation: the decoded
-                    // pixels are the raw sensor pixels, identical in orientation to the source.
-                    // So the WebP must carry the SAME orientation tag as the original (e.g. 6),
-                    // otherwise portrait photos display sideways. Never normalise/bake here.
-                    for (tag in TAGS) {
-                        srcExif.getAttribute(tag)?.let { dst.setAttribute(tag, it) }
-                    }
-                    dst.saveAttributes()
-                }
-                tmp.readBytes()
-            } finally {
-                tmp.delete()
-            }
+            // PREFERRED — lossless metadata copy: lift the raw EXIF (incl. vendor MakerNotes), ICC
+            // colour profile and XMP byte-blocks straight out of the source JPEG and mux them into
+            // the WebP as native EXIF/ICCP/XMP chunks. Nothing is interpreted or dropped. We only
+            // use the result if it decodes cleanly, so a malformed mux can never reach storage.
+            val muxed = try { rawCopyMetadata(sourceBytes, simpleWebp, w, h) } catch (_: Throwable) { null }
+            if (muxed != null && isDecodable(muxed)) return muxed
+
+            // FALLBACK — tag-by-tag copy via ExifInterface (used for non-JPEG sources, or if the
+            // raw mux failed validation). Carries the curated EXIF/XMP set verbatim.
+            convertWithExifInterface(sourceBytes, simpleWebp, cacheDir)
         } catch (_: Exception) { null }
+    }
+
+    /** True if [bytes] is a structurally valid, decodable image (header-only decode — cheap). */
+    private fun isDecodable(bytes: ByteArray): Boolean = try {
+        val opts = BitmapFactory.Options().apply { inJustDecodeBounds = true }
+        BitmapFactory.decodeByteArray(bytes, 0, bytes.size, opts)
+        opts.outWidth > 0 && opts.outHeight > 0
+    } catch (_: Throwable) { false }
+
+    private fun convertWithExifInterface(sourceBytes: ByteArray, simpleWebp: ByteArray, cacheDir: File): ByteArray? {
+        val srcExif = ExifInterface(ByteArrayInputStream(sourceBytes))
+        val tmp = File.createTempFile("ps_webp_", ".webp", cacheDir)
+        return try {
+            tmp.writeBytes(simpleWebp)
+            ExifInterface(tmp.absolutePath).also { dst ->
+                // Copy EVERY tag — including TAG_ORIENTATION — verbatim from the source.
+                // BitmapFactory.decodeByteArray does NOT apply EXIF rotation, so the WebP must
+                // carry the SAME orientation tag as the original or portraits display sideways.
+                for (tag in TAGS) {
+                    srcExif.getAttribute(tag)?.let { dst.setAttribute(tag, it) }
+                }
+                dst.saveAttributes()
+            }
+            tmp.readBytes()
+        } catch (_: Exception) { null } finally { tmp.delete() }
+    }
+
+    // ── Raw metadata mux (JPEG segments → WebP chunks) ─────────────────────────
+
+    private class JpegMeta(val exifTiff: ByteArray?, val icc: ByteArray?, val xmp: ByteArray?)
+
+    /** Builds a VP8X WebP from [simpleWebp]'s image data plus the raw EXIF/ICC/XMP lifted from the
+     *  source JPEG. Returns null if the source has no metadata or isn't a parseable JPEG/WebP. */
+    private fun rawCopyMetadata(jpeg: ByteArray, simpleWebp: ByteArray, w: Int, h: Int): ByteArray? {
+        val meta = extractJpegMeta(jpeg)
+        if (meta.exifTiff == null && meta.icc == null && meta.xmp == null) return null
+        // simpleWebp must be a plain "RIFF....WEBP<imagechunk>" produced by Bitmap.compress.
+        if (simpleWebp.size < 16) return null
+        if (!regionEquals(simpleWebp, 0, "RIFF".toByteArray(Charsets.ISO_8859_1)) ||
+            !regionEquals(simpleWebp, 8, "WEBP".toByteArray(Charsets.ISO_8859_1))) return null
+        val imageChunk = simpleWebp.copyOfRange(12, simpleWebp.size)   // the VP8 / VP8L chunk, verbatim
+
+        val body = ByteArrayOutputStream()
+        var flags = 0
+        if (meta.icc != null)      flags = flags or 0x20
+        if (meta.exifTiff != null) flags = flags or 0x08
+        if (meta.xmp != null)      flags = flags or 0x04
+        val vp8x = ByteArray(10)
+        vp8x[0] = flags.toByte()
+        val cw = w - 1; val ch = h - 1
+        vp8x[4] = (cw and 0xFF).toByte(); vp8x[5] = ((cw shr 8) and 0xFF).toByte(); vp8x[6] = ((cw shr 16) and 0xFF).toByte()
+        vp8x[7] = (ch and 0xFF).toByte(); vp8x[8] = ((ch shr 8) and 0xFF).toByte(); vp8x[9] = ((ch shr 16) and 0xFF).toByte()
+        writeChunk(body, "VP8X", vp8x)
+        meta.icc?.let { writeChunk(body, "ICCP", it) }    // ICC must precede the image
+        body.write(imageChunk)
+        meta.exifTiff?.let { writeChunk(body, "EXIF", it) }
+        meta.xmp?.let { writeChunk(body, "XMP ", it) }
+        val bodyBytes = body.toByteArray()
+
+        val riff = ByteArrayOutputStream()
+        riff.write("RIFF".toByteArray(Charsets.ISO_8859_1))
+        riff.write(intLE(4 + bodyBytes.size))   // "WEBP" + body
+        riff.write("WEBP".toByteArray(Charsets.ISO_8859_1))
+        riff.write(bodyBytes)
+        return riff.toByteArray()
+    }
+
+    /** Pulls the raw EXIF TIFF block, full ICC profile and XMP packet out of a JPEG's APP segments. */
+    private fun extractJpegMeta(jpeg: ByteArray): JpegMeta {
+        if (jpeg.size < 4 || (jpeg[0].toInt() and 0xFF) != 0xFF || (jpeg[1].toInt() and 0xFF) != 0xD8)
+            return JpegMeta(null, null, null)
+        val exifPrefix = "Exif\u0000\u0000".toByteArray(Charsets.ISO_8859_1)              // 6 bytes
+        val xmpPrefix  = "http://ns.adobe.com/xap/1.0/\u0000".toByteArray(Charsets.ISO_8859_1)
+        val iccPrefix  = "ICC_PROFILE\u0000".toByteArray(Charsets.ISO_8859_1)             // 12 bytes
+        var exif: ByteArray? = null
+        var xmp: ByteArray? = null
+        val iccParts = ArrayList<ByteArray>()
+        var pos = 2
+        while (pos + 4 <= jpeg.size) {
+            if ((jpeg[pos].toInt() and 0xFF) != 0xFF) break
+            val marker = jpeg[pos + 1].toInt() and 0xFF
+            if (marker == 0xD9 || marker == 0xDA) break              // EOI / start-of-scan → no more metadata
+            if (marker == 0x01 || marker in 0xD0..0xD7) { pos += 2; continue }   // standalone markers, no length
+            val len = ((jpeg[pos + 2].toInt() and 0xFF) shl 8) or (jpeg[pos + 3].toInt() and 0xFF)
+            if (len < 2 || pos + 2 + len > jpeg.size) break
+            val segStart = pos + 4
+            val segLen = len - 2
+            when (marker) {
+                0xE1 -> when {
+                    segLen >= exifPrefix.size && regionEquals(jpeg, segStart, exifPrefix) ->
+                        if (exif == null) exif = jpeg.copyOfRange(segStart + exifPrefix.size, segStart + segLen)
+                    segLen >= xmpPrefix.size && regionEquals(jpeg, segStart, xmpPrefix) ->
+                        if (xmp == null) xmp = jpeg.copyOfRange(segStart + xmpPrefix.size, segStart + segLen)
+                }
+                0xE2 -> if (segLen >= iccPrefix.size + 2 && regionEquals(jpeg, segStart, iccPrefix)) {
+                    // 12-byte prefix + 1 seq-no + 1 count, then the ICC chunk payload
+                    iccParts.add(jpeg.copyOfRange(segStart + iccPrefix.size + 2, segStart + segLen))
+                }
+            }
+            pos += 2 + len
+        }
+        val icc = if (iccParts.isEmpty()) null else iccParts.reduce { a, b -> a + b }
+        return JpegMeta(exif, icc, xmp)
+    }
+
+    private fun writeChunk(out: ByteArrayOutputStream, fourCC: String, data: ByteArray) {
+        out.write(fourCC.toByteArray(Charsets.ISO_8859_1))
+        out.write(intLE(data.size))
+        out.write(data)
+        if (data.size % 2 == 1) out.write(0)   // RIFF chunks are padded to an even size
+    }
+
+    private fun intLE(v: Int) = byteArrayOf(
+        (v and 0xFF).toByte(), ((v shr 8) and 0xFF).toByte(),
+        ((v shr 16) and 0xFF).toByte(), ((v shr 24) and 0xFF).toByte())
+
+    private fun regionEquals(buf: ByteArray, off: Int, prefix: ByteArray): Boolean {
+        if (off < 0 || off + prefix.size > buf.size) return false
+        for (i in prefix.indices) if (buf[off + i] != prefix[i]) return false
+        return true
     }
 
     private val TAGS = arrayOf(
