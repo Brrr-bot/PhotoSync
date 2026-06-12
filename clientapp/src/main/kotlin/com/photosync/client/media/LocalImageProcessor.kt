@@ -96,18 +96,22 @@ class LocalImageProcessor(private val context: Context) {
             val exifDateRaw  = exif.getAttribute(ExifInterface.TAG_DATETIME_ORIGINAL)
             val exifDateMs   = exifDateRaw?.let { parseExifDate(it) }
             val filenameDateMs = parseDateFromFilename(image.displayName)
+            val explicitDateMs = parseExplicitDateFromFilename(image.displayName)
             val dateAddedMs  = if (image.dateAdded > 0) image.dateAdded * 1000L else 0L
 
-            // Best date: MediaStore DATE_TAKEN → EXIF → filename (sanity-checked) → DATE_ADDED
+            // An EXPLICIT date filename (YYYYMMDD[_HHMMSS], e.g. WhatsApp IMG-20260324-WA0001) is the
+            // real capture date and is trusted VERBATIM. Downloaded/forwarded media is legitimately
+            // added long after capture, so it routinely differs from DATE_ADDED by far more than 24 h
+            // — conserve that date, never discard it.
             //
-            // Sanity check: some apps (Zalo, Telegram) embed internal message IDs in filenames
-            // that happen to be 13 digits and pass the ms-epoch range check but aren't real dates.
-            // If the filename-derived date differs from DATE_ADDED by more than 24 h, the filename
-            // number is almost certainly an app-internal ID, not a capture date — use DATE_ADDED.
-            val safeFilenameDateMs = if (filenameDateMs != null && dateAddedMs > 0) {
-                val diffMs = Math.abs(filenameDateMs - dateAddedMs)
-                if (diffMs > 24 * 60 * 60 * 1000L) null else filenameDateMs
-            } else filenameDateMs
+            // The 24 h sanity check applies ONLY to the ambiguous 13-digit-epoch pattern, which some
+            // apps (Zalo, Telegram) reuse for internal message IDs that merely look like timestamps.
+            val safeFilenameDateMs = when {
+                explicitDateMs != null -> explicitDateMs
+                filenameDateMs != null && dateAddedMs > 0 ->
+                    if (Math.abs(filenameDateMs - dateAddedMs) > 24 * 60 * 60 * 1000L) null else filenameDateMs
+                else -> filenameDateMs
+            }
 
             // Authoritative capture date — what the gallery SHOULD sort by.
             // Trust the file's own EXIF first, then the filename, then the hub's
@@ -625,6 +629,32 @@ class LocalImageProcessor(private val context: Context) {
             } catch (_: Exception) { null }
         }
 
+        return null
+    }
+
+    /**
+     * Like [parseDateFromFilename] but ONLY matches an unambiguous explicit-date pattern
+     * (YYYYMMDD optionally followed by _HHMMSS). Excludes the 13-digit-epoch pattern, which can be
+     * an app-internal message ID. Such an explicit date is the real capture date and is trusted
+     * verbatim even when it differs from DATE_ADDED (downloaded/forwarded media is added later).
+     */
+    fun parseExplicitDateFromFilename(name: String): Long? {
+        val stem = name.substringBeforeLast(".").replace(Regex("""\s*\(\d+\)\s*"""), "").trim()
+        // YYYYMMDD + _/- + HHMMSS
+        Regex("""(\d{8})[_\-](\d{6})""").find(stem)?.let { m ->
+            val year = m.groupValues[1].substring(0, 4).toIntOrNull() ?: return@let
+            if (year in 2000..2035) return try {
+                SimpleDateFormat("yyyyMMddHHmmss", Locale.US).parse(m.groupValues[1] + m.groupValues[2])?.time
+            } catch (_: Exception) { null }
+        }
+        // YYYYMMDD only (e.g. WhatsApp IMG-20260324-WA0001). A 2000–2035 year start can't occur
+        // inside a 13-digit epoch (those start with 1.x e12 → "17…"), so this won't false-match IDs.
+        Regex("""(\d{8})""").find(stem)?.let { m ->
+            val year = m.groupValues[1].substring(0, 4).toIntOrNull() ?: return null
+            if (year in 2000..2035) return try {
+                SimpleDateFormat("yyyyMMdd", Locale.US).parse(m.groupValues[1])?.time
+            } catch (_: Exception) { null }
+        }
         return null
     }
 
