@@ -104,6 +104,14 @@ class FileSyncer(
             .map    { it.substringBeforeLast('.').lowercase() }
             .toHashSet()
 
+        // Lowercase stems of EVERY file on USB. A phone file whose stem matches one of these is
+        // already backed up under some extension — so the client compressing foo.jpg → foo.webp is
+        // NOT a new file and must not be re-downloaded. This is what lets us store proper .webp
+        // copies on the phone without triggering a re-backup loop.
+        val usbStems = existing
+            .map { it.substringBeforeLast('.').lowercase() }
+            .toHashSet()
+
         fun isPosterImage(displayName: String): Boolean {
             if (usbVideoStems.isEmpty()) return false
             val ext = displayName.substringAfterLast('.').lowercase()
@@ -140,7 +148,10 @@ class FileSyncer(
             if (isPosterImage(file.displayName)) return@filter false
             val notOnUsb = file.displayName !in existing &&
                 file.displayName.substringBeforeLast('.') !in existing &&
-                strippedName !in existing
+                strippedName !in existing &&
+                // stem match: a USB file with the same stem (any extension) means it's backed up,
+                // so a compressed foo.webp is recognised when only foo.jpg is on USB.
+                strippedName.substringBeforeLast('.').lowercase() !in usbStems
             if (notOnUsb) return@filter true
             // File is on USB — check if it is truncated (< 90% of phone size)
             val usbSize = usbSizeByName[file.displayName]
