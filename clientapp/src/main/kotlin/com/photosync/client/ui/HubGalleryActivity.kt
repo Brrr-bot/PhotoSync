@@ -413,6 +413,26 @@ class HubGalleryActivity : AppCompatActivity() {
                         put(MediaStore.Video.Media.DATE_MODIFIED, dateSec)
                     }, null, null)
                 }
+                // Patch the MP4's internal creation_time atoms so Samsung doesn't override
+                // DATE_TAKEN with the transcoder's "now" — same retention step used everywhere.
+                if (dateMs > 0) {
+                    val patched = try { com.photosync.client.media.Mp4DateEditor.setCreationTime(this, uri, dateMs) }
+                                  catch (_: Throwable) { false }
+                    if (patched) {
+                        runCatching {
+                            contentResolver.update(uri, ContentValues().apply {
+                                put(MediaStore.Video.Media.DATE_TAKEN, dateMs)
+                                put(MediaStore.Video.Media.DATE_MODIFIED, dateSec)
+                            }, null, null)
+                        }
+                        val path = contentResolver.query(uri, arrayOf(MediaStore.Video.Media.DATA), null, null, null)
+                            ?.use { if (it.moveToFirst()) it.getString(0) else null }
+                        if (path != null) runCatching {
+                            android.media.MediaScannerConnection.scanFile(this, arrayOf(path), arrayOf("video/mp4"), null)
+                        }
+                    }
+                    RemoteLogger.i("HubRestore: mp4 date atoms patched=$patched -> $dateMs")
+                }
                 true
             } catch (e: Exception) {
                 // Never leave a half-written/pending row behind — it shows in the gallery as a
