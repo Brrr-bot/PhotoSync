@@ -41,8 +41,12 @@ object WebPConverter {
             // colour profile and XMP byte-blocks straight out of the source JPEG and mux them into
             // the WebP as native EXIF/ICCP/XMP chunks. Nothing is interpreted or dropped. We only
             // use the result if it decodes cleanly, so a malformed mux can never reach storage.
-            val muxed = try { rawCopyMetadata(sourceBytes, simpleWebp, w, h) } catch (_: Throwable) { null }
-            if (muxed != null && isDecodable(muxed)) return muxed
+            val muxed = try { rawCopyMetadata(sourceBytes, simpleWebp, w, h) }
+                        catch (t: Throwable) { android.util.Log.w("WebPConv", "mux threw ${t.javaClass.simpleName}: ${t.message}"); null }
+            if (muxed != null) {
+                if (isDecodable(muxed)) { android.util.Log.i("WebPConv", "lossless mux OK (${muxed.size}B)"); return muxed }
+                android.util.Log.w("WebPConv", "muxed NOT decodable (${muxed.size}B) — falling back")
+            } else android.util.Log.w("WebPConv", "mux returned null — falling back")
 
             // FALLBACK — tag-by-tag copy via ExifInterface (used for non-JPEG sources, or if the
             // raw mux failed validation). Carries the curated EXIF/XMP set verbatim.
@@ -88,11 +92,33 @@ object WebPConverter {
         if (simpleWebp.size < 16) return null
         if (!regionEquals(simpleWebp, 0, "RIFF".toByteArray(Charsets.ISO_8859_1)) ||
             !regionEquals(simpleWebp, 8, "WEBP".toByteArray(Charsets.ISO_8859_1))) return null
-        val imageChunk = simpleWebp.copyOfRange(12, simpleWebp.size)   // the VP8 / VP8L chunk, verbatim
+        // Bitmap.compress may emit either a plain "VP8 " webp OR an extended one (VP8X + ALPH +
+        // VP8 ). Parse its chunks: keep the image data, DROP any existing VP8X (we build our own —
+        // two VP8X chunks make Android's decoder reject the file), and note whether alpha is present.
+        var hasAlpha = false
+        val imageBody = ByteArrayOutputStream()
+        var p = 12
+        while (p + 8 <= simpleWebp.size) {
+            val cc = String(simpleWebp, p, 4, Charsets.ISO_8859_1)
+            val sz = intFromLE(simpleWebp, p + 4)
+            val dataStart = p + 8
+            if (sz < 0 || dataStart + sz > simpleWebp.size) break
+            val padded = sz + (sz and 1)
+            when (cc) {
+                "VP8X" -> { /* drop — rebuilt below */ }
+                "ALPH" -> { hasAlpha = true; imageBody.write(simpleWebp, p, 8 + padded) }
+                "VP8 ", "VP8L", "ANIM", "ANMF" -> imageBody.write(simpleWebp, p, 8 + padded)
+                else -> { /* skip any other chunk */ }
+            }
+            p = dataStart + padded
+        }
+        val imageChunks = imageBody.toByteArray()
+        if (imageChunks.isEmpty()) return null
 
         val body = ByteArrayOutputStream()
         var flags = 0
         if (meta.icc != null)      flags = flags or 0x20
+        if (hasAlpha)              flags = flags or 0x10
         if (meta.exifTiff != null) flags = flags or 0x08
         if (meta.xmp != null)      flags = flags or 0x04
         val vp8x = ByteArray(10)
@@ -102,7 +128,7 @@ object WebPConverter {
         vp8x[7] = (ch and 0xFF).toByte(); vp8x[8] = ((ch shr 8) and 0xFF).toByte(); vp8x[9] = ((ch shr 16) and 0xFF).toByte()
         writeChunk(body, "VP8X", vp8x)
         meta.icc?.let { writeChunk(body, "ICCP", it) }    // ICC must precede the image
-        body.write(imageChunk)
+        body.write(imageChunks)
         meta.exifTiff?.let { writeChunk(body, "EXIF", it) }
         meta.xmp?.let { writeChunk(body, "XMP ", it) }
         val bodyBytes = body.toByteArray()
@@ -163,6 +189,10 @@ object WebPConverter {
     private fun intLE(v: Int) = byteArrayOf(
         (v and 0xFF).toByte(), ((v shr 8) and 0xFF).toByte(),
         ((v shr 16) and 0xFF).toByte(), ((v shr 24) and 0xFF).toByte())
+
+    private fun intFromLE(buf: ByteArray, off: Int): Int =
+        (buf[off].toInt() and 0xFF) or ((buf[off + 1].toInt() and 0xFF) shl 8) or
+        ((buf[off + 2].toInt() and 0xFF) shl 16) or ((buf[off + 3].toInt() and 0xFF) shl 24)
 
     private fun regionEquals(buf: ByteArray, off: Int, prefix: ByteArray): Boolean {
         if (off < 0 || off + prefix.size > buf.size) return false
