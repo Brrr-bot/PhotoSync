@@ -34,14 +34,22 @@ class MetadataRestorer(private val context: Context) {
         hubFiles: List<HubFileEntry>,
         progress: ((done: Int, total: Int, name: String) -> Unit)? = null
     ): Int {
-        val hubNames = hubFiles
-            .filter { it.deviceName == deviceName && it.displayName.substringAfterLast('.', "").lowercase() in imageExts }
-            .map { it.displayName }
-            .toHashSet()
-        if (hubNames.isEmpty()) return 0
+        // Map every image ORIGINAL on the hub by lowercase STEM, so a phone "foo.webp" (already
+        // migrated) still resolves to its hub original "foo.jpg" and can be re-processed. Prefer a
+        // non-.webp original over a .webp if both somehow exist for a stem.
+        val hubByStem = HashMap<String, String>()
+        for (f in hubFiles) {
+            if (f.deviceName != deviceName) continue
+            if (f.displayName.substringAfterLast('.', "").lowercase() !in imageExts) continue
+            val stem = f.displayName.substringBeforeLast('.').lowercase()
+            val cur = hubByStem[stem]
+            if (cur == null || (cur.endsWith(".webp", true) && !f.displayName.endsWith(".webp", true)))
+                hubByStem[stem] = f.displayName
+        }
+        if (hubByStem.isEmpty()) return 0
 
-        // Phone images that also exist on the hub (by exact name).
-        data class Local(val id: Long, val name: String, val rel: String, val taken: Long)
+        // Phone images whose stem has a hub original — carry the HUB name so we fetch the right file.
+        data class Local(val id: Long, val name: String, val hubName: String, val rel: String, val taken: Long)
         val targets = ArrayList<Local>()
         context.contentResolver.query(
             MediaStore.Images.Media.EXTERNAL_CONTENT_URI,
@@ -55,7 +63,8 @@ class MetadataRestorer(private val context: Context) {
             val iDt = c.getColumnIndexOrThrow(MediaStore.Images.Media.DATE_TAKEN)
             while (c.moveToNext()) {
                 val name = c.getString(iNm) ?: continue
-                if (name in hubNames) targets.add(Local(c.getLong(iId), name, c.getString(iRp) ?: "DCIM/Camera/", c.getLong(iDt)))
+                val hubName = hubByStem[name.substringBeforeLast('.').lowercase()] ?: continue
+                targets.add(Local(c.getLong(iId), name, hubName, c.getString(iRp) ?: "DCIM/Camera/", c.getLong(iDt)))
             }
         }
         if (targets.isEmpty()) return 0
@@ -78,7 +87,7 @@ class MetadataRestorer(private val context: Context) {
                 // the original (EXIF incl. MakerNotes, ICC, XMP), and DATE_ADDED = capture date so the
                 // gallery date/orientation finally stick. Running it over the whole library also
                 // surfaces any edge cases in the new pipeline.
-                val original = HubFilesClient.fetchFile(ip, port, deviceName, t.name)
+                val original = HubFilesClient.fetchFile(ip, port, deviceName, t.hubName)
                 if (original == null) {
                     // Hub unreachable — bail out fast rather than crawl through timeouts per file.
                     if (++consecutiveHubFails >= 8) throw IllegalStateException("hub unreachable")
