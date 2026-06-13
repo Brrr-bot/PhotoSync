@@ -77,7 +77,10 @@ class ImageSpaceManager(private val context: Context) {
         var compressed = 0
         var skipped = 0
         var freedBytes = 0L
+        // Skip-reason tallies so the run ends with one readable summary instead of a line per file.
+        var skAlreadyWebp = 0; var skNoGain = 0; var skUnreadable = 0
         val total = phoneImages.size
+        if (total > 0) RemoteLogger.i("🖼 ImageSpace: scanning $total backed-up image(s) for compression…")
 
         for ((index, image) in phoneImages.withIndex()) {
             progress?.invoke(index + 1, total, image.displayName)
@@ -90,17 +93,17 @@ class ImageSpaceManager(private val context: Context) {
                 // file). Only a real JPEG/PNG original is read in full and compressed.
                 val header = context.contentResolver.openInputStream(uri)?.use { ins ->
                     val h = ByteArray(12); val n = ins.read(h); if (n == 12) h else null
-                } ?: run { skipped++; continue }
-                if (isWebp(header)) { skipped++; continue }
+                } ?: run { skipped++; skUnreadable++; continue }
+                if (isWebp(header)) { skipped++; skAlreadyWebp++; continue }
 
                 val originalBytes = context.contentResolver.openInputStream(uri)
-                    ?.use { it.readBytes() } ?: run { skipped++; continue }
+                    ?.use { it.readBytes() } ?: run { skipped++; skUnreadable++; continue }
 
                 val webpBytes = WebPConverter.convert(originalBytes, context.cacheDir)
                 if (webpBytes == null || webpBytes.size >= originalBytes.size) {
                     // Can't convert (old Android) or no size benefit — mark done, skip
                     compressedNames.add(image.displayName)
-                    skipped++
+                    skipped++; skNoGain++
                     continue
                 }
 
@@ -111,15 +114,27 @@ class ImageSpaceManager(private val context: Context) {
                 // by MIME next cycle. Leaving its name out means that if a restore later brings the
                 // original back, it gets re-compressed instead of being stuck.
                 compressed++
+                // ACTION line — one per file actually compressed, with before/after + date kept.
+                val pct = 100 - (webpBytes.size * 100L / originalBytes.size.coerceAtLeast(1))
+                RemoteLogger.i("🗜 ${image.displayName}  ${kb(originalBytes.size)}→${kb(webpBytes.size)} WebP (−$pct%, ${dateStr(image.dateTaken)})")
             } catch (t: Throwable) {
-                RemoteLogger.i("ImageSpace error ${image.displayName}: ${t.javaClass.simpleName}: ${t.message}")
-                skipped++
+                RemoteLogger.i("⚠ ImageSpace ${image.displayName}: ${t.javaClass.simpleName}: ${t.message}")
+                skipped++; skUnreadable++
             }
         }
 
         prefs.edit().putStringSet(KEY_COMPRESSED, compressedNames).apply()
+        if (compressed > 0 || skNoGain > 0)
+            RemoteLogger.i("✓ ImageSpace done — $compressed compressed (${freedBytes / 1_048_576}MB freed) · " +
+                "skipped $skipped [${skAlreadyWebp} already-WebP, $skNoGain no-gain, $skUnreadable unreadable]")
         return Summary(compressed, skipped, freedBytes)
     }
+
+    private fun kb(bytes: Int): String =
+        if (bytes >= 1_048_576) "%.1fMB".format(bytes / 1_048_576.0) else "${bytes / 1024}KB"
+
+    private fun dateStr(ms: Long): String =
+        if (ms <= 0) "no date" else java.text.SimpleDateFormat("yyyy-MM-dd", java.util.Locale.US).format(java.util.Date(ms))
 
     /** True if [b] starts with the RIFF????WEBP magic — i.e. the bytes are already a WebP image. */
     private fun isWebp(b: ByteArray): Boolean =
