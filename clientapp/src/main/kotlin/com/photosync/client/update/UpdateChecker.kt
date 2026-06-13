@@ -40,7 +40,7 @@ class UpdateChecker(private val context: Context) {
         val versionName = info.optString("versionName", "")
 
         Log.d(TAG, "checkAndNotify: local=${BuildConfig.VERSION_CODE} remote=$remoteCode")
-        RemoteLogger.i("OTA check: local v${BuildConfig.VERSION_CODE} remote v$remoteCode")
+        // (no per-check log — it spammed the live feed every 30 s; only real updates log below)
 
         if (remoteCode <= BuildConfig.VERSION_CODE || apkUrl.isEmpty()) return
         if (notifiedPhotosync.getAndSet(remoteCode) == remoteCode) return
