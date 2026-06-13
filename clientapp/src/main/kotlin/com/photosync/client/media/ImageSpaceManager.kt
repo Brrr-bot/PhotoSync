@@ -34,9 +34,19 @@ class ImageSpaceManager(private val context: Context) {
             ?: run { RemoteLogger.i("⏸ ImageSpace: hub not reachable (no recent IP) — skipping this cycle"); return Summary(0, 0, 0) }
         val port = ClientForegroundService.liveHubPort
 
-        val hubFiles = try { HubFilesClient.fetchFiles(ip, port, limit = 10_000) }
+        // Wait for the hub to warm up: right after a hub restart it briefly returns 0 files while it
+        // re-indexes USB. Retry for ~30 s before giving up, so we don't waste a whole cycle.
+        var hubFiles = try { HubFilesClient.fetchFiles(ip, port, limit = 10_000) }
             catch (e: Exception) { RemoteLogger.i("⏸ ImageSpace: hub fetch failed (${e.javaClass.simpleName}) — skipping this cycle"); return Summary(0, 0, 0) }
-        if (hubFiles.isEmpty()) { RemoteLogger.i("⏸ ImageSpace: hub returned 0 files — skipping this cycle"); return Summary(0, 0, 0) }
+        var warmTries = 0
+        while (hubFiles.isEmpty() && warmTries < 5) {
+            warmTries++
+            RemoteLogger.i("⏳ ImageSpace: hub not warm yet (0 files) — waiting (try $warmTries/5)")
+            Thread.sleep(6_000)
+            hubFiles = try { HubFilesClient.fetchFiles(ip, port, limit = 10_000) }
+                catch (e: Exception) { RemoteLogger.i("⏸ ImageSpace: hub fetch failed (${e.javaClass.simpleName}) — skipping this cycle"); return Summary(0, 0, 0) }
+        }
+        if (hubFiles.isEmpty()) { RemoteLogger.i("⏸ ImageSpace: hub returned 0 files after warm-up wait — skipping this cycle"); return Summary(0, 0, 0) }
 
         // Set of display names confirmed backed up on hub USB
         val hubNames = hubFiles.map { it.displayName }.toHashSet()
