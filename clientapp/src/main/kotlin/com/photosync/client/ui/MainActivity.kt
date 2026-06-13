@@ -336,10 +336,24 @@ class MainActivity : AppCompatActivity() {
                     checkForUpdate()
                     true
                 }
+                R.id.action_dev_imagespace      -> { triggerDev(ClientForegroundService.ACTION_RUN_IMAGESPACE, "ImageSpace"); true }
+                R.id.action_dev_videospace      -> { triggerDev(ClientForegroundService.ACTION_RUN_VIDEOSPACE, "VideoSpace"); true }
+                R.id.action_dev_localfix        -> { triggerDev(ClientForegroundService.ACTION_RUN_LOCALFIX, "LocalFix"); true }
+                R.id.action_dev_videodaterepair -> { triggerDev(ClientForegroundService.ACTION_RUN_VIDEODATEREPAIR, "Video date repair"); true }
+                R.id.action_dev_posterrefresh   -> { triggerDev(ClientForegroundService.ACTION_RUN_POSTERREFRESH, "Poster refresh"); true }
+                R.id.action_dev_fullpass        -> { triggerDev(ClientForegroundService.ACTION_RUN_FULLPASS, "Full maintenance pass"); true }
                 else -> false
             }
         }
         popup.show()
+    }
+
+    /** Developer menu: fire a one-shot maintenance action at the service; results stream to the log card. */
+    private fun triggerDev(action: String, label: String) {
+        Toast.makeText(this, "Running $label — see the live log card", Toast.LENGTH_SHORT).show()
+        startForegroundService(
+            Intent(this, ClientForegroundService::class.java).setAction(action)
+        )
     }
 
     // ── Status refresh ────────────────────────────────────────────────────────
