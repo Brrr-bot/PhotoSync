@@ -235,24 +235,18 @@ class ClientForegroundService : LifecycleService() {
                 // Single compression step on the phone (no lossy hub pass first).
                 try {
                     val ism = com.photosync.client.media.ImageSpaceManager(this@ClientForegroundService)
-                    val is2 = ism.process { done, total, name ->
-                        log("◇ WebP $done/$total: $name")
+                    ism.process { done, total, _ ->
                         updateNotification("Compressing to WebP: $done/$total")
-                    }
-                    if (is2.compressed > 0)
-                        log("✓ WebP done — ${is2.compressed} converted, ${is2.freedBytes / 1_048_576}MB freed (${is2.skipped} skipped)")
+                    }  // per-file lines + summary logged inside ImageSpaceManager (RemoteLogger)
                 } catch (t: Throwable) { log("ImageSpace error: ${t.javaClass.simpleName}: ${t.message}") }
 
                 // Compress / posterise videos — same hub-confirmed safety check as images.
                 // Only runs when hub is reachable (VideoSpaceManager checks live hub IP).
                 try {
                     val vsm = com.photosync.client.media.VideoSpaceManager(this@ClientForegroundService)
-                    val vs = vsm.process { done, total, name ->
-                        log("▶ VideoSpace $done/$total: $name")
+                    vsm.process { done, total, _ ->
                         updateNotification("Video space: $done/$total")
-                    }
-                    if (vs.thumbed > 0 || vs.compressed > 0)
-                        log("✓ VideoSpace done — ${vs.thumbed} posterised, ${vs.compressed} compressed, ${vs.freedBytes / 1_048_576}MB freed (${vs.skipped} skipped)")
+                    }  // per-file lines + summary logged inside VideoSpaceManager (RemoteLogger)
                 } catch (t: Throwable) { log("VideoSpace error: ${t.javaClass.simpleName}: ${t.message}") }
 
                 updateNotification("Ready — announcing on network")
