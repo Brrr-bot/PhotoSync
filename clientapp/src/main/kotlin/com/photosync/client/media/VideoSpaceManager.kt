@@ -146,7 +146,7 @@ class VideoSpaceManager(private val context: Context) {
                             if (replaceCompressedVideo(v, bytes)) {
                                 compressed++; freed += savedBytes.coerceAtLeast(0L); shrank = true
                                 val pct = 100 - (bytes.size * 100L / v.size.coerceAtLeast(1L))
-                                RemoteLogger.i("✅ ${v.name}  HEVC ${mb(v.size)}→${mb(bytes.size)} (−$pct%)")
+                                RemoteLogger.i("✅ ${v.name}  HEVC ${mb(v.size)}→${mb(bytes.size.toLong())} (−$pct%)")
                             }
                         }
                     } finally { tmp.delete() }
