@@ -137,7 +137,9 @@ class ImageSpaceManager(private val context: Context) {
         }
 
         prefs.edit().putStringSet(KEY_COMPRESSED, compressedNames).apply()
-        if (compressed > 0 || skNoGain > 0)
+        // Always log the result when there were candidates — so "nothing to do, all already WebP"
+        // is visible instead of the run finishing silently and looking dead.
+        if (total > 0)
             RemoteLogger.i("✓ ImageSpace done — $compressed compressed (${freedBytes / 1_048_576}MB freed) · " +
                 "skipped $skipped [${skAlreadyWebp} already-WebP, $skNoGain no-gain, $skUnreadable unreadable]")
         return Summary(compressed, skipped, freedBytes)
