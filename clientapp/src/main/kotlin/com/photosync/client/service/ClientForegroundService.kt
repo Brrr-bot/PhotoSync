@@ -57,6 +57,10 @@ class ClientForegroundService : LifecycleService() {
 
     override fun onCreate() {
         super.onCreate()
+        // Route every RemoteLogger line (service + background managers) to the in-app live card.
+        RemoteLogger.onMessage = { m ->
+            try { sendBroadcast(Intent(ACTION_LOG).setPackage(packageName).putExtra(EXTRA_LOG, m)) } catch (_: Throwable) {}
+        }
         // Restore persisted Tailscale IP so remote sync works immediately after restart
         liveHubTailscaleIp = getSharedPreferences(PREFS_NAME, MODE_PRIVATE)
             .getString(KEY_HUB_TAILSCALE_IP, null)
@@ -569,7 +573,8 @@ class ClientForegroundService : LifecycleService() {
         val time = java.text.SimpleDateFormat("HH:mm:ss", java.util.Locale.getDefault()).format(java.util.Date())
         val line = "$time  $message"
         addLog(line)
-        sendBroadcast(Intent(ACTION_LOG).setPackage(packageName).putExtra(EXTRA_LOG, message))
+        // Broadcast to the in-app card happens for ALL lines via RemoteLogger.onMessage (set in
+        // onCreate), so just forward — this avoids double-broadcasting service log() lines.
         RemoteLogger.i(message)
         refreshNotification()
     }
