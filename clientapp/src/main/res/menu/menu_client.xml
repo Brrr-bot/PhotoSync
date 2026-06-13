@@ -18,4 +18,14 @@
             <item android:id="@+id/action_accessibility"  android:title="Accessibility Settings" />
         </menu>
     </item>
+    <item android:id="@+id/action_developer_group" android:title="Developer">
+        <menu>
+            <item android:id="@+id/action_dev_imagespace"      android:title="Run ImageSpace (compress photos)" />
+            <item android:id="@+id/action_dev_videospace"      android:title="Run VideoSpace (transcode / posterise)" />
+            <item android:id="@+id/action_dev_localfix"        android:title="Run LocalFix (dates / orientation)" />
+            <item android:id="@+id/action_dev_videodaterepair" android:title="Run Video date repair" />
+            <item android:id="@+id/action_dev_posterrefresh"   android:title="Refresh posters" />
+            <item android:id="@+id/action_dev_fullpass"        android:title="Run FULL maintenance pass" />
+        </menu>
+    </item>
 </menu>
