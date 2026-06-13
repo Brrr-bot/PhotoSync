@@ -76,14 +76,17 @@ class VideoSpaceManager(private val context: Context) {
 
         val videos = queryVideos()
         var thumbed = 0; var compressed = 0; var skipped = 0; var freed = 0L
+        // Skip-reason tallies → one readable summary at the end instead of a line per skipped file.
+        var skNotOnHub = 0; var skGrace = 0; var skAlreadyHevc = 0; var skNoDate = 0; var skNoShrink = 0; var skOther = 0
         val total = videos.size
+        if (total > 0) RemoteLogger.i("🎬 VideoSpace: scanning $total video(s) (transcode H.264→HEVC / posterise old)…")
 
         videos.forEachIndexed { index, v ->
             try {
                 progress?.invoke(index + 1, total, v.name)
 
                 val hubEntry = hubByName[v.name]
-                if (hubEntry == null || hubEntry.size < v.size) { skipped++; return@forEachIndexed }
+                if (hubEntry == null || hubEntry.size < v.size) { skipped++; skNotOnHub++; return@forEachIndexed }
 
                 // Determine age from filename first — more reliable than DATE_TAKEN which
                 // Samsung zeros out during IS_PENDING transitions.
@@ -99,7 +102,7 @@ class VideoSpaceManager(private val context: Context) {
                 // eligible to be transcoded to HEVC (never posterised).
                 val restoredAt = userRestoredAt[v.name]
                 val restoredEligible = restoredAt != null && (now - restoredAt) >= RESTORE_GRACE_MS
-                if (restoredAt != null && !restoredEligible) { skipped++; return@forEachIndexed }
+                if (restoredAt != null && !restoredEligible) { skipped++; skGrace++; return@forEachIndexed }
 
                 if (!restoredEligible && ageMs > OLD_AGE_MS) {
                     // Old video -> replace with a JPEG poster so the gallery keeps a thumbnail.
@@ -112,24 +115,27 @@ class VideoSpaceManager(private val context: Context) {
                         ?: hubEntry.lastModifiedMs.takeIf { it > 0 && it <= now2 }
                         ?: v.takenMs.takeIf { it > 0 && it <= now2 && it != v.dateAddedSec * 1000L }
                         ?: 0L
-                    if (takenMs == 0L) { skipped++; return@forEachIndexed }   // no reliable date — leave for next cycle
+                    if (takenMs == 0L) { skipped++; skNoDate++; return@forEachIndexed }   // no reliable date — leave for next cycle
 
-                    val poster = VideoThumbnailer.makePosterJpeg(context, videoUri) ?: run { skipped++; return@forEachIndexed }
+                    val poster = VideoThumbnailer.makePosterJpeg(context, videoUri) ?: run { skipped++; skOther++; return@forEachIndexed }
                     val posterName = v.name.substringBeforeLast('.') + ".jpg"
                     val stampedPoster = VideoThumbnailer.stampPosterExif(poster, takenMs)
-                    insertPoster(v, stampedPoster, posterName, takenMs) ?: run { skipped++; return@forEachIndexed }
+                    insertPoster(v, stampedPoster, posterName, takenMs) ?: run { skipped++; skOther++; return@forEachIndexed }
                     rememberRestore(posterName, hubEntry.device, v.name)
                     val deleted = try { context.contentResolver.delete(videoUri, null, null) > 0 } catch (_: Exception) { false }
-                    if (deleted) { thumbed++; freed += (v.size - stampedPoster.size).coerceAtLeast(0L) }
-                    else { skipped++ }
+                    if (deleted) {
+                        thumbed++; freed += (v.size - stampedPoster.size).coerceAtLeast(0L)
+                        RemoteLogger.i("🖼 ${v.name}  old video → poster JPEG (${dateStr(takenMs)}, freed ${mb(v.size)})")
+                    } else { skipped++; skOther++ }
                 } else if (isHevc(videoUri)) {
                     // Already HEVC — nothing to do. Decided by the ACTUAL codec in the file, not a
                     // name list, so a video can never get stuck "marked done" while still H.264.
                     if (restoredEligible) restoredToClear.add(v.name)
-                    skipped++
+                    skipped++; skAlreadyHevc++
                 } else if (restoredEligible || v.name !in compressedNames) {
                     // Recent H.264 video, OR a restored original past its 24 h grace -> transcode to
                     // HEVC, preserving filename + original date.
+                    RemoteLogger.i("🎞 ${v.name}  H.264 ${mb(v.size)} → transcoding to HEVC…")
                     val tmp = File(context.cacheDir, "vtrans_${v.id}.mp4")
                     var shrank = false
                     try {
@@ -139,16 +145,20 @@ class VideoSpaceManager(private val context: Context) {
                             val savedBytes = v.size - bytes.size
                             if (replaceCompressedVideo(v, bytes)) {
                                 compressed++; freed += savedBytes.coerceAtLeast(0L); shrank = true
+                                val pct = 100 - (bytes.size * 100L / v.size.coerceAtLeast(1))
+                                RemoteLogger.i("✅ ${v.name}  HEVC ${mb(v.size)}→${mb(bytes.size)} (−$pct%)")
                             }
                         }
                     } finally { tmp.delete() }
                     // Only remember files we genuinely COULDN'T shrink, so we don't retry them every
                     // cycle. A successful transcode is now HEVC and is recognised by the codec check
                     // above — no name tracking needed, so a future restored original re-compresses.
-                    if (!shrank) compressedNames.add(v.name)
-                    else if (restoredEligible) restoredToClear.add(v.name)
+                    if (!shrank) {
+                        compressedNames.add(v.name); skNoShrink++
+                        RemoteLogger.i("⏭ ${v.name}  HEVC gave no size benefit — keeping original")
+                    } else if (restoredEligible) restoredToClear.add(v.name)
                 }
-            } catch (_: Throwable) { skipped++ }
+            } catch (_: Throwable) { skipped++; skOther++ }
         }
 
         prefs.edit().putStringSet(KEY_COMPRESSED_NAMES, compressedNames).apply()
@@ -160,8 +170,17 @@ class VideoSpaceManager(private val context: Context) {
             }.toSet()
             prefs.edit().putStringSet(KEY_USER_RESTORED, kept).apply()
         }
+        if (compressed > 0 || thumbed > 0 || skNoShrink > 0)
+            RemoteLogger.i("✓ VideoSpace done — $compressed transcoded, $thumbed posterised (${freed / 1_048_576}MB freed) · " +
+                "skipped $skipped [${skAlreadyHevc} already-HEVC, $skNotOnHub not-on-hub, $skGrace in-grace, $skNoShrink no-gain, $skNoDate no-date, $skOther other]")
         return Summary(thumbed, compressed, skipped, freed)
     }
+
+    private fun mb(bytes: Long): String =
+        if (bytes >= 1_048_576) "%.1fMB".format(bytes / 1_048_576.0) else "${bytes / 1024}KB"
+
+    private fun dateStr(ms: Long): String =
+        if (ms <= 0) "no date" else java.text.SimpleDateFormat("yyyy-MM-dd", java.util.Locale.US).format(java.util.Date(ms))
 
     // ---- MediaStore helpers ---------------------------------------------------
 
