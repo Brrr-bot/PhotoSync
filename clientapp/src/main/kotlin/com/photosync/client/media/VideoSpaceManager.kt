@@ -184,7 +184,9 @@ class VideoSpaceManager(private val context: Context) {
             }.toSet()
             prefs.edit().putStringSet(KEY_USER_RESTORED, kept).apply()
         }
-        if (compressed > 0 || thumbed > 0 || skNoShrink > 0)
+        // Always log the result when there were videos — so "nothing to do, all already HEVC" is
+        // visible instead of the run finishing silently and looking dead.
+        if (total > 0)
             RemoteLogger.i("✓ VideoSpace done — $compressed transcoded, $thumbed posterised (${freed / 1_048_576}MB freed) · " +
                 "skipped $skipped [${skAlreadyHevc} already-HEVC, $skNotOnHub not-on-hub, $skGrace in-grace, $skNoShrink no-gain, $skNoDate no-date, $skOther other]")
         return Summary(thumbed, compressed, skipped, freed)
