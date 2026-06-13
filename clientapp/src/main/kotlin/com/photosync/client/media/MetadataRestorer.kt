@@ -8,6 +8,7 @@ import android.provider.MediaStore
 import androidx.exifinterface.media.ExifInterface
 import com.photosync.client.hub.HubFileEntry
 import com.photosync.client.hub.HubFilesClient
+import com.photosync.client.util.RemoteLogger
 import java.io.File
 import java.text.SimpleDateFormat
 import java.util.Locale
@@ -72,6 +73,7 @@ class MetadataRestorer(private val context: Context) {
         var done = 0
         var consecutiveHubFails = 0
         val store = MediaStoreHelper(context)
+        RemoteLogger.i("↺ Restore from hub: ${targets.size} compressed photo(s) to re-migrate from originals…")
         targets.forEachIndexed { index, t ->
             try {
                 progress?.invoke(index + 1, targets.size, t.name)
@@ -103,6 +105,8 @@ class MetadataRestorer(private val context: Context) {
                 // straight out of the EXIF the converter just copied in (DATE_TAKEN + DATE_ADDED).
                 store.replaceFile(t.id, "image/webp", webp, t.taken)
                 done++
+                val pct = 100 - (webp.size * 100L / original.size.coerceAtLeast(1))
+                RemoteLogger.i("↺ ${t.name}  re-fetched ${original.size / 1024}KB original → ${webp.size / 1024}KB WebP (−$pct%, metadata + date restored)")
                 // Throttle so MediaProvider / the gallery stay responsive during the mass rewrite.
                 if (done % 10 == 0) Thread.sleep(200)
             } catch (th: Throwable) {
@@ -110,6 +114,7 @@ class MetadataRestorer(private val context: Context) {
                 /* otherwise skip this file */
             }
         }
+        RemoteLogger.i("✓ Restore from hub done — $done photo(s) re-migrated from hub originals")
         return done
     }
 
