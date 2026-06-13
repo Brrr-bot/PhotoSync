@@ -344,7 +344,62 @@ class ClientForegroundService : LifecycleService() {
         if (intent?.action == ACTION_RESTORE_METADATA) {
             lifecycleScope.launch(Dispatchers.IO) { runRestoreMetadata() }
         }
+        when (intent?.action) {
+            ACTION_RUN_IMAGESPACE      -> launchDev("ImageSpace")        { runImageSpaceNow() }
+            ACTION_RUN_VIDEOSPACE      -> launchDev("VideoSpace")        { runVideoSpaceNow() }
+            ACTION_RUN_LOCALFIX        -> launchDev("LocalFix")          { runLocalFixNow() }
+            ACTION_RUN_VIDEODATEREPAIR -> launchDev("Video date repair") { runVideoDateRepairNow() }
+            ACTION_RUN_POSTERREFRESH   -> launchDev("Poster refresh")    { runPosterRefreshNow() }
+            ACTION_RUN_FULLPASS        -> launchDev("Full pass")         { runFullPassNow() }
+        }
         return START_STICKY
+    }
+
+    // ── Developer menu: manual one-shot triggers ───────────────────────────────
+    @Volatile private var devRunning = false
+
+    /** Runs a developer-triggered task on IO, serialised so two can't clobber MediaStore at once. */
+    private fun launchDev(name: String, block: () -> Unit) {
+        if (devRunning) { log("▶ Developer: busy — $name ignored (a task is already running)"); return }
+        devRunning = true
+        lifecycleScope.launch(Dispatchers.IO) {
+            try { log("▶ Developer: running $name now…"); block() }
+            catch (t: Throwable) { log("⚠ Developer $name error: ${t.javaClass.simpleName}: ${t.message}") }
+            finally { devRunning = false; updateNotification("Ready") }
+        }
+    }
+
+    private fun runImageSpaceNow() {
+        com.photosync.client.media.ImageSpaceManager(this).process { done, total, _ ->
+            updateNotification("ImageSpace: $done/$total")
+        }
+    }
+    private fun runVideoSpaceNow() {
+        com.photosync.client.media.VideoSpaceManager(this).process { done, total, _ ->
+            updateNotification("VideoSpace: $done/$total")
+        }
+    }
+    private fun runVideoDateRepairNow() {
+        com.photosync.client.media.VideoSpaceManager(this).repairCompressedVideoDates()
+    }
+    private fun runLocalFixNow() {
+        val hubFiles = try {
+            val ip = liveHubIp ?: liveHubTailscaleIp
+            if (ip != null) HubFilesClient.fetchFiles(ip, liveHubPort, limit = 5000)
+            else emptyList<com.photosync.client.hub.HubFileEntry>()
+        } catch (_: Exception) { emptyList<com.photosync.client.hub.HubFileEntry>() }
+        val n = com.photosync.client.media.LocalImageProcessor(this).processUnfixed(
+            onProgress = { done, total, msg -> if (done % 20 == 0 || done == total) log("LocalFix $done/$total: $msg") },
+            hubFiles = hubFiles)
+        log("✓ LocalFix done — $n image(s) fixed")
+    }
+    private fun runPosterRefreshNow() {
+        val n = refreshPostersOnce()
+        log("✓ Poster refresh — $n placeholder(s) updated")
+    }
+    private fun runFullPassNow() {
+        runLocalFixNow(); runPosterRefreshNow(); runImageSpaceNow(); runVideoSpaceNow()
+        log("✓ Developer: full maintenance pass complete")
     }
 
     @Volatile private var metaRestoreInProgress = false
@@ -666,6 +721,13 @@ class ClientForegroundService : LifecycleService() {
         const val ACTION_LOG = "com.photosync.client.LOG"
         const val ACTION_RESTORE_FROM_HUB = "com.photosync.client.RESTORE_FROM_HUB"
         const val ACTION_RESTORE_METADATA = "com.photosync.client.RESTORE_METADATA"
+        // Developer menu — manual one-shot triggers for the background maintenance functions.
+        const val ACTION_RUN_IMAGESPACE      = "com.photosync.client.RUN_IMAGESPACE"
+        const val ACTION_RUN_VIDEOSPACE      = "com.photosync.client.RUN_VIDEOSPACE"
+        const val ACTION_RUN_LOCALFIX        = "com.photosync.client.RUN_LOCALFIX"
+        const val ACTION_RUN_VIDEODATEREPAIR = "com.photosync.client.RUN_VIDEODATEREPAIR"
+        const val ACTION_RUN_POSTERREFRESH   = "com.photosync.client.RUN_POSTERREFRESH"
+        const val ACTION_RUN_FULLPASS        = "com.photosync.client.RUN_FULLPASS"
         const val EXTRA_LOG = "log_message"
 
         /** Exposed so MainActivity can poll progress state without broadcasts. */
