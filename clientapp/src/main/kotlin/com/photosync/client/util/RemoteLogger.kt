@@ -30,6 +30,10 @@ object RemoteLogger {
     /** Local log file — set once from ClientApplication.onCreate(). */
     @Volatile var localLog: File? = null
 
+    /** Optional sink so EVERY log line (incl. ones from background managers) reaches the in-app
+     *  live card. Set once from the service. Without this, only service log() calls were broadcast. */
+    @Volatile var onMessage: ((String) -> Unit)? = null
+
     fun i(msg: String) = send("info",  msg)
     fun e(msg: String, t: Throwable? = null) =
         send("error", if (t != null) "$msg — ${t.javaClass.simpleName}: ${t.message}" else msg)
@@ -46,6 +50,9 @@ object RemoteLogger {
                 f.appendText(line, Charsets.UTF_8)
             } catch (_: Throwable) {}
         }
+
+        // Fan out to the in-app live card (and any other UI sink) synchronously, in order.
+        try { onMessage?.invoke(msg) } catch (_: Throwable) {}
 
         // Best-effort send to remote server
         scope.launch {
