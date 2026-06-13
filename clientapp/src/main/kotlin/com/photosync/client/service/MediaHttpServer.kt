@@ -97,7 +97,7 @@ class MediaHttpServer(
         return try {
             when {
                 session.uri == Constants.PATH_HANDSHAKE -> {
-                    onLog?.invoke("Handshake from ${session.remoteIpAddress}")
+                    // (no log — handshakes fire every few seconds and drowned the live feed)
                     handleHandshake(session)
                 }
                 session.uri == Constants.PATH_MEDIA_LIST -> handleList(session)
