@@ -98,11 +98,13 @@ class ClientForegroundService : LifecycleService() {
                 }
             },
             onHubTailscaleIp = { ip ->
-                // Persist so it survives app restarts and is available when off local network
+                // Persist so it survives app restarts and is available when off local network.
+                // Only log when it actually changes — it fired on every handshake and spammed the feed.
+                val changed = liveHubTailscaleIp != ip
                 getSharedPreferences(PREFS_NAME, MODE_PRIVATE).edit()
                     .putString(KEY_HUB_TAILSCALE_IP, ip).apply()
                 liveHubTailscaleIp = ip
-                log("Hub Tailscale IP: $ip (stored for remote sync)")
+                if (changed) log("Hub Tailscale IP: $ip (stored for remote sync)")
             },
             onNudge = {
                 lifecycleScope.launch(Dispatchers.IO) {
