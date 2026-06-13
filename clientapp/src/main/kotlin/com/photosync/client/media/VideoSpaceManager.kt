@@ -32,14 +32,18 @@ class VideoSpaceManager(private val context: Context) {
         // Run date-repair before the hub check — it's a purely local MediaStore operation.
         repairCompressedVideoDates()
 
+        // LAN IP stays usable for 15 min between (sparse) hub handshakes — the old 90 s window was
+        // almost always stale by the time the hourly job ran, forcing a fall-back to the flaky
+        // Tailscale path. Every bail below now logs a reason so the live feed is never silent.
         val ip = ClientForegroundService.liveHubIp
-            ?.takeIf { System.currentTimeMillis() - ClientForegroundService.liveHubIpUpdatedAt < 90_000L }
+            ?.takeIf { System.currentTimeMillis() - ClientForegroundService.liveHubIpUpdatedAt < 900_000L }
             ?: ClientForegroundService.liveHubTailscaleIp
-            ?: return Summary(0, 0, 0, 0)
+            ?: run { RemoteLogger.i("⏸ VideoSpace: hub not reachable (no recent IP) — skipping this cycle"); return Summary(0, 0, 0, 0) }
         val port = ClientForegroundService.liveHubPort
 
-        val hubFiles = try { HubFilesClient.fetchFiles(ip, port, limit = 10_000) } catch (_: Exception) { emptyList() }
-        if (hubFiles.isEmpty()) return Summary(0, 0, 0, 0)
+        val hubFiles = try { HubFilesClient.fetchFiles(ip, port, limit = 10_000) }
+            catch (e: Exception) { RemoteLogger.i("⏸ VideoSpace: hub fetch failed (${e.javaClass.simpleName}) — skipping this cycle"); return Summary(0, 0, 0, 0) }
+        if (hubFiles.isEmpty()) { RemoteLogger.i("⏸ VideoSpace: hub returned 0 files — skipping this cycle"); return Summary(0, 0, 0, 0) }
         val hubByName = HashMap<String, HubInfo>()
         for (f in hubFiles) {
             val existing = hubByName[f.displayName]
