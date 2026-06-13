@@ -41,9 +41,19 @@ class VideoSpaceManager(private val context: Context) {
             ?: run { RemoteLogger.i("⏸ VideoSpace: hub not reachable (no recent IP) — skipping this cycle"); return Summary(0, 0, 0, 0) }
         val port = ClientForegroundService.liveHubPort
 
-        val hubFiles = try { HubFilesClient.fetchFiles(ip, port, limit = 10_000) }
+        // Wait for the hub to warm up: right after a hub restart it briefly returns 0 files while it
+        // re-indexes USB. Retry for ~30 s before giving up, so we don't waste a whole cycle.
+        var hubFiles = try { HubFilesClient.fetchFiles(ip, port, limit = 10_000) }
             catch (e: Exception) { RemoteLogger.i("⏸ VideoSpace: hub fetch failed (${e.javaClass.simpleName}) — skipping this cycle"); return Summary(0, 0, 0, 0) }
-        if (hubFiles.isEmpty()) { RemoteLogger.i("⏸ VideoSpace: hub returned 0 files — skipping this cycle"); return Summary(0, 0, 0, 0) }
+        var warmTries = 0
+        while (hubFiles.isEmpty() && warmTries < 5) {
+            warmTries++
+            RemoteLogger.i("⏳ VideoSpace: hub not warm yet (0 files) — waiting (try $warmTries/5)")
+            Thread.sleep(6_000)
+            hubFiles = try { HubFilesClient.fetchFiles(ip, port, limit = 10_000) }
+                catch (e: Exception) { RemoteLogger.i("⏸ VideoSpace: hub fetch failed (${e.javaClass.simpleName}) — skipping this cycle"); return Summary(0, 0, 0, 0) }
+        }
+        if (hubFiles.isEmpty()) { RemoteLogger.i("⏸ VideoSpace: hub returned 0 files after warm-up wait — skipping this cycle"); return Summary(0, 0, 0, 0) }
         val hubByName = HashMap<String, HubInfo>()
         for (f in hubFiles) {
             val existing = hubByName[f.displayName]
