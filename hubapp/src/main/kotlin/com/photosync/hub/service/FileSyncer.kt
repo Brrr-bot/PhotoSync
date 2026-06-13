@@ -78,6 +78,12 @@ class FileSyncer(
                             DateCorrection(name, usbDate) else null
                     }
                     if (corrections.isNotEmpty()) {
+                        corrections.forEach { c ->
+                            val p = phoneByName[c.displayName]
+                            val df = java.text.SimpleDateFormat("yyyy-MM-dd", java.util.Locale.US)
+                            val from = if (p != null && p.dateTaken > 0) df.format(java.util.Date(p.dateTaken)) else "no-date"
+                            RemoteLogger.i("📅 ${c.displayName}  date $from → ${df.format(java.util.Date(c.correctDateTaken))} (from USB EXIF)")
+                        }
                         val fixed = postFixDates(clientInfo.ip, corrections)
                         onProgress("Corrected dates on $fixed/${corrections.size} file(s)")
                     }
