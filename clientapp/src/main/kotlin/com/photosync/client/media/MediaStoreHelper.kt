@@ -329,11 +329,16 @@ class MediaStoreHelper(private val context: Context) {
             }
         } catch (_: Exception) { -1 }
 
+        // Date source mirrors the HUB's logic so phone and hub always agree: trust the STABLE
+        // filename date first (e.g. 20230915_133351 -> 2023-09-15), then the file's own EXIF, then
+        // the value the caller supplied. We deliberately do NOT use DATE_ADDED (a reprocess/restore
+        // resets it to "today", which is what landed reprocessed downloads in today's date).
+        val filenameDate = parseDateFromName(displayName)
         val effectiveDateTaken = when {
-            exifDateTaken > 0     -> exifDateTaken      // from EXIF in the file — most reliable
-            providedDateTaken > 0 -> providedDateTaken  // hub-supplied fallback
+            filenameDate > 0      -> filenameDate
+            exifDateTaken > 0     -> exifDateTaken
+            providedDateTaken > 0 -> providedDateTaken
             dateTaken > 0         -> dateTaken
-            dateAdded > 0         -> dateAdded * 1000L
             else                  -> System.currentTimeMillis()
         }
         val captureSec = effectiveDateTaken / 1000L
@@ -566,6 +571,25 @@ class MediaStoreHelper(private val context: Context) {
     }
 
     /** Parses an EXIF date string ("yyyy:MM:dd HH:mm:ss") into epoch ms. Returns 0 on failure. */
+    private fun parseDateFromName(name: String): Long {
+        val stem = name.substringBeforeLast('.')
+        Regex("""(20\d{2})(\d{2})(\d{2})[_-](\d{2})(\d{2})(\d{2})""").find(stem)?.let { m ->
+            val mo = m.groupValues[2].toInt(); val da = m.groupValues[3].toInt()
+            if (mo in 1..12 && da in 1..31) return try {
+                java.text.SimpleDateFormat("yyyyMMddHHmmss", java.util.Locale.US)
+                    .parse(m.groupValues.drop(1).joinToString(""))?.time ?: 0L
+            } catch (_: Exception) { 0L }
+        }
+        Regex("""(20\d{2})(\d{2})(\d{2})""").find(stem)?.let { m ->
+            val mo = m.groupValues[2].toInt(); val da = m.groupValues[3].toInt()
+            if (mo in 1..12 && da in 1..31) return try {
+                java.text.SimpleDateFormat("yyyyMMdd", java.util.Locale.US)
+                    .parse(m.groupValues[1] + m.groupValues[2] + m.groupValues[3])?.time ?: 0L
+            } catch (_: Exception) { 0L }
+        }
+        return 0L
+    }
+
     private fun parseExifDateStr(raw: String): Long = try {
         SimpleDateFormat("yyyy:MM:dd HH:mm:ss", Locale.US).parse(raw.trim())?.time ?: 0L
     } catch (_: Exception) { 0L }
