@@ -56,9 +56,7 @@ class MetadataRestorer(private val context: Context) {
             MediaStore.Images.Media.EXTERNAL_CONTENT_URI,
             arrayOf(MediaStore.Images.Media._ID, MediaStore.Images.Media.DISPLAY_NAME,
                     MediaStore.Images.Media.RELATIVE_PATH, MediaStore.Images.Media.DATE_TAKEN),
-            // Process OLDEST photos first so the gallery visibly straightens/re-dates from the
-            // bottom of the timeline upward as the restore sweeps. NULL dates sort first (fixed early).
-            null, null, "${MediaStore.Images.Media.DATE_TAKEN} ASC"
+            null, null, null
         )?.use { c ->
             val iId = c.getColumnIndexOrThrow(MediaStore.Images.Media._ID)
             val iNm = c.getColumnIndexOrThrow(MediaStore.Images.Media.DISPLAY_NAME)
