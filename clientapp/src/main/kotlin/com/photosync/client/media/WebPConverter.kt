@@ -2,6 +2,7 @@ package com.photosync.client.media
 
 import android.graphics.Bitmap
 import android.graphics.BitmapFactory
+import android.graphics.Matrix
 import android.os.Build
 import androidx.exifinterface.media.ExifInterface
 import java.io.ByteArrayInputStream
@@ -29,11 +30,23 @@ object WebPConverter {
         return try {
             val bitmap = BitmapFactory.decodeByteArray(sourceBytes, 0, sourceBytes.size)
                 ?: return null
-            val w = bitmap.width
-            val h = bitmap.height
+
+            // BAKE the source EXIF orientation into the pixels (store upright); output is marked
+            // NORMAL below. Samsung's gallery GRID does NOT apply a WebP's embedded EXIF orientation,
+            // so a tag-reliant webp shows sideways thumbnails, and an invalid orientation=0 (Samsung
+            // screenshots) renders inconsistently. Upright pixels + NORMAL tag display correctly
+            // everywhere. The pristine original (raw pixels + tag) stays on the hub.
+            val srcOrientation = try {
+                ExifInterface(ByteArrayInputStream(sourceBytes))
+                    .getAttributeInt(ExifInterface.TAG_ORIENTATION, ExifInterface.ORIENTATION_NORMAL)
+            } catch (_: Exception) { ExifInterface.ORIENTATION_NORMAL }
+            val oriented = applyOrientation(bitmap, srcOrientation)
+            val w = oriented.width
+            val h = oriented.height
 
             val out = ByteArrayOutputStream()
-            bitmap.compress(Bitmap.CompressFormat.WEBP_LOSSY, QUALITY, out)
+            oriented.compress(Bitmap.CompressFormat.WEBP_LOSSY, QUALITY, out)
+            if (oriented !== bitmap) oriented.recycle()
             bitmap.recycle()
             val simpleWebp = out.toByteArray()
 
@@ -55,6 +68,44 @@ object WebPConverter {
     }
 
     /** True if [bytes] is a structurally valid, decodable image (header-only decode — cheap). */
+    private fun applyOrientation(src: Bitmap, orientation: Int): Bitmap {
+        val m = Matrix()
+        when (orientation) {
+            ExifInterface.ORIENTATION_ROTATE_90       -> m.postRotate(90f)
+            ExifInterface.ORIENTATION_ROTATE_180      -> m.postRotate(180f)
+            ExifInterface.ORIENTATION_ROTATE_270      -> m.postRotate(270f)
+            ExifInterface.ORIENTATION_FLIP_HORIZONTAL -> m.postScale(-1f, 1f)
+            ExifInterface.ORIENTATION_FLIP_VERTICAL   -> m.postScale(1f, -1f)
+            ExifInterface.ORIENTATION_TRANSPOSE       -> { m.postRotate(90f); m.postScale(-1f, 1f) }
+            ExifInterface.ORIENTATION_TRANSVERSE      -> { m.postRotate(-90f); m.postScale(-1f, 1f) }
+            else -> return src
+        }
+        return try { Bitmap.createBitmap(src, 0, 0, src.width, src.height, m, true) } catch (_: Throwable) { src }
+    }
+
+    private fun patchExifOrientationNormal(tiff: ByteArray): ByteArray = try {
+        if (tiff.size < 8) tiff else {
+            val le = tiff[0] == 'I'.code.toByte()
+            fun u16(o: Int) = if (le) (tiff[o].toInt() and 0xFF) or ((tiff[o + 1].toInt() and 0xFF) shl 8)
+                              else ((tiff[o].toInt() and 0xFF) shl 8) or (tiff[o + 1].toInt() and 0xFF)
+            fun u32(o: Int) = if (le) (tiff[o].toInt() and 0xFF) or ((tiff[o+1].toInt() and 0xFF) shl 8) or ((tiff[o+2].toInt() and 0xFF) shl 16) or ((tiff[o+3].toInt() and 0xFF) shl 24)
+                              else ((tiff[o].toInt() and 0xFF) shl 24) or ((tiff[o+1].toInt() and 0xFF) shl 16) or ((tiff[o+2].toInt() and 0xFF) shl 8) or (tiff[o+3].toInt() and 0xFF)
+            val ifd0 = u32(4)
+            if (ifd0 < 8 || ifd0 + 2 > tiff.size) tiff else {
+                val n = u16(ifd0); var e = ifd0 + 2; var res = tiff; var k = 0
+                while (k < n && e + 12 <= tiff.size) {
+                    if (u16(e) == 0x0112) {
+                        val c = tiff.copyOf()
+                        if (le) { c[e + 8] = 1; c[e + 9] = 0 } else { c[e + 8] = 0; c[e + 9] = 1 }
+                        res = c; break
+                    }
+                    e += 12; k++
+                }
+                res
+            }
+        }
+    } catch (_: Throwable) { tiff }
+
     private fun isDecodable(bytes: ByteArray): Boolean = try {
         val opts = BitmapFactory.Options().apply { inJustDecodeBounds = true }
         BitmapFactory.decodeByteArray(bytes, 0, bytes.size, opts)
@@ -73,6 +124,8 @@ object WebPConverter {
                 for (tag in TAGS) {
                     srcExif.getAttribute(tag)?.let { dst.setAttribute(tag, it) }
                 }
+                // Pixels baked upright in convert() — force NORMAL so viewers don't re-rotate.
+                dst.setAttribute(ExifInterface.TAG_ORIENTATION, ExifInterface.ORIENTATION_NORMAL.toString())
                 dst.saveAttributes()
             }
             tmp.readBytes()
@@ -86,7 +139,10 @@ object WebPConverter {
     /** Builds a VP8X WebP from [simpleWebp]'s image data plus the raw EXIF/ICC/XMP lifted from the
      *  source JPEG. Returns null if the source has no metadata or isn't a parseable JPEG/WebP. */
     private fun rawCopyMetadata(jpeg: ByteArray, simpleWebp: ByteArray, w: Int, h: Int): ByteArray? {
-        val meta = extractJpegMeta(jpeg)
+        val meta0 = extractJpegMeta(jpeg)
+        // Pixels were baked upright in convert(); set the EXIF orientation tag to NORMAL so viewers
+        // never re-rotate (also repairs the invalid orientation=0 Samsung screenshots carry).
+        val meta = JpegMeta(meta0.exifTiff?.let { patchExifOrientationNormal(it) }, meta0.icc, meta0.xmp)
         if (meta.exifTiff == null && meta.icc == null && meta.xmp == null) return null
         // simpleWebp must be a plain "RIFF....WEBP<imagechunk>" produced by Bitmap.compress.
         if (simpleWebp.size < 16) return null
