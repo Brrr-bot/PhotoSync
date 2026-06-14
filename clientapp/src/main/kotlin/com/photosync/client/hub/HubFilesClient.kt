@@ -1,5 +1,7 @@
 package com.photosync.client.hub
 
+import com.photosync.client.media.ImageIntegrity
+import com.photosync.client.util.RemoteLogger
 import com.photosync.shared.Constants
 import com.photosync.shared.crypto.HmacAuth
 import org.json.JSONArray
@@ -48,6 +50,10 @@ object HubFilesClient {
             if (conn.responseCode != 200) return null
             val bytes = conn.inputStream.use { it.readBytes() }
             conn.disconnect()
+            if (!ImageIntegrity.isIntact(bytes, name)) {
+                RemoteLogger.i("⚠ Download integrity FAIL: $name (${bytes.size}B) — discarded, will retry")
+                return null
+            }
             bytes
         } catch (_: Exception) { null }
     }
@@ -80,6 +86,10 @@ object HubFilesClient {
             if (conn.responseCode != 200) return null
             val bytes = conn.inputStream.use { it.readBytes() }
             conn.disconnect()
+            if (!ImageIntegrity.isIntact(bytes, name)) {
+                RemoteLogger.i("⚠ Download integrity FAIL: $name (${bytes.size}B) — discarded, will retry")
+                return null
+            }
             bytes
         } catch (_: Exception) { null }
     }
@@ -95,6 +105,10 @@ object HubFilesClient {
             if (conn.responseCode != 200) return null
             val bytes = conn.inputStream.use { it.readBytes() }
             conn.disconnect()
+            if (!ImageIntegrity.isIntact(bytes, name)) {
+                RemoteLogger.i("⚠ Download integrity FAIL: $name (${bytes.size}B) — discarded, will retry")
+                return null
+            }
             bytes
         } catch (_: Exception) { null }
     }
@@ -129,6 +143,10 @@ object HubFilesClient {
                 }
             }
             conn.disconnect()
+            if (total > 0 && dest.length() != total) {
+                RemoteLogger.i("⚠ Download size mismatch: $name got ${dest.length()} of $total — discarded, will retry")
+                dest.delete(); return false
+            }
             dest.length() > 0
         } catch (_: Exception) { false }
     }
