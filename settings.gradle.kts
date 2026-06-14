@@ -21,3 +21,4 @@ rootProject.name = "PhotoSync"
 include(":shared")
 include(":hubapp")
 include(":clientapp")
+include(":cloudsync")
