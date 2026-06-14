@@ -118,7 +118,8 @@ class LocalImageProcessor(private val context: Context) {
 
             // Authoritative capture date — what the gallery SHOULD sort by.
             val authoritativeDate = when {
-                isDownloadedAppImage       -> dateAddedMs        // download date wins for app-saved media
+                isDownloadedAppImage && explicitDateMs != null -> explicitDateMs  // stable Zalo/WA filename date (restore-proof)
+                isDownloadedAppImage       -> dateAddedMs        // no filename date: download date as before
                 exifDateMs != null         -> exifDateMs         // real EXIF capture date
                 explicitDateMs != null     -> explicitDateMs     // camera YYYYMMDD_HHMMSS = capture date, verbatim
                 safeFilenameDateMs != null -> safeFilenameDateMs // ambiguous 13-digit, 24h-checked
@@ -205,6 +206,10 @@ class LocalImageProcessor(private val context: Context) {
                     // Strategy C: ContentValues DATE_TAKEN update — last resort; Samsung may reset.
                     var dateFixed = false
 
+                    // KEEP ALL DATA: never rewrite a file that already has a valid EXIF capture date —
+                    // doing so overwrote real dates on download/hub-restored files with the import day.
+                    // Only bake a date into files that have NONE; if EXIF exists, Samsung re-reads it.
+                    if (exifDateMs == null) {
                     // Try Strategy A first (fast, in-place).
                     if (stampFileDate(image.id, effectiveDateTaken)) {
                         // stampFileDate only truly "baked" the date if it wrote file bytes (Strategy A
@@ -230,8 +235,9 @@ class LocalImageProcessor(private val context: Context) {
                             onProgress?.invoke(done, total, "Date baked: ${image.displayName}")
                         }
                     }
+                    }  // end (exifDateMs == null) gate — files WITH an EXIF date are left untouched
 
-                    // Strategy C: plain ContentValues update (Samsung may still reset, but better than nothing).
+                    // Strategy C: non-destructive ContentValues nudge (used alone when EXIF already present).
                     if (!dateFixed && tryUpdateDateTaken(image.id, effectiveDateTaken)) {
                         onProgress?.invoke(done, total, "Date updated: ${image.displayName}")
                         dateFixed = true
