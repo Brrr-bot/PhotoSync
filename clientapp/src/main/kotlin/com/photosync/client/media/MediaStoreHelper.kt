@@ -40,6 +40,9 @@ class MediaStoreHelper(private val context: Context) {
         // Display names of replacement files — survives SharedPrefs clear of compressed_new_ids
         // so getMediaSince() can still filter them out if IDs are no longer present
         private const val KEY_COMPRESSED_NAMES = "compressed_display_names"
+        // Folder that holds laptop-made downscaled previews (originals on the external HD).
+        // getMediaSince() excludes anything under this path so the hub never backs them up.
+        const val PHOTO_ARCHIVE_DIR = "PhotoArchive"
     }
 
     // ── Compression loop prevention ──────────────────────────────────────────
@@ -181,7 +184,11 @@ class MediaStoreHelper(private val context: Context) {
                 file.displayName !in replacementNames &&
                 file.displayName !in imageCompressedNames &&
                 file.displayName !in videoCompressedNames &&
-                file.displayName !in posterNames
+                file.displayName !in posterNames &&
+                // CloudSync laptop previews live in Pictures/PhotoArchive/ — they are downscaled
+                // copies whose full-quality originals are on the external hard drive, NOT files to
+                // back up to the hub. Never offer them, so the hub never downloads/duplicates them.
+                !file.relativePath.contains(PHOTO_ARCHIVE_DIR, ignoreCase = true)
         }.sortedBy { it.dateAdded }
     }
 
