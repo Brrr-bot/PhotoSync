@@ -1147,9 +1147,12 @@ class UsbStorageManager(
     private fun drawPlayBadge(src: Bitmap): Bitmap {
         val bmp = if (src.isMutable) src else src.copy(Bitmap.Config.ARGB_8888, true)
         val canvas = Canvas(bmp)
-        val cx = bmp.width / 2f
-        val cy = bmp.height / 2f
         val r  = kotlin.math.min(bmp.width, bmp.height) * 0.10f
+        // Anchor the badge in the BOTTOM-RIGHT corner (inset by a margin) so it sits in a
+        // consistent place on every poster instead of drifting around the frame / grid crop.
+        val margin = r * 0.8f
+        val cx = bmp.width  - r - margin
+        val cy = bmp.height - r - margin
         canvas.drawCircle(cx, cy, r, Paint(Paint.ANTI_ALIAS_FLAG).apply { color = Color.argb(70, 0, 0, 0) })
         canvas.drawCircle(cx, cy, r, Paint(Paint.ANTI_ALIAS_FLAG).apply {
             color = Color.argb(130, 255, 255, 255); style = Paint.Style.STROKE; strokeWidth = r * 0.07f
