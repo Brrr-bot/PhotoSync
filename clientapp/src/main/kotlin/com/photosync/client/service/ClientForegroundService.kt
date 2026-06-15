@@ -308,6 +308,12 @@ class ClientForegroundService : LifecycleService() {
             else log("Pre-sync cleanup: dates OK")
             updateNotification("Ready — announcing on network")
 
+            // Resume an interrupted "Restore metadata from hub" exactly where it stopped.
+            if (com.photosync.client.media.MetadataRestorer.isIncomplete(this)) {
+                log("↺ Resuming interrupted metadata restore…")
+                runRestoreMetadata()
+            }
+
             // NOTE: full hub-restore (download every hub-backed file missing from the phone)
             // is NO LONGER run automatically. Auto-restoring re-added files the phone had
             // intentionally slimmed — e.g. videos that VideoSpaceManager posterised (mp4 deleted,
