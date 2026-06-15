@@ -92,9 +92,12 @@ object VideoThumbnailer {
     private fun drawPlayBadge(src: Bitmap): Bitmap {
         val bmp = if (src.isMutable) src else src.copy(Bitmap.Config.ARGB_8888, true)
         val canvas = Canvas(bmp)
-        val cx = bmp.width / 2f
-        val cy = bmp.height / 2f
         val r  = min(bmp.width, bmp.height) * 0.10f   // smaller (was 0.16)
+        // Anchor the badge in the BOTTOM-RIGHT corner (inset by a margin) so it sits in a
+        // consistent place on every poster instead of drifting around the frame / grid crop.
+        val margin = r * 0.8f
+        val cx = bmp.width  - r - margin
+        val cy = bmp.height - r - margin
 
         // Faint dark disc — low alpha so the underlying image shows through.
         canvas.drawCircle(cx, cy, r, Paint(Paint.ANTI_ALIAS_FLAG).apply {
