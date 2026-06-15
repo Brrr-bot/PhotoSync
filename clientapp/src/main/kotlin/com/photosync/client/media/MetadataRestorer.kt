@@ -1,43 +1,38 @@
 package com.photosync.client.media
 
 import android.content.ContentUris
-import android.content.ContentValues
 import android.content.Context
-import android.os.Build
 import android.provider.MediaStore
-import androidx.exifinterface.media.ExifInterface
 import com.photosync.client.hub.HubFileEntry
 import com.photosync.client.hub.HubFilesClient
 import com.photosync.client.util.RemoteLogger
-import java.io.File
 import java.text.SimpleDateFormat
 import java.util.Locale
 
 /**
- * User-initiated ("Restore metadata from hub"): MIGRATES every already-compressed photo on the
- * phone to the current spec by re-downloading its pristine ORIGINAL from the hub and re-compressing
- * it with the current converter, then storing it via MediaStoreHelper.replaceFile.
+ * "Restore metadata from hub" — a CHECK-and-FIX pass, not a full rewrite.
  *
- * Result per file: a real `.webp` (image/webp), full original metadata copied LOSSLESSLY (EXIF incl.
- * vendor MakerNotes, ICC profile, XMP), correct orientation, and DATE_ADDED = capture date so the
- * gallery date/order finally sticks on Samsung. Running it across the whole library also surfaces
- * any edge cases in the pipeline.
+ *  • For every compressed photo whose original is on the hub, it compares the phone copy's current
+ *    gallery date against the authoritative date (the YYYYMMDD in the filename — the same source the
+ *    hub files the file under). If they already agree, the file is LEFT UNTOUCHED — no download, no
+ *    rewrite.
+ *  • Only files whose date is wrong/missing are re-fetched from the hub original and re-tagged.
  *
- * Only WebP-format copies are touched; true original JPEGs on the phone keep their own EXIF.
- * Skips files whose original isn't on the hub, or where re-compression yields no size benefit.
+ * RESUMABLE: every file handled this run is remembered (SharedPrefs). If the hub drops mid-run it
+ * pauses and keeps the progress + an "active" flag; ClientForegroundService re-launches it on the
+ * next hub connect and it continues from where it stopped instead of starting over.
  */
 class MetadataRestorer(private val context: Context) {
 
     private val imageExts = setOf("jpg", "jpeg", "png", "webp", "heic", "heif")
+    private val prefs = context.getSharedPreferences(PREFS, Context.MODE_PRIVATE)
 
     fun restore(
         ip: String, port: Int, deviceName: String,
         hubFiles: List<HubFileEntry>,
         progress: ((done: Int, total: Int, name: String) -> Unit)? = null
     ): Int {
-        // Map every image ORIGINAL on the hub by lowercase STEM, so a phone "foo.webp" (already
-        // migrated) still resolves to its hub original "foo.jpg" and can be re-processed. Prefer a
-        // non-.webp original over a .webp if both somehow exist for a stem.
+        // Map each hub ORIGINAL by lowercase stem so a phone "foo.webp" resolves to hub "foo.jpg".
         val hubByStem = HashMap<String, String>()
         for (f in hubFiles) {
             if (f.deviceName != deviceName) continue
@@ -49,73 +44,118 @@ class MetadataRestorer(private val context: Context) {
         }
         if (hubByStem.isEmpty()) return 0
 
-        // Phone images whose stem has a hub original — carry the HUB name so we fetch the right file.
-        data class Local(val id: Long, val name: String, val hubName: String, val rel: String, val taken: Long)
+        data class Local(val id: Long, val name: String, val hubName: String, val taken: Long, val addedSec: Long)
         val targets = ArrayList<Local>()
         context.contentResolver.query(
             MediaStore.Images.Media.EXTERNAL_CONTENT_URI,
             arrayOf(MediaStore.Images.Media._ID, MediaStore.Images.Media.DISPLAY_NAME,
-                    MediaStore.Images.Media.RELATIVE_PATH, MediaStore.Images.Media.DATE_TAKEN),
+                    MediaStore.Images.Media.DATE_TAKEN, MediaStore.Images.Media.DATE_ADDED),
             null, null, null
         )?.use { c ->
             val iId = c.getColumnIndexOrThrow(MediaStore.Images.Media._ID)
             val iNm = c.getColumnIndexOrThrow(MediaStore.Images.Media.DISPLAY_NAME)
-            val iRp = c.getColumnIndexOrThrow(MediaStore.Images.Media.RELATIVE_PATH)
             val iDt = c.getColumnIndexOrThrow(MediaStore.Images.Media.DATE_TAKEN)
+            val iDa = c.getColumnIndexOrThrow(MediaStore.Images.Media.DATE_ADDED)
             while (c.moveToNext()) {
                 val name = c.getString(iNm) ?: continue
                 val hubName = hubByStem[name.substringBeforeLast('.').lowercase()] ?: continue
-                targets.add(Local(c.getLong(iId), name, hubName, c.getString(iRp) ?: "DCIM/Camera/", c.getLong(iDt)))
+                targets.add(Local(c.getLong(iId), name, hubName, c.getLong(iDt), c.getLong(iDa)))
             }
         }
         if (targets.isEmpty()) return 0
 
-        var done = 0
-        var consecutiveHubFails = 0
+        prefs.edit().putBoolean(KEY_ACTIVE, true).apply()
+        val done = prefs.getStringSet(KEY_DONE, emptySet())!!.toMutableSet()
+        val remaining = targets.filter { it.name !in done }
+        RemoteLogger.i("↺ Restore from hub: ${remaining.size} to check (${done.size} already done this run)…")
+
         val store = MediaStoreHelper(context)
-        RemoteLogger.i("↺ Restore from hub: ${targets.size} compressed photo(s) to re-migrate from originals…")
-        targets.forEachIndexed { index, t ->
-            try {
-                progress?.invoke(index + 1, targets.size, t.name)
-                val uri = ContentUris.withAppendedId(MediaStore.Images.Media.EXTERNAL_CONTENT_URI, t.id)
-                val localBytes = context.contentResolver.openInputStream(uri)?.use { it.readBytes() } ?: return@forEachIndexed
-                // Only re-process COMPRESSED copies (WebP, incl. the legacy WebP-in-.jpg files).
-                // True original JPEGs on the phone still carry their own metadata — leave them.
-                if (!isWebp(localBytes)) return@forEachIndexed
+        var fixed = 0; var checked = 0; var alreadyOk = 0
+        var consecutiveHubFails = 0
+        var paused = false
+        try {
+            remaining.forEachIndexed { index, t ->
+                progress?.invoke(index + 1, remaining.size, t.name)
+                checked++
+                try {
+                    // CHEAP CHECK: is the phone copy's date already correct (matches the filename date
+                    // the hub files it under)? If so, leave it completely alone — no download.
+                    val expected = parseDateFromName(t.name)
+                    val current = if (t.taken > 0) t.taken else t.addedSec * 1000L
+                    if (expected > 0 && current > 0 && Math.abs(current - expected) <= TWO_DAYS) {
+                        alreadyOk++; done.add(t.name)
+                        if (done.size % 25 == 0) persist(done)
+                        return@forEachIndexed
+                    }
 
-                // Pull the PRISTINE original from the hub and re-compress it with the current
-                // converter, then store it via replaceFile. This migrates every old compressed photo
-                // to the new spec in one pass: a real .webp file, full metadata copied losslessly from
-                // the original (EXIF incl. MakerNotes, ICC, XMP), and DATE_ADDED = capture date so the
-                // gallery date/orientation finally stick. Running it over the whole library also
-                // surfaces any edge cases in the new pipeline.
-                val original = HubFilesClient.fetchFile(ip, port, deviceName, t.hubName)
-                if (original == null) {
-                    // Hub unreachable — bail out fast rather than crawl through timeouts per file.
-                    if (++consecutiveHubFails >= 8) throw IllegalStateException("hub unreachable")
-                    return@forEachIndexed
+                    val uri = ContentUris.withAppendedId(MediaStore.Images.Media.EXTERNAL_CONTENT_URI, t.id)
+                    val localBytes = context.contentResolver.openInputStream(uri)?.use { it.readBytes() }
+                        ?: run { done.add(t.name); return@forEachIndexed }
+                    if (!isWebp(localBytes)) { done.add(t.name); return@forEachIndexed }
+
+                    val original = HubFilesClient.fetchFile(ip, port, deviceName, t.hubName)
+                    if (original == null) {
+                        if (++consecutiveHubFails >= 8) throw IllegalStateException("hub unreachable")
+                        return@forEachIndexed   // not marked done → retried next run
+                    }
+                    consecutiveHubFails = 0
+                    if (original.isEmpty() || original.size > MAX_ORIGINAL_BYTES) { done.add(t.name); return@forEachIndexed }
+                    val webp = WebPConverter.convert(original, context.cacheDir) ?: run { done.add(t.name); return@forEachIndexed }
+                    if (webp.size >= original.size) { done.add(t.name); return@forEachIndexed }
+                    store.replaceFile(t.id, "image/webp", webp, t.taken)
+                    fixed++; done.add(t.name)
+                    if (done.size % 25 == 0) persist(done)
+                    RemoteLogger.i("↺ ${t.name}  date was off — re-tagged from hub original")
+                    if (fixed % 10 == 0) Thread.sleep(200)
+                } catch (th: Throwable) {
+                    if (th is IllegalStateException && th.message == "hub unreachable") throw th
+                    done.add(t.name)   // skip a bad file so it can't wedge the run
                 }
-                consecutiveHubFails = 0
-                if (original.isEmpty() || original.size > MAX_ORIGINAL_BYTES) return@forEachIndexed
-
-                val webp = WebPConverter.convert(original, context.cacheDir) ?: return@forEachIndexed
-                if (webp.size >= original.size) return@forEachIndexed   // no size benefit — skip
-
-                // replaceFile renames to .webp + image/webp, app-owned, and reads the capture date
-                // straight out of the EXIF the converter just copied in (DATE_TAKEN + DATE_ADDED).
-                store.replaceFile(t.id, "image/webp", webp, t.taken)
-                done++
-                val pct = 100 - (webp.size * 100L / original.size.coerceAtLeast(1))
-                RemoteLogger.i("↺ ${t.name}  re-fetched ${original.size / 1024}KB original → ${webp.size / 1024}KB WebP (−$pct%, metadata + date restored)")
-                // Throttle so MediaProvider / the gallery stay responsive during the mass rewrite.
-                if (done % 10 == 0) Thread.sleep(200)
-            } catch (th: Throwable) {
-                if (th is IllegalStateException && th.message == "hub unreachable") throw th   // stop the whole run
-                /* otherwise skip this file */
             }
+        } catch (stop: IllegalStateException) {
+            paused = true
         }
-        RemoteLogger.i("✓ Restore from hub done — $done photo(s) re-migrated from hub originals")
-        return done
+
+        persist(done)
+        if (paused) {
+            RemoteLogger.i("⏸ Restore paused (hub unreachable) — will resume on reconnect; ${done.size} checked so far")
+        } else {
+            prefs.edit().putBoolean(KEY_ACTIVE, false).remove(KEY_DONE).apply()  // fresh next time
+            RemoteLogger.i("✓ Restore done — checked $checked, fixed $fixed, already-correct $alreadyOk")
+        }
+        return fixed
+    }
+
+    private fun persist(done: Set<String>) { prefs.edit().putStringSet(KEY_DONE, done.toSet()).apply() }
+
+    /** Parses an explicit YYYYMMDD[_-HHMMSS] date from a filename (no regex → no escaping pitfalls). */
+    private fun parseDateFromName(name: String): Long {
+        val s = name.substringBeforeLast('.')
+        var i = 0
+        while (i + 8 <= s.length) {
+            if (s[i] == '2' && s[i + 1] == '0' && allDigits(s, i, 8)) {
+                val y = s.substring(i, i + 4).toInt()
+                val mo = s.substring(i + 4, i + 6).toInt()
+                val da = s.substring(i + 6, i + 8).toInt()
+                if (y in 2000..2035 && mo in 1..12 && da in 1..31) {
+                    var pattern = "yyyyMMdd"
+                    var datestr = s.substring(i, i + 8)
+                    if (i + 15 <= s.length && (s[i + 8] == '_' || s[i + 8] == '-') && allDigits(s, i + 9, 6)) {
+                        datestr = s.substring(i, i + 8) + s.substring(i + 9, i + 15)
+                        pattern = "yyyyMMddHHmmss"
+                    }
+                    return try { SimpleDateFormat(pattern, Locale.US).parse(datestr)?.time ?: 0L } catch (_: Exception) { 0L }
+                }
+            }
+            i++
+        }
+        return 0L
+    }
+
+    private fun allDigits(s: String, off: Int, n: Int): Boolean {
+        if (off + n > s.length) return false
+        for (k in off until off + n) if (!s[k].isDigit()) return false
+        return true
     }
 
     private fun isWebp(b: ByteArray): Boolean =
@@ -124,7 +164,14 @@ class MetadataRestorer(private val context: Context) {
         b[10] == 'B'.code.toByte() && b[11] == 'P'.code.toByte()
 
     companion object {
-        // Skip absurdly large originals — the re-compress decodes the whole image in memory.
+        private const val PREFS = "metadata_restore_state"
+        const val KEY_ACTIVE = "active"
+        private const val KEY_DONE = "done"
         private const val MAX_ORIGINAL_BYTES = 50L * 1024 * 1024
+        private const val TWO_DAYS = 2L * 24 * 60 * 60 * 1000
+
+        /** True if a restore was interrupted and should be auto-resumed on the next hub connect. */
+        fun isIncomplete(context: Context): Boolean =
+            context.getSharedPreferences(PREFS, Context.MODE_PRIVATE).getBoolean(KEY_ACTIVE, false)
     }
 }
