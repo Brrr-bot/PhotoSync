@@ -189,7 +189,7 @@
                             android:max="100"
                             android:progress="0"
                             android:progressTint="@color/neon_purple"
-                            android:progressBackgroundTint="#3300897B"
+                            android:progressBackgroundTint="#36a98bff"
                             android:layout_marginBottom="14dp"/>
 
                         <!-- Current file progress -->
@@ -223,7 +223,7 @@
                             android:max="10000"
                             android:progress="0"
                             android:progressTint="@color/neon_cyan"
-                            android:progressBackgroundTint="#2200FFFF"
+                            android:progressBackgroundTint="#2222d3ee"
                             android:visibility="invisible"
                             android:layout_marginBottom="10dp"/>
 
@@ -345,7 +345,7 @@
                                 android:layout_weight="1"
                                 android:layout_marginEnd="3dp"
                                 android:scaleType="centerCrop"
-                                android:background="#1a1a2e"/>
+                                android:background="@color/card_bg"/>
 
                             <ImageView
                                 android:id="@+id/iv_hub_thumb_1"
@@ -354,7 +354,7 @@
                                 android:layout_weight="1"
                                 android:layout_marginEnd="3dp"
                                 android:scaleType="centerCrop"
-                                android:background="#1a1a2e"/>
+                                android:background="@color/card_bg"/>
 
                             <ImageView
                                 android:id="@+id/iv_hub_thumb_2"
@@ -363,7 +363,7 @@
                                 android:layout_weight="1"
                                 android:layout_marginEnd="3dp"
                                 android:scaleType="centerCrop"
-                                android:background="#1a1a2e"/>
+                                android:background="@color/card_bg"/>
 
                             <ImageView
                                 android:id="@+id/iv_hub_thumb_3"
@@ -372,7 +372,7 @@
                                 android:layout_weight="1"
                                 android:layout_marginEnd="3dp"
                                 android:scaleType="centerCrop"
-                                android:background="#1a1a2e"/>
+                                android:background="@color/card_bg"/>
 
                             <ImageView
                                 android:id="@+id/iv_hub_thumb_4"
@@ -380,7 +380,7 @@
                                 android:layout_height="match_parent"
                                 android:layout_weight="1"
                                 android:scaleType="centerCrop"
-                                android:background="#1a1a2e"/>
+                                android:background="@color/card_bg"/>
 
                         </LinearLayout>
 
@@ -391,7 +391,7 @@
                             android:layout_height="wrap_content"
                             android:layout_marginTop="8dp"
                             android:text="Connect to hub to see recent files"
-                            android:textColor="#666"
+                            android:textColor="@color/text_muted"
                             android:textSize="11sp"
                             android:fontFamily="monospace"/>
 
