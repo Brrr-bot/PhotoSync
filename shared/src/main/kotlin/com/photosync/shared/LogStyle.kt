@@ -4,20 +4,21 @@ package com.photosync.shared
  * Shared log-line colour classifier so the client card, hub card, and web dashboard all colour
  * the same process types identically. Returns a "#RRGGBB" hex string for a given log line.
  *
- * Priority (first match wins): errors → restore → video → image/WebP → upload/backup →
- * maintenance/date-fix → success → default. Errors always win so a failed step is never hidden,
- * and a typed success line (e.g. "✓ WebP done") keeps its process colour rather than going green.
+ * Priority (first match wins): errors -> restore -> video -> image/WebP -> upload/backup ->
+ * maintenance/date-fix -> success -> default. Errors always win so a failed step is never hidden,
+ * and a typed success line (e.g. "checkmark WebP done") keeps its process colour rather than going green.
  */
 object LogStyle {
 
-    const val RED    = "#ff4444"  // errors / failures
-    const val GREEN  = "#00ff88"  // generic success
-    const val BLUE   = "#33b5ff"  // upload / backup (phone ⇄ hub transfer)
-    const val CYAN   = "#00e5ff"  // image / WebP compression
-    const val PURPLE = "#bf00ff"  // video transcode / posterise / date repair
-    const val AMBER  = "#ffaa00"  // restore from hub
-    const val YELLOW = "#ffd54f"  // maintenance: date fix, EXIF, reorg, dedup, cleanup
-    const val GREY   = "#888888"  // default / informational
+    // Aurora design system colours
+    const val RED    = "#ff7a78"  // cat_alert_neon  — errors / failures
+    const val GREEN  = "#2ee6a6"  // cat_safe_neon   — generic success
+    const val BLUE   = "#5b9dff"  // cat_share_neon  — upload / backup transfer
+    const val CYAN   = "#22d3ee"  // cat_sync_neon   — image / WebP compression
+    const val PURPLE = "#a98bff"  // cat_smart_neon  — video / AI / date repair
+    const val AMBER  = "#ffc44d"  // cat_pending_neon — restore from hub
+    const val YELLOW = "#a3e635"  // cat_free_neon   — maintenance: cleanup, dedup
+    const val GREY   = "#8693a6"  // ink-400         — default / informational
 
     fun colorFor(line: String): String {
         val s = line.lowercase()
