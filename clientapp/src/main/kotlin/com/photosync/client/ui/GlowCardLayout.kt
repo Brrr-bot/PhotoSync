@@ -30,7 +30,7 @@ class GlowCardLayout @JvmOverloads constructor(
 
     private val density   = resources.displayMetrics.density
     private val cornerPx  = 16f * density
-    private val blurSigma = 20f * density   // ~20dp; larger = wider halo
+    private val blurSigma = 10f * density   // ~20dp; larger = wider halo
 
     private var glowColor = Color.argb(100, 0x22, 0xd3, 0xee)   // default cyan
 
@@ -58,7 +58,7 @@ class GlowCardLayout @JvmOverloads constructor(
             }
             @Suppress("NewApi")
             glowView.setRenderEffect(
-                RenderEffect.createBlurEffect(blurSigma, blurSigma, Shader.TileMode.CLAMP)
+                RenderEffect.createBlurEffect(blurSigma, blurSigma, Shader.TileMode.DECAL)
             )
         } else {
             glowView.setLayerType(LAYER_TYPE_SOFTWARE, null)
