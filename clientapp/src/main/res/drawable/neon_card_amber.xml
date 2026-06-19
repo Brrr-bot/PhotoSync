@@ -1,22 +1,44 @@
 <?xml version="1.0" encoding="utf-8"?>
 <layer-list xmlns:android="http://schemas.android.com/apk/res/android">
-    <!-- Fading glow layers — extend outside view (parent needs clipChildren=false) -->
+    <item android:left="-26dp" android:top="-26dp" android:right="-26dp" android:bottom="-26dp">
+        <shape android:shape="rectangle"><corners android:radius="44dp"/><solid android:color="#01ffc44d"/></shape>
+    </item>
+    <item android:left="-24dp" android:top="-24dp" android:right="-24dp" android:bottom="-24dp">
+        <shape android:shape="rectangle"><corners android:radius="42dp"/><solid android:color="#01ffc44d"/></shape>
+    </item>
+    <item android:left="-22dp" android:top="-22dp" android:right="-22dp" android:bottom="-22dp">
+        <shape android:shape="rectangle"><corners android:radius="40dp"/><solid android:color="#02ffc44d"/></shape>
+    </item>
     <item android:left="-20dp" android:top="-20dp" android:right="-20dp" android:bottom="-20dp">
-        <shape android:shape="rectangle"><corners android:radius="36dp"/><solid android:color="#02ffc44d"/></shape>
+        <shape android:shape="rectangle"><corners android:radius="38dp"/><solid android:color="#04ffc44d"/></shape>
+    </item>
+    <item android:left="-18dp" android:top="-18dp" android:right="-18dp" android:bottom="-18dp">
+        <shape android:shape="rectangle"><corners android:radius="36dp"/><solid android:color="#06ffc44d"/></shape>
+    </item>
+    <item android:left="-16dp" android:top="-16dp" android:right="-16dp" android:bottom="-16dp">
+        <shape android:shape="rectangle"><corners android:radius="34dp"/><solid android:color="#0Bffc44d"/></shape>
     </item>
     <item android:left="-14dp" android:top="-14dp" android:right="-14dp" android:bottom="-14dp">
-        <shape android:shape="rectangle"><corners android:radius="30dp"/><solid android:color="#05ffc44d"/></shape>
+        <shape android:shape="rectangle"><corners android:radius="32dp"/><solid android:color="#12ffc44d"/></shape>
     </item>
-    <item android:left="-9dp" android:top="-9dp" android:right="-9dp" android:bottom="-9dp">
-        <shape android:shape="rectangle"><corners android:radius="25dp"/><solid android:color="#0Effc44d"/></shape>
+    <item android:left="-12dp" android:top="-12dp" android:right="-12dp" android:bottom="-12dp">
+        <shape android:shape="rectangle"><corners android:radius="30dp"/><solid android:color="#1Affc44d"/></shape>
     </item>
-    <item android:left="-5dp" android:top="-5dp" android:right="-5dp" android:bottom="-5dp">
-        <shape android:shape="rectangle"><corners android:radius="21dp"/><solid android:color="#1Affc44d"/></shape>
+    <item android:left="-10dp" android:top="-10dp" android:right="-10dp" android:bottom="-10dp">
+        <shape android:shape="rectangle"><corners android:radius="28dp"/><solid android:color="#25ffc44d"/></shape>
+    </item>
+    <item android:left="-8dp" android:top="-8dp" android:right="-8dp" android:bottom="-8dp">
+        <shape android:shape="rectangle"><corners android:radius="26dp"/><solid android:color="#31ffc44d"/></shape>
+    </item>
+    <item android:left="-6dp" android:top="-6dp" android:right="-6dp" android:bottom="-6dp">
+        <shape android:shape="rectangle"><corners android:radius="24dp"/><solid android:color="#3Effc44d"/></shape>
+    </item>
+    <item android:left="-4dp" android:top="-4dp" android:right="-4dp" android:bottom="-4dp">
+        <shape android:shape="rectangle"><corners android:radius="22dp"/><solid android:color="#48ffc44d"/></shape>
     </item>
     <item android:left="-2dp" android:top="-2dp" android:right="-2dp" android:bottom="-2dp">
-        <shape android:shape="rectangle"><corners android:radius="18dp"/><solid android:color="#28ffc44d"/></shape>
+        <shape android:shape="rectangle"><corners android:radius="20dp"/><solid android:color="#4Fffc44d"/></shape>
     </item>
-    <!-- Card body: 16dp corners (Aurora radius-lg), solid background + stroke -->
     <item android:left="2dp" android:top="2dp" android:right="2dp" android:bottom="2dp">
         <shape android:shape="rectangle">
             <corners android:radius="16dp"/>
