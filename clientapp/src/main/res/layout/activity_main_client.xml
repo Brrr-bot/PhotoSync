@@ -54,13 +54,17 @@
             android:layout_height="0dp"
             android:layout_weight="1"
             android:fillViewport="true"
-            android:scrollbars="none">
+            android:scrollbars="none"
+            android:clipChildren="false"
+            android:clipToPadding="false">
 
             <LinearLayout
                 android:layout_width="match_parent"
                 android:layout_height="wrap_content"
                 android:orientation="vertical"
-                android:padding="12dp">
+                android:padding="20dp"
+                android:clipChildren="false"
+                android:clipToPadding="false">
 
                 <!-- Card 1: STATUS (cyan) -->
                 <FrameLayout
