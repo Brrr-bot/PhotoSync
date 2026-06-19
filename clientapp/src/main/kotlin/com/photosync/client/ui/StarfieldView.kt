@@ -26,7 +26,7 @@ class StarfieldView @JvmOverloads constructor(
     private var startTime = System.currentTimeMillis()
 
     init {
-        setBackgroundColor(Color.parseColor("#050510"))
+        setBackgroundColor(Color.parseColor("#070d18"))
         postInvalidateOnAnimation()
     }
 
@@ -45,7 +45,7 @@ class StarfieldView @JvmOverloads constructor(
     }
 
     override fun onDraw(canvas: Canvas) {
-        canvas.drawColor(Color.parseColor("#050510"))
+        canvas.drawColor(Color.parseColor("#070d18"))
         val t = (System.currentTimeMillis() - startTime) / 1000f
         for (star in stars) {
             val twinkle = (Math.sin((t * 0.8f + star.twinkleOffset).toDouble()).toFloat() * 0.3f + 0.7f)
