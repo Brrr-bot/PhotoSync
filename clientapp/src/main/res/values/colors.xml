@@ -1,35 +1,75 @@
 <?xml version="1.0" encoding="utf-8"?>
 <resources>
+    <!-- Aurora design system (PhotoSync) -->
+
     <color name="black">#FF000000</color>
     <color name="white">#FFFFFFFF</color>
 
-    <color name="bg_space">#050510</color>
-    <color name="card_bg">#0A0A1E</color>
-    <color name="banner_bg">#CC04040F</color>
+    <!-- Surfaces (ink-based, dark hero-first) -->
+    <color name="bg_space">#070d18</color>
+    <color name="card_bg">#0a1322</color>
+    <color name="card_border">#1c2c45</color>
+    <color name="banner_bg">#CC0a1322</color>
 
-    <!-- Cyan family -->
-    <color name="neon_cyan">#00F5FF</color>
-    <color name="neon_ice">#4DD9FF</color>
-    <color name="neon_teal">#00CFA8</color>
-    <color name="neon_deep">#0099CC</color>
+    <!-- Brand cyan (Aurora primary) -->
+    <color name="neon_cyan">#22d3ee</color>
+    <color name="neon_ice">#67def4</color>
+    <color name="neon_teal">#06b6d4</color>
+    <color name="neon_deep">#0891b2</color>
 
-    <!-- Legacy names remapped to cyan family -->
-    <color name="neon_purple">#00897B</color>     <!-- deep teal -->
-    <color name="neon_green">#00CFA8</color>       <!-- teal -->
-    <color name="neon_amber">#00F5FF</color>       <!-- cyan -->
+    <!-- Glow variants (~21% opacity) -->
+    <color name="neon_cyan_glow">#3622d3ee</color>
+    <color name="neon_ice_glow">#3667def4</color>
+    <color name="neon_teal_glow">#3606b6d4</color>
+    <color name="neon_deep_glow">#360891b2</color>
 
-    <!-- Glows -->
-    <color name="neon_cyan_glow">#3300F5FF</color>
-    <color name="neon_ice_glow">#334DD9FF</color>
-    <color name="neon_teal_glow">#3300CFA8</color>
-    <color name="neon_purple_glow">#3300897B</color>
-    <color name="neon_green_glow">#3300CFA8</color>
-    <color name="neon_amber_glow">#3300F5FF</color>
-
+    <!-- Text (cool ink) -->
     <color name="text_primary">#FFFFFF</color>
-    <color name="text_secondary">#7BBCCC</color>
-    <color name="text_label">#A0D8E8</color>
+    <color name="text_secondary">#b3bdcc</color>
+    <color name="text_label">#8693a6</color>
+    <color name="text_muted">#5b6b82</color>
 
-    <color name="green_ok">#00CFA8</color>
-    <color name="red_error">#FF3355</color>
+    <!-- 8-category Aurora system -->
+    <!-- 1 Sync / Cloud (cyan = brand primary) -->
+    <color name="cat_sync">#06b6d4</color>
+    <color name="cat_sync_neon">#22d3ee</color>
+    <color name="cat_sync_soft">#cff7fe</color>
+    <!-- 2 Safe / Backed up (emerald) -->
+    <color name="cat_safe">#0fbf86</color>
+    <color name="cat_safe_neon">#2ee6a6</color>
+    <color name="cat_safe_soft">#ccf6e6</color>
+    <!-- 3 Free / Available (lime) -->
+    <color name="cat_free">#74c41a</color>
+    <color name="cat_free_neon">#a3e635</color>
+    <color name="cat_free_soft">#e3f7c9</color>
+    <!-- 4 Shared / Links (blue) -->
+    <color name="cat_share">#2f7bf6</color>
+    <color name="cat_share_neon">#5b9dff</color>
+    <color name="cat_share_soft">#d6e6ff</color>
+    <!-- 5 Smart / AI (violet) -->
+    <color name="cat_smart">#8b5cf6</color>
+    <color name="cat_smart_neon">#a98bff</color>
+    <color name="cat_smart_soft">#e7defb</color>
+    <!-- 6 Pending / Uploading / Warning (amber) -->
+    <color name="cat_pending">#f0a92b</color>
+    <color name="cat_pending_neon">#ffc44d</color>
+    <color name="cat_pending_soft">#fdebc6</color>
+    <!-- 7 Alert / Error / Over-quota (coral) -->
+    <color name="cat_alert">#ef5350</color>
+    <color name="cat_alert_neon">#ff7a78</color>
+    <color name="cat_alert_soft">#fdd9d9</color>
+    <!-- 8 People / Favorites (pink) -->
+    <color name="cat_people">#ec4899</color>
+    <color name="cat_people_neon">#ff74b8</color>
+    <color name="cat_people_soft">#fcd9ec</color>
+
+    <!-- Semantic aliases (backward compat) -->
+    <color name="green_ok">#2ee6a6</color>
+    <color name="red_error">#ff7a78</color>
+    <color name="neon_purple">#a98bff</color>
+    <color name="neon_green">#2ee6a6</color>
+    <color name="neon_amber">#ffc44d</color>
+    <color name="neon_purple_glow">#36a98bff</color>
+    <color name="neon_green_glow">#362ee6a6</color>
+    <color name="neon_amber_glow">#36ffc44d</color>
 </resources>
