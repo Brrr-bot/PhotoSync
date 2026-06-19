@@ -34,9 +34,9 @@
                 android:text="@string/app_name"
                 android:textColor="@color/neon_cyan"
                 android:textSize="17sp"
-                android:letterSpacing="0.12"
+                android:letterSpacing="0.04"
                 android:textStyle="bold"
-                android:fontFamily="monospace"/>
+                android:fontFamily="@font/space_grotesk"/>
 
             <ImageButton
                 android:id="@+id/btn_menu"
@@ -81,9 +81,9 @@
                             android:text="STATUS"
                             android:textColor="@color/neon_cyan"
                             android:textSize="11sp"
-                            android:letterSpacing="0.2"
+                            android:letterSpacing="0.16"
                             android:textStyle="bold"
-                            android:fontFamily="monospace"
+                            android:fontFamily="@font/space_grotesk"
                             android:layout_marginBottom="10dp"/>
 
                         <TextView android:id="@+id/tv_permission_status"
@@ -91,6 +91,7 @@
                             android:layout_height="wrap_content"
                             android:textColor="@color/text_primary"
                             android:textSize="13sp"
+                            android:fontFamily="@font/sora"
                             android:layout_marginBottom="4dp"/>
 
                         <TextView android:id="@+id/tv_battery_status"
@@ -98,6 +99,7 @@
                             android:layout_height="wrap_content"
                             android:textColor="@color/text_primary"
                             android:textSize="13sp"
+                            android:fontFamily="@font/sora"
                             android:layout_marginBottom="10dp"/>
 
                         <TextView android:id="@+id/tv_hub_status"
@@ -105,6 +107,7 @@
                             android:layout_height="wrap_content"
                             android:textColor="@color/text_primary"
                             android:textSize="13sp"
+                            android:fontFamily="@font/sora"
                             android:text="◎  Listening for hub…"/>
 
                         <TextView android:id="@+id/tv_accessibility_status"
@@ -112,6 +115,7 @@
                             android:layout_height="wrap_content"
                             android:textColor="@color/text_primary"
                             android:textSize="13sp"
+                            android:fontFamily="@font/sora"
                             android:layout_marginTop="4dp"/>
 
                         <TextView android:id="@+id/tv_tailscale_status"
@@ -119,7 +123,7 @@
                             android:layout_height="wrap_content"
                             android:textColor="@color/neon_cyan"
                             android:textSize="12sp"
-                            android:fontFamily="monospace"
+                            android:fontFamily="@font/jetbrains_mono"
                             android:layout_marginTop="4dp"/>
 
                         <LinearLayout
@@ -166,9 +170,9 @@
                             android:text="UPLOAD"
                             android:textColor="@color/neon_purple"
                             android:textSize="11sp"
-                            android:letterSpacing="0.2"
+                            android:letterSpacing="0.16"
                             android:textStyle="bold"
-                            android:fontFamily="monospace"
+                            android:fontFamily="@font/space_grotesk"
                             android:layout_marginBottom="10dp"/>
 
                         <!-- Session progress (file count) -->
@@ -177,7 +181,7 @@
                             android:layout_height="wrap_content"
                             android:textColor="@color/text_secondary"
                             android:textSize="12sp"
-                            android:fontFamily="monospace"
+                            android:fontFamily="@font/jetbrains_mono"
                             android:text="Idle"
                             android:layout_marginBottom="6dp"/>
 
@@ -200,9 +204,9 @@
                             android:textColor="@color/neon_purple"
                             android:alpha="0.7"
                             android:textSize="9sp"
-                            android:letterSpacing="0.2"
+                            android:letterSpacing="0.16"
                             android:textStyle="bold"
-                            android:fontFamily="monospace"
+                            android:fontFamily="@font/space_grotesk"
                             android:layout_marginBottom="4dp"/>
 
                         <TextView android:id="@+id/tv_current_file"
@@ -210,7 +214,7 @@
                             android:layout_height="wrap_content"
                             android:textColor="@color/text_secondary"
                             android:textSize="12sp"
-                            android:fontFamily="monospace"
+                            android:fontFamily="@font/jetbrains_mono"
                             android:text="—"
                             android:layout_marginBottom="6dp"/>
 
@@ -232,7 +236,7 @@
                             android:layout_height="wrap_content"
                             android:textColor="@color/neon_purple"
                             android:textSize="11sp"
-                            android:fontFamily="monospace"
+                            android:fontFamily="@font/jetbrains_mono"
                             android:text=""/>
                     </LinearLayout>
                 </FrameLayout>
@@ -256,9 +260,9 @@
                             android:text="COMPRESSION"
                             android:textColor="@color/neon_cyan"
                             android:textSize="11sp"
-                            android:letterSpacing="0.2"
+                            android:letterSpacing="0.16"
                             android:textStyle="bold"
-                            android:fontFamily="monospace"
+                            android:fontFamily="@font/space_grotesk"
                             android:layout_marginBottom="10dp"/>
 
                         <TextView android:id="@+id/tv_compression_label"
@@ -266,7 +270,7 @@
                             android:layout_height="wrap_content"
                             android:textColor="@color/text_secondary"
                             android:textSize="12sp"
-                            android:fontFamily="monospace"
+                            android:fontFamily="@font/jetbrains_mono"
                             android:text="Idle"
                             android:layout_marginBottom="8dp"/>
 
@@ -316,7 +320,7 @@
                                 android:textSize="11sp"
                                 android:letterSpacing="0.2"
                                 android:textStyle="bold"
-                                android:fontFamily="monospace"/>
+                                android:fontFamily="@font/jetbrains_mono"/>
 
                             <TextView
                                 android:id="@+id/btn_hub_files_more"
@@ -326,7 +330,7 @@
                                 android:textColor="@color/neon_green"
                                 android:textSize="11sp"
                                 android:textStyle="bold"
-                                android:fontFamily="monospace"
+                                android:fontFamily="@font/jetbrains_mono"
                                 android:padding="4dp"
                                 android:background="?attr/selectableItemBackgroundBorderless"/>
                         </LinearLayout>
@@ -393,7 +397,7 @@
                             android:text="Connect to hub to see recent files"
                             android:textColor="@color/text_muted"
                             android:textSize="11sp"
-                            android:fontFamily="monospace"/>
+                            android:fontFamily="@font/jetbrains_mono"/>
 
                     </LinearLayout>
                 </FrameLayout>
@@ -416,9 +420,9 @@
                             android:text="LIVE LOG"
                             android:textColor="@color/neon_amber"
                             android:textSize="11sp"
-                            android:letterSpacing="0.2"
+                            android:letterSpacing="0.16"
                             android:textStyle="bold"
-                            android:fontFamily="monospace"
+                            android:fontFamily="@font/space_grotesk"
                             android:layout_marginBottom="10dp"/>
 
                         <ScrollView
@@ -431,7 +435,7 @@
                                 android:id="@+id/tv_log"
                                 android:layout_width="match_parent"
                                 android:layout_height="wrap_content"
-                                android:fontFamily="monospace"
+                                android:fontFamily="@font/jetbrains_mono"
                                 android:textSize="11sp"
                                 android:textColor="@color/text_secondary"
                                 android:lineSpacingMultiplier="1.3"
