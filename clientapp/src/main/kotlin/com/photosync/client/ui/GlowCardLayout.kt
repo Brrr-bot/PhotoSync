@@ -30,7 +30,7 @@ class GlowCardLayout @JvmOverloads constructor(
 
     private val density   = resources.displayMetrics.density
     private val cornerPx  = 16f * density
-    private val blurSigma = 10f * density   // ~20dp; larger = wider halo
+    private val blurSigma = 15f * density   // ~20dp; larger = wider halo
 
     private var glowColor = Color.argb(100, 0x22, 0xd3, 0xee)   // default cyan
 
