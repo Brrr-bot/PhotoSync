@@ -1,10 +1,14 @@
 package com.photosync.client.ui
 
+import android.animation.ValueAnimator
 import android.content.Context
 import android.graphics.BlurMaskFilter
 import android.graphics.Canvas
 import android.graphics.Color
 import android.graphics.ColorFilter
+import android.graphics.Paint
+import android.graphics.Path
+import android.graphics.PathMeasure
 import android.graphics.PixelFormat
 import android.graphics.RectF
 import android.graphics.RenderEffect
@@ -14,13 +18,15 @@ import android.graphics.drawable.GradientDrawable
 import android.os.Build
 import android.util.AttributeSet
 import android.view.View
+import android.view.animation.LinearInterpolator
 import android.widget.FrameLayout
 
 /**
- * FrameLayout that renders a smooth GPU-blurred neon glow behind its children.
- * API 31+: uses RenderEffect (hardware Gaussian blur).
- * API <31: falls back to software BlurMaskFilter.
- * Parent must have clipChildren=false for the halo to bleed outside card bounds.
+ * FrameLayout with two visual layers behind its children:
+ *  1. A static GPU-blurred neon halo (RenderEffect API 31+, BlurMaskFilter fallback).
+ *  2. An optional animated pulse — a bright arc that travels around the card perimeter.
+ *     Call startPulse() when work is active, stopPulse() when idle.
+ * Parent must have clipChildren=false for the halo to bleed outside bounds.
  */
 class GlowCardLayout @JvmOverloads constructor(
     context: Context,
@@ -30,12 +36,17 @@ class GlowCardLayout @JvmOverloads constructor(
 
     private val density   = resources.displayMetrics.density
     private val cornerPx  = 16f * density
-    private val blurSigma = 15f * density   // ~20dp; larger = wider halo
+    private val blurSigma = 12f * density
 
-    private var glowColor = Color.argb(100, 0x22, 0xd3, 0xee)   // default cyan
+    private var glowColor = Color.argb(100, 0x22, 0xd3, 0xee)
 
-    // Added as child[0] so it sits behind all content; sized in onLayout
-    private val glowView = View(context).also { addView(it, 0, LayoutParams(0, 0)) }
+    private val glowView    = View(context).also { addView(it, 0, LayoutParams(0, 0)) }
+    private val pulseOverlay = PulseOverlay(context).also {
+        it.visibility = GONE
+        addView(it, 1, LayoutParams(0, 0))  // sits between glow and content
+    }
+
+    private var pulseAnimator: ValueAnimator? = null
 
     init {
         clipChildren  = false
@@ -43,10 +54,31 @@ class GlowCardLayout @JvmOverloads constructor(
         applyGlow()
     }
 
-    /** Call from Activity/Fragment to set the accent colour (alpha controls intensity). */
     fun setGlowColor(color: Int) {
         glowColor = color
+        pulseOverlay.setAccent(color)
         applyGlow()
+    }
+
+    /** Call when something is actively happening in this card. */
+    fun startPulse() {
+        if (pulseAnimator?.isRunning == true) return
+        pulseOverlay.visibility = VISIBLE
+        pulseAnimator = ValueAnimator.ofFloat(0f, 1f).apply {
+            duration              = 2200L
+            repeatCount           = ValueAnimator.INFINITE
+            repeatMode            = ValueAnimator.RESTART
+            interpolator          = LinearInterpolator()
+            addUpdateListener { pulseOverlay.setProgress(it.animatedValue as Float) }
+            start()
+        }
+    }
+
+    /** Call when the card returns to idle. */
+    fun stopPulse() {
+        pulseAnimator?.cancel()
+        pulseAnimator = null
+        pulseOverlay.visibility = GONE
     }
 
     private fun applyGlow() {
@@ -68,12 +100,86 @@ class GlowCardLayout @JvmOverloads constructor(
 
     override fun onLayout(changed: Boolean, l: Int, t: Int, r: Int, b: Int) {
         super.onLayout(changed, l, t, r, b)
-        // Size glowView to exactly fill this layout after children determine its size
-        glowView.layout(0, 0, r - l, b - t)
+        val w = r - l; val h = b - t
+        glowView.layout(0, 0, w, h)
+        pulseOverlay.layout(0, 0, w, h)
+        if (changed) pulseOverlay.buildPath(w, h)
     }
 
+    // ── Pulse overlay ──────────────────────────────────────────────────────
+
+    private inner class PulseOverlay(ctx: Context) : View(ctx) {
+        private val strokePx = 1.5f * density
+        private val path     = Path()
+        private val segPath  = Path()
+        private val pm       = PathMeasure()
+        private var progress = 0f
+
+        private val paint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
+            style       = Paint.Style.STROKE
+            strokeWidth = strokePx
+            color       = glowColor
+            maskFilter  = BlurMaskFilter(3f * density, BlurMaskFilter.Blur.NORMAL)
+        }
+        // Brighter centre line for the leading edge
+        private val corePaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
+            style       = Paint.Style.STROKE
+            strokeWidth = strokePx * 0.5f
+            color       = Color.WHITE
+            alpha       = 180
+        }
+
+        init { setLayerType(LAYER_TYPE_SOFTWARE, null) }
+
+        fun setAccent(color: Int) {
+            paint.color = color
+            invalidate()
+        }
+
+        fun setProgress(p: Float) { progress = p; invalidate() }
+
+        fun buildPath(w: Int, h: Int) {
+            val inset = strokePx / 2f
+            path.reset()
+            path.addRoundRect(
+                RectF(inset, inset, w - inset, h - inset),
+                cornerPx, cornerPx, Path.Direction.CW
+            )
+            pm.setPath(path, false)
+        }
+
+        override fun onDraw(canvas: Canvas) {
+            val len = pm.length
+            if (len == 0f) return
+            val segLen = len * 0.18f   // 18% of perimeter
+            val start  = progress * len
+            val end    = start + segLen
+
+            segPath.reset()
+            if (end <= len) {
+                pm.getSegment(start, end, segPath, true)
+            } else {
+                // wrap-around: two segments
+                pm.getSegment(start, len, segPath, true)
+                val overflow = Path()
+                pm.getSegment(0f, end - len, overflow, true)
+                segPath.addPath(overflow)
+            }
+            canvas.drawPath(segPath, paint)
+            // Bright core at the leading tip (last 3% of segment)
+            val tipStart = (end - len * 0.03f).coerceAtLeast(start)
+            val tipPath  = Path()
+            if (tipStart < len) {
+                pm.getSegment(tipStart.coerceAtMost(len), end.coerceAtMost(len), tipPath, true)
+            }
+            canvas.drawPath(tipPath, corePaint)
+        }
+    }
+
+    // ── Soft-render fallback (API < 31 halo) ──────────────────────────────
+
     private inner class SoftwareBlurDrawable : Drawable() {
-        private val paint = android.graphics.Paint(android.graphics.Paint.ANTI_ALIAS_FLAG).apply {
+        private val paint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
             maskFilter = BlurMaskFilter(blurSigma * 0.6f, BlurMaskFilter.Blur.NORMAL)
         }
         override fun draw(canvas: Canvas) {
