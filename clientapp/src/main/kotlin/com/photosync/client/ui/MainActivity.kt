@@ -39,6 +39,8 @@ import com.photosync.shared.Constants
 import java.text.SimpleDateFormat
 import java.util.Date
 import java.util.Locale
+import android.graphics.Color
+import com.photosync.client.ui.GlowCardLayout
 
 class MainActivity : AppCompatActivity() {
 
@@ -192,6 +194,7 @@ class MainActivity : AppCompatActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         setContentView(R.layout.activity_main_client)
+        setupGlowCards()
 
         tvPermissionStatus = findViewById(R.id.tv_permission_status)
         tvBatteryStatus    = findViewById(R.id.tv_battery_status)
@@ -760,4 +763,17 @@ class MainActivity : AppCompatActivity() {
         super.onRequestPermissionsResult(requestCode, permissions, grantResults)
         refreshStatus()
     }
+    private fun setupGlowCards() {
+        val cards = listOf(
+            R.id.glow_card_status      to Color.argb(100, 0x22, 0xd3, 0xee),
+            R.id.glow_card_upload      to Color.argb(100, 0xa9, 0x8b, 0xff),
+            R.id.glow_card_compression to Color.argb(100, 0x2e, 0xe6, 0xa6),
+            R.id.glow_card_hub         to Color.argb(100, 0x2e, 0xe6, 0xa6),
+            R.id.glow_card_log         to Color.argb(100, 0xff, 0xc4, 0x4d),
+        )
+        cards.forEach { (id, color) ->
+            findViewById<GlowCardLayout>(id)?.setGlowColor(color)
+        }
+    }
+
 }
