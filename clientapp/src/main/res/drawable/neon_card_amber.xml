@@ -1,15 +1,27 @@
 <?xml version="1.0" encoding="utf-8"?>
 <layer-list xmlns:android="http://schemas.android.com/apk/res/android">
-    <item android:left="-8dp" android:top="-8dp" android:right="-8dp" android:bottom="-8dp">
-        <shape android:shape="rectangle"><corners android:radius="24dp"/><solid android:color="#08ffc44d"/></shape>
+    <!-- Fading glow layers — extend outside view (parent needs clipChildren=false) -->
+    <item android:left="-20dp" android:top="-20dp" android:right="-20dp" android:bottom="-20dp">
+        <shape android:shape="rectangle"><corners android:radius="36dp"/><solid android:color="#02ffc44d"/></shape>
     </item>
-    <item android:left="-4dp" android:top="-4dp" android:right="-4dp" android:bottom="-4dp">
-        <shape android:shape="rectangle"><corners android:radius="20dp"/><solid android:color="#18ffc44d"/></shape>
+    <item android:left="-14dp" android:top="-14dp" android:right="-14dp" android:bottom="-14dp">
+        <shape android:shape="rectangle"><corners android:radius="30dp"/><solid android:color="#05ffc44d"/></shape>
     </item>
-    <item>
-        <shape android:shape="rectangle"><corners android:radius="16dp"/><solid android:color="#40ffc44d"/></shape>
+    <item android:left="-9dp" android:top="-9dp" android:right="-9dp" android:bottom="-9dp">
+        <shape android:shape="rectangle"><corners android:radius="25dp"/><solid android:color="#0Effc44d"/></shape>
     </item>
-    <item android:left="4dp" android:top="4dp" android:right="4dp" android:bottom="4dp">
-        <shape android:shape="rectangle"><corners android:radius="12dp"/><solid android:color="@color/card_bg"/><stroke android:width="1.5dp" android:color="@color/neon_amber"/></shape>
+    <item android:left="-5dp" android:top="-5dp" android:right="-5dp" android:bottom="-5dp">
+        <shape android:shape="rectangle"><corners android:radius="21dp"/><solid android:color="#1Affc44d"/></shape>
+    </item>
+    <item android:left="-2dp" android:top="-2dp" android:right="-2dp" android:bottom="-2dp">
+        <shape android:shape="rectangle"><corners android:radius="18dp"/><solid android:color="#28ffc44d"/></shape>
+    </item>
+    <!-- Card body: 16dp corners (Aurora radius-lg), solid background + stroke -->
+    <item android:left="2dp" android:top="2dp" android:right="2dp" android:bottom="2dp">
+        <shape android:shape="rectangle">
+            <corners android:radius="16dp"/>
+            <solid android:color="@color/card_bg"/>
+            <stroke android:width="1.5dp" android:color="@color/neon_amber"/>
+        </shape>
     </item>
 </layer-list>
