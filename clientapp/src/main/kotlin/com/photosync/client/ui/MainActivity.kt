@@ -65,6 +65,9 @@ class MainActivity : AppCompatActivity() {
     private val hubThumbViews = arrayOfNulls<ImageView>(5)
 
     private val logLines = ArrayDeque<String>(100)
+    private val logPulseStop = Runnable {
+        findViewById<GlowCardLayout>(R.id.glow_card_log)?.stopPulse()
+    }
     // Track last hub IP for which we loaded thumbnails so we don't re-fetch on every poll tick
     private var thumbsLoadedForIp: String? = null
 
@@ -188,6 +191,10 @@ class MainActivity : AppCompatActivity() {
             if (logLines.size >= 100) logLines.removeFirst()
             logLines.addLast(line)
             tvLog.text = colorizeLog(logLines)
+            val logCard = findViewById<GlowCardLayout>(R.id.glow_card_log)
+            logCard?.startPulse()
+            logCard?.removeCallbacks(logPulseStop)
+            logCard?.postDelayed(logPulseStop, 4000L)
             scrollLog.post { scrollLog.fullScroll(ScrollView.FOCUS_DOWN) }
         }
     }
@@ -249,6 +256,10 @@ class MainActivity : AppCompatActivity() {
         logLines.addAll(ClientForegroundService.getRecentLogs())
         if (logLines.isNotEmpty()) {
             tvLog.text = colorizeLog(logLines)
+            val logCard = findViewById<GlowCardLayout>(R.id.glow_card_log)
+            logCard?.startPulse()
+            logCard?.removeCallbacks(logPulseStop)
+            logCard?.postDelayed(logPulseStop, 4000L)
             scrollLog.post { scrollLog.fullScroll(ScrollView.FOCUS_DOWN) }
         }
 
