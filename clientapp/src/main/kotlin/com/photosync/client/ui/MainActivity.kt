@@ -84,6 +84,7 @@ class MainActivity : AppCompatActivity() {
         val sesTotal   = srv.stateSessionTotal
         val sesCurrent = srv.stateSessionCurrent
         if (sesTotal > 0) {
+            findViewById<GlowCardLayout>(R.id.glow_card_upload)?.startPulse()
             pbSync.max = sesTotal
             pbSync.progress = sesCurrent
             tvProgressLabel.text = "$sesCurrent / $sesTotal"
@@ -139,6 +140,8 @@ class MainActivity : AppCompatActivity() {
         val compFile      = srv.stateCompressionFile
         val compLifetime  = srv.stateCompressionLifetime
         if (compTotal > 0 || compLifetime > 0) {
+            if (compTotal > 0) findViewById<GlowCardLayout>(R.id.glow_card_compression)?.startPulse()
+            else               findViewById<GlowCardLayout>(R.id.glow_card_compression)?.stopPulse()
             pbCompression.visibility = View.VISIBLE
             pbCompression.max = if (compTotal > 0) compTotal else 1
             pbCompression.progress = compDone
