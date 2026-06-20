@@ -152,7 +152,7 @@ class GlowCardLayout @JvmOverloads constructor(
         fun setProgress(p: Float) { progress = p; invalidate() }
 
         fun buildPath(w: Int, h: Int) {
-            val inset = 1f * density
+            val inset = 0.375f * density
             path.reset()
             path.addRoundRect(RectF(inset, inset, w - inset, h - inset),
                 cornerPx, cornerPx, Path.Direction.CW)
@@ -168,15 +168,15 @@ class GlowCardLayout @JvmOverloads constructor(
             if (len == 0f) return
             val segLen = len * 0.09f
             val start  = progress * len
-            val N = 18  // number of fade steps
+            val N = 32  // number of fade steps
 
             // Draw comet tail: N segments from tail (alpha~0) to tip (alpha~255)
             for (i in 0 until N) {
                 val frac     = i.toFloat() / N
                 val fracNext = (i + 1).toFloat() / N
-                // easeIn curve so the fade feels natural
-                val alpha    = (fracNext * fracNext * 255f).toInt().coerceIn(0, 255)
-                val glowAlpha = (fracNext * fracNext * 90f).toInt().coerceIn(0, 255)
+                // Cubic ease-in: tail is barely visible, tip is full brightness
+                val alpha     = (fracNext * fracNext * fracNext * 255f).toInt().coerceIn(0, 255)
+                val glowAlpha = (fracNext * fracNext * fracNext * 80f).toInt().coerceIn(0, 255)
 
                 val sStart = (start + segLen * frac) % len
                 val sEnd   = (start + segLen * fracNext) % len
