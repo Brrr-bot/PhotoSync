@@ -206,8 +206,7 @@
                                 android:layout_height="8dp"
                                 android:max="100"
                                 android:progress="0"
-                                android:progressTint="@color/neon_purple"
-                                android:progressBackgroundTint="#36a98bff"
+                                android:progressDrawable="@drawable/progress_bar_purple"
                                 android:layout_marginBottom="14dp"/>
 
                             <TextView
@@ -239,8 +238,7 @@
                                 android:indeterminate="false"
                                 android:max="10000"
                                 android:progress="0"
-                                android:progressTint="@color/neon_cyan"
-                                android:progressBackgroundTint="#2222d3ee"
+                                android:progressDrawable="@drawable/progress_bar_cyan"
                                 android:visibility="invisible"
                                 android:layout_marginBottom="10dp"/>
 
@@ -301,8 +299,7 @@
                                 android:indeterminate="false"
                                 android:max="100"
                                 android:progress="0"
-                                android:progressTint="@color/neon_green"
-                                android:progressBackgroundTint="#222ee6a6"
+                                android:progressDrawable="@drawable/progress_bar_green"
                                 android:visibility="invisible"/>
 
                         </LinearLayout>
