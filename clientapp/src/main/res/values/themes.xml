@@ -15,4 +15,18 @@
         <item name="android:windowBackground">@android:color/transparent</item>
         <item name="android:windowNoTitle">true</item>
     </style>
+
+    <!-- Aurora popup menu theme — applied via ContextThemeWrapper -->
+    <style name="AuroraPopupTheme" parent="ThemeOverlay.AppCompat.Dark">
+        <item name="android:colorBackground">@color/card_bg</item>
+        <item name="android:textColor">@color/text_primary</item>
+        <item name="android:textColorPrimary">@color/text_primary</item>
+        <item name="android:textColorSecondary">@color/text_secondary</item>
+        <item name="android:popupBackground">@drawable/popup_bg_aurora</item>
+        <item name="popupMenuStyle">@style/AuroraPopupMenuStyle</item>
+    </style>
+
+    <style name="AuroraPopupMenuStyle" parent="Widget.AppCompat.PopupMenu">
+        <item name="android:popupBackground">@drawable/popup_bg_aurora</item>
+    </style>
 </resources>
