@@ -73,7 +73,7 @@ class GlowCardLayout @JvmOverloads constructor(
         if (pulseAnimator?.isRunning == true) return
         pulseOverlay.visibility = VISIBLE
         pulseAnimator = ValueAnimator.ofFloat(0f, 1f).apply {
-            duration     = 2200L
+            duration     = 3500L
             repeatCount  = ValueAnimator.INFINITE
             repeatMode   = ValueAnimator.RESTART
             interpolator = LinearInterpolator()
@@ -116,7 +116,7 @@ class GlowCardLayout @JvmOverloads constructor(
     // ── Pulse overlay ──────────────────────────────────────────────────────
 
     private inner class PulseOverlay(ctx: Context) : View(ctx) {
-        private val strokePx = 2f * density
+        private val strokePx = 1.5f * density
         private val path     = Path()
         private val segPath  = Path()
         private val pm       = PathMeasure()
@@ -125,7 +125,7 @@ class GlowCardLayout @JvmOverloads constructor(
         // Soft glow halo around the arc
         private val glowPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
             style       = Paint.Style.STROKE
-            strokeWidth = strokePx * 3f
+            strokeWidth = strokePx * 2f
             maskFilter  = BlurMaskFilter(5f * density, BlurMaskFilter.Blur.NORMAL)
         }
         // Crisp bright core line
@@ -152,7 +152,7 @@ class GlowCardLayout @JvmOverloads constructor(
         fun setProgress(p: Float) { progress = p; invalidate() }
 
         fun buildPath(w: Int, h: Int) {
-            val inset = strokePx * 1.5f
+            val inset = 1f * density
             path.reset()
             path.addRoundRect(RectF(inset, inset, w - inset, h - inset),
                 cornerPx, cornerPx, Path.Direction.CW)
@@ -166,7 +166,7 @@ class GlowCardLayout @JvmOverloads constructor(
         override fun onDraw(canvas: Canvas) {
             val len = pm.length
             if (len == 0f) return
-            val segLen = len * 0.18f
+            val segLen = len * 0.09f
             val start  = progress * len
             val end    = start + segLen
 
