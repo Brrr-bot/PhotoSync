@@ -168,26 +168,39 @@ class GlowCardLayout @JvmOverloads constructor(
             if (len == 0f) return
             val segLen = len * 0.09f
             val start  = progress * len
-            val end    = start + segLen
+            val N = 18  // number of fade steps
 
-            segPath.reset()
-            if (end <= len) {
-                pm.getSegment(start, end, segPath, true)
-            } else {
-                pm.getSegment(start, len, segPath, true)
-                val wrap = Path()
-                pm.getSegment(0f, end - len, wrap, true)
-                segPath.addPath(wrap)
+            // Draw comet tail: N segments from tail (alpha~0) to tip (alpha~255)
+            for (i in 0 until N) {
+                val frac     = i.toFloat() / N
+                val fracNext = (i + 1).toFloat() / N
+                // easeIn curve so the fade feels natural
+                val alpha    = (fracNext * fracNext * 255f).toInt().coerceIn(0, 255)
+                val glowAlpha = (fracNext * fracNext * 90f).toInt().coerceIn(0, 255)
+
+                val sStart = (start + segLen * frac) % len
+                val sEnd   = (start + segLen * fracNext) % len
+                val seg = Path()
+                if (sStart <= sEnd) {
+                    pm.getSegment(sStart, sEnd, seg, true)
+                } else {
+                    pm.getSegment(sStart, len, seg, true)
+                    val wrap = Path(); pm.getSegment(0f, sEnd, wrap, true); seg.addPath(wrap)
+                }
+
+                glowPaint.alpha = glowAlpha
+                corePaint.alpha = alpha
+                canvas.drawPath(seg, glowPaint)
+                canvas.drawPath(seg, corePaint)
             }
 
-            // Tip — last 4% of segment length
-            val tipStart = (end - len * 0.04f).coerceAtLeast(start).coerceAtMost(len)
-            val tipPath  = Path()
-            pm.getSegment(tipStart, end.coerceAtMost(len), tipPath, true)
-
-            canvas.drawPath(segPath, glowPaint)
-            canvas.drawPath(segPath, corePaint)
-            canvas.drawPath(tipPath, tipPaint)
+            // Bright white flash at the very tip
+            val tipSeg = Path()
+            val tipS = (start + segLen * 0.92f) % len
+            val tipE = (start + segLen) % len
+            if (tipS <= tipE) pm.getSegment(tipS, tipE, tipSeg, true)
+            else { pm.getSegment(tipS, len, tipSeg, true); val w=Path(); pm.getSegment(0f,tipE,w,true); tipSeg.addPath(w) }
+            canvas.drawPath(tipSeg, tipPaint)
         }
     }
 
