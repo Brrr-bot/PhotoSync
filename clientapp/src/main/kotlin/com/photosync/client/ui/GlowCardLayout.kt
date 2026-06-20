@@ -18,14 +18,15 @@ import android.graphics.drawable.GradientDrawable
 import android.os.Build
 import android.util.AttributeSet
 import android.view.View
-import android.view.animation.LinearInterpolator
+import android.view.animation.DecelerateInterpolator
 import android.widget.FrameLayout
 
 /**
- * FrameLayout with two visual layers:
- *  1. Static GPU-blurred neon halo behind children (RenderEffect API 31+, BlurMaskFilter fallback).
- *  2. Animated perimeter pulse on top of children — call startPulse()/stopPulse().
- * Parent must have clipChildren=false for the halo to bleed outside bounds.
+ * FrameLayout with:
+ *  1. Static GPU-blurred neon halo (RenderEffect API 31+, BlurMaskFilter fallback).
+ *  2. Full-perimeter pulse: the entire border is lit, fading from full brightness at
+ *     the head to nothing at the tail 360 degrees behind. Decelerates as it sweeps.
+ *     Call startPulse() when work is active, stopPulse() when idle.
  */
 class GlowCardLayout @JvmOverloads constructor(
     context: Context,
@@ -39,10 +40,7 @@ class GlowCardLayout @JvmOverloads constructor(
 
     private var glowColor = Color.argb(100, 0x22, 0xd3, 0xee)
 
-    // glowView sits behind content (added at index 0 before XML children inflate)
-    private val glowView = View(context).also { addView(it, 0, LayoutParams(0, 0)) }
-
-    // pulseOverlay is moved to the TOP (last child) in onFinishInflate so it renders over content
+    private val glowView     = View(context).also { addView(it, 0, LayoutParams(0, 0)) }
     private val pulseOverlay = PulseOverlay(context).also {
         it.visibility = GONE
         addView(it, LayoutParams(0, 0))
@@ -58,7 +56,6 @@ class GlowCardLayout @JvmOverloads constructor(
 
     override fun onFinishInflate() {
         super.onFinishInflate()
-        // Re-attach pulse overlay as last child so it draws over the card surface
         removeView(pulseOverlay)
         addView(pulseOverlay, LayoutParams(0, 0))
     }
@@ -73,10 +70,10 @@ class GlowCardLayout @JvmOverloads constructor(
         if (pulseAnimator?.isRunning == true) return
         pulseOverlay.visibility = VISIBLE
         pulseAnimator = ValueAnimator.ofFloat(0f, 1f).apply {
-            duration     = 3500L
+            duration     = 3000L
             repeatCount  = ValueAnimator.INFINITE
             repeatMode   = ValueAnimator.RESTART
-            interpolator = LinearInterpolator()
+            interpolator = DecelerateInterpolator(2f)  // fast start, slows to crawl
             addUpdateListener { pulseOverlay.setProgress(it.animatedValue as Float) }
             start()
         }
@@ -113,94 +110,91 @@ class GlowCardLayout @JvmOverloads constructor(
         if (changed) pulseOverlay.buildPath(w, h)
     }
 
-    // ── Pulse overlay ──────────────────────────────────────────────────────
+    // ── Full-perimeter pulse overlay ───────────────────────────────────────
 
     private inner class PulseOverlay(ctx: Context) : View(ctx) {
-        private val strokePx = 1.5f * density
-        private val path     = Path()
-        private val segPath  = Path()
-        private val pm       = PathMeasure()
+        private val strokePx  = 1.5f * density
+        // inset = half stroke, so path centre sits on the card border centre
+        private val pathInset = strokePx / 2f
+
+        private val path = Path()
+        private val pm   = PathMeasure()
         private var progress = 0f
 
-        // Soft glow halo around the arc
+        // Glow halo (blurred wide stroke)
         private val glowPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
             style       = Paint.Style.STROKE
-            strokeWidth = strokePx * 2f
-            maskFilter  = BlurMaskFilter(5f * density, BlurMaskFilter.Blur.NORMAL)
+            strokeWidth = strokePx * 3f
+            maskFilter  = BlurMaskFilter(4f * density, BlurMaskFilter.Blur.NORMAL)
         }
-        // Crisp bright core line
+        // Crisp core line
         private val corePaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
             style       = Paint.Style.STROKE
             strokeWidth = strokePx
-        }
-        // Bright white tip
-        private val tipPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
-            style       = Paint.Style.STROKE
-            strokeWidth = strokePx * 1.5f
-            color       = Color.argb(220, 255, 255, 255)
         }
 
         init { setLayerType(LAYER_TYPE_SOFTWARE, null) }
 
         fun setAccent(color: Int) {
-            // Force full alpha for the stroke colours — alpha on glowColor is for the halo, not pulse
             val r = Color.red(color); val g = Color.green(color); val b = Color.blue(color)
-            glowPaint.color  = Color.argb(80, r, g, b)
+            glowPaint.color  = Color.argb(255, r, g, b)
             corePaint.color  = Color.argb(255, r, g, b)
         }
 
         fun setProgress(p: Float) { progress = p; invalidate() }
 
         fun buildPath(w: Int, h: Int) {
-            val inset = 0.375f * density
             path.reset()
-            path.addRoundRect(RectF(inset, inset, w - inset, h - inset),
-                cornerPx, cornerPx, Path.Direction.CW)
+            path.addRoundRect(
+                RectF(pathInset, pathInset, w - pathInset, h - pathInset),
+                cornerPx, cornerPx, Path.Direction.CW
+            )
             pm.setPath(path, false)
-            // Refresh accent in case setAccent wasn't called yet
             val r = Color.red(glowColor); val g = Color.green(glowColor); val b = Color.blue(glowColor)
-            glowPaint.color = Color.argb(80, r, g, b)
-            corePaint.color = Color.argb(255, r, g, b)
+            glowPaint.color  = Color.argb(255, r, g, b)
+            corePaint.color  = Color.argb(255, r, g, b)
         }
 
         override fun onDraw(canvas: Canvas) {
             val len = pm.length
             if (len == 0f) return
-            val segLen = len * 0.09f
-            val start  = progress * len
-            val N = 32  // number of fade steps
 
-            // Draw comet tail: N segments from tail (alpha~0) to tip (alpha~255)
+            // Head position on path
+            val headPos = progress * len
+
+            // Draw 64 mini-segments covering the full perimeter.
+            // i=0 is the head (brightest); going backwards, brightness fades to 0 at i=N-1.
+            val N = 64
+            val segLen = len / N
+
             for (i in 0 until N) {
-                val frac     = i.toFloat() / N
-                val fracNext = (i + 1).toFloat() / N
-                // Cubic ease-in: tail is barely visible, tip is full brightness
-                val alpha     = (fracNext * fracNext * fracNext * 255f).toInt().coerceIn(0, 255)
-                val glowAlpha = (fracNext * fracNext * fracNext * 80f).toInt().coerceIn(0, 255)
+                // Fractional distance behind the head (0=head, 1=full wrap behind head)
+                val behind = i.toFloat() / N
+                // Cubic fade: 1.0 at head → 0.0 at tail
+                val t = 1f - behind
+                val alpha = (t * t * t * 255f).toInt().coerceIn(0, 255)
+                if (alpha < 2) continue
 
-                val sStart = (start + segLen * frac) % len
-                val sEnd   = (start + segLen * fracNext) % len
+                // Position of this mini-segment (going backwards from head)
+                val sEnd   = ((headPos - len * behind) + len * 10f) % len
+                val sStart = ((sEnd - segLen) + len) % len
+
                 val seg = Path()
-                if (sStart <= sEnd) {
+                if (sStart < sEnd) {
                     pm.getSegment(sStart, sEnd, seg, true)
                 } else {
+                    // wrap around end of path
                     pm.getSegment(sStart, len, seg, true)
-                    val wrap = Path(); pm.getSegment(0f, sEnd, wrap, true); seg.addPath(wrap)
+                    val wrap = Path()
+                    pm.getSegment(0f, sEnd, wrap, true)
+                    seg.addPath(wrap)
                 }
 
-                glowPaint.alpha = glowAlpha
-                corePaint.alpha = alpha
+                glowPaint.alpha  = (alpha * 0.35f).toInt()
+                corePaint.alpha  = alpha
                 canvas.drawPath(seg, glowPaint)
                 canvas.drawPath(seg, corePaint)
             }
-
-            // Bright white flash at the very tip
-            val tipSeg = Path()
-            val tipS = (start + segLen * 0.92f) % len
-            val tipE = (start + segLen) % len
-            if (tipS <= tipE) pm.getSegment(tipS, tipE, tipSeg, true)
-            else { pm.getSegment(tipS, len, tipSeg, true); val w=Path(); pm.getSegment(0f,tipE,w,true); tipSeg.addPath(w) }
-            canvas.drawPath(tipSeg, tipPaint)
         }
     }
 
