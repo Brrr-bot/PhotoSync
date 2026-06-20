@@ -10,6 +10,7 @@ import android.os.PowerManager
 import android.provider.Settings
 import android.view.View
 import android.widget.ImageButton
+import android.view.ContextThemeWrapper
 import android.widget.PopupMenu
 import android.widget.ProgressBar
 import android.widget.ScrollView
@@ -223,7 +224,7 @@ class MainActivity : AppCompatActivity() {
     // ── Dropdown menu ─────────────────────────────────────────────────────────
 
     private fun showDropdown(anchor: View) {
-        val popup = PopupMenu(this, anchor)
+        val popup = PopupMenu(ContextThemeWrapper(this, R.style.AuroraPopupTheme), anchor)
         popup.menuInflater.inflate(R.menu.menu_hub, popup.menu)
         popup.setOnMenuItemClickListener { item ->
             when (item.itemId) {
