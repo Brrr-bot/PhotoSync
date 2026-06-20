@@ -2,7 +2,7 @@
 <FrameLayout xmlns:android="http://schemas.android.com/apk/res/android"
     android:layout_width="match_parent"
     android:layout_height="match_parent"
-    android:background="#0a0a0f">
+    android:background="@color/bg_space">
 
     <LinearLayout
         android:layout_width="match_parent"
@@ -14,15 +14,15 @@
             android:layout_width="match_parent"
             android:layout_height="56dp"
             android:gravity="center_vertical"
-            android:paddingStart="16dp"
+            android:paddingStart="4dp"
             android:paddingEnd="16dp"
-            android:background="#12121a"
+            android:background="@color/banner_bg"
             android:elevation="4dp">
 
             <ImageButton
                 android:id="@+id/btn_back"
-                android:layout_width="40dp"
-                android:layout_height="40dp"
+                android:layout_width="48dp"
+                android:layout_height="48dp"
                 android:background="?attr/selectableItemBackgroundBorderless"
                 android:src="@android:drawable/ic_media_previous"
                 android:tint="@color/neon_cyan"
@@ -32,24 +32,24 @@
                 android:layout_width="0dp"
                 android:layout_height="wrap_content"
                 android:layout_weight="1"
-                android:layout_marginStart="8dp"
+                android:layout_marginStart="4dp"
                 android:text="HUB FILES"
                 android:textColor="@color/neon_cyan"
                 android:textSize="15sp"
                 android:letterSpacing="0.12"
                 android:textStyle="bold"
-                android:fontFamily="monospace"/>
+                android:fontFamily="@font/space_grotesk"/>
 
             <TextView
                 android:id="@+id/tv_file_count"
                 android:layout_width="wrap_content"
                 android:layout_height="wrap_content"
-                android:textColor="#666"
+                android:textColor="@color/text_secondary"
                 android:textSize="12sp"
-                android:fontFamily="monospace"/>
+                android:fontFamily="@font/jetbrains_mono"/>
         </LinearLayout>
 
-        <!-- Selection action bar (visible when items are selected) -->
+        <!-- Selection action bar -->
         <LinearLayout
             android:id="@+id/bar_selection"
             android:layout_width="match_parent"
@@ -58,7 +58,7 @@
             android:gravity="center_vertical"
             android:paddingStart="16dp"
             android:paddingEnd="4dp"
-            android:background="#1c0a1c"
+            android:background="@drawable/card_surface_purple"
             android:visibility="gone">
 
             <TextView
@@ -67,9 +67,9 @@
                 android:layout_height="wrap_content"
                 android:layout_weight="1"
                 android:text="0 selected"
-                android:textColor="#aaa"
+                android:textColor="@color/text_secondary"
                 android:textSize="13sp"
-                android:fontFamily="monospace"/>
+                android:fontFamily="@font/jetbrains_mono"/>
 
             <ImageButton
                 android:id="@+id/btn_share_selected"
@@ -86,7 +86,7 @@
                 android:layout_height="44dp"
                 android:background="?attr/selectableItemBackgroundBorderless"
                 android:src="@drawable/ic_delete"
-                android:tint="#FF4444"
+                android:tint="@color/cat_alert_neon"
                 android:contentDescription="Delete selected"/>
         </LinearLayout>
 
@@ -97,9 +97,9 @@
             android:layout_height="wrap_content"
             android:padding="12dp"
             android:text="Loading…"
-            android:textColor="#666"
+            android:textColor="@color/text_secondary"
             android:textSize="12sp"
-            android:fontFamily="monospace"
+            android:fontFamily="@font/jetbrains_mono"
             android:visibility="visible"/>
 
         <!-- Photo grid -->
