@@ -790,10 +790,7 @@ class MainActivity : AppCompatActivity() {
             findViewById<GlowCardLayout>(id)?.setGlowColor(color)
             findViewById<GlowCardLayout>(id)?.startBreathing()
         }
-        // Comet pulse only on active-work cards (not status, not hub)
-        listOf(R.id.glow_card_upload, R.id.glow_card_compression, R.id.glow_card_log).forEach { id ->
-            findViewById<GlowCardLayout>(id)?.startPulse()
-        }
+        // Comet pulse is started only when work is actually in progress (not here)
     }
 
 }
