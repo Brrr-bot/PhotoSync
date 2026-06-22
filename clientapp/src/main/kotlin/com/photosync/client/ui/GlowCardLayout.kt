@@ -45,7 +45,7 @@ class GlowCardLayout @JvmOverloads constructor(
             interpolator = android.view.animation.LinearInterpolator()
             start()
         }
-        private val sharedPulse = ValueAnimator.ofFloat(0f, 1f).apply {
+        internal val sharedPulse = ValueAnimator.ofFloat(0f, 1f).apply {
             duration     = 3000L
             repeatCount  = ValueAnimator.INFINITE
             repeatMode   = ValueAnimator.RESTART
