@@ -37,11 +37,12 @@ class GlowCardLayout @JvmOverloads constructor(
 ) : FrameLayout(context, attrs, defStyle) {
 
     companion object {
+        // 25s cycle: 0-15s hold at full, 15-20s fade out, 20-25s fade in
         private val sharedBreath = ValueAnimator.ofFloat(0f, 1f).apply {
-            duration     = 5000L
+            duration     = 25000L
             repeatCount  = ValueAnimator.INFINITE
-            repeatMode   = ValueAnimator.REVERSE
-            interpolator = AccelerateDecelerateInterpolator()
+            repeatMode   = ValueAnimator.RESTART
+            interpolator = android.view.animation.LinearInterpolator()
             start()
         }
         private val sharedPulse = ValueAnimator.ofFloat(0f, 1f).apply {
@@ -104,10 +105,16 @@ class GlowCardLayout @JvmOverloads constructor(
         if (breathListener != null) return
         breathingOverlay.visibility = VISIBLE
         val l = ValueAnimator.AnimatorUpdateListener { anim ->
-            val b = anim.animatedValue as Float
+            val frac = anim.animatedValue as Float
+            // Map linear fraction to breath: hold(0-0.6) → fade-out(0.6-0.8) → fade-in(0.8-1.0)
+            val b = when {
+                frac < 0.6f -> 1f
+                frac < 0.8f -> { val t = (frac - 0.6f) / 0.2f; 1f - t * t }
+                else        -> { val t = (frac - 0.8f) / 0.2f; t * t }
+            }
             breathingOverlay.setBreath(b)
-            // Transition to pulse when glow is near its minimum
-            if (pulsePending && b < 0.06f) {
+            // Transition to pulse when glow is near its minimum (bottom of fade-out)
+            if (pulsePending && frac in 0.78f..0.82f && b < 0.06f) {
                 pulsePending = false
                 isPulsing = true
                 breathingOverlay.visibility = GONE
