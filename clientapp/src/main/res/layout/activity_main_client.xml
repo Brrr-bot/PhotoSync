@@ -370,7 +370,12 @@
                                     android:textColor="@color/text_secondary"
                                     android:lineSpacingMultiplier="1.3"
                                     android:text="Waiting for service…"/>
-                    <!-- ════ Card 5: STATUS (cyan) ════════════════════════════ -->
+                    
+
+                        </ScrollView>
+                        </LinearLayout>
+                    </FrameLayout>
+                </com.photosync.client.ui.GlowCardLayout><!-- ════ Card 5: STATUS (cyan) ════════════════════════════ -->
                 <com.photosync.client.ui.GlowCardLayout
                     android:id="@+id/glow_card_status"
                     android:layout_width="match_parent"
@@ -461,11 +466,6 @@
                                     android:textSize="13sp"
                                     android:layout_marginStart="8dp"/>
                             </LinearLayout>
-                        </LinearLayout>
-                    </FrameLayout>
-                </com.photosync.client.ui.GlowCardLayout>
-
-                        </ScrollView>
                         </LinearLayout>
                     </FrameLayout>
                 </com.photosync.client.ui.GlowCardLayout>
