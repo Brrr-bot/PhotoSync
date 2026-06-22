@@ -110,13 +110,13 @@ class GlowCardLayout @JvmOverloads constructor(
         private val outerGlowPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
             style       = Paint.Style.STROKE
             strokeWidth = 18f * density
-            maskFilter  = BlurMaskFilter(14f * density, BlurMaskFilter.Blur.NORMAL)
+            maskFilter  = BlurMaskFilter(14f * density, BlurMaskFilter.Blur.OUTER)
         }
         // Medium halo ring
         private val haloPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
             style       = Paint.Style.STROKE
             strokeWidth = strokePx * 4f
-            maskFilter  = BlurMaskFilter(5f * density, BlurMaskFilter.Blur.NORMAL)
+            maskFilter  = BlurMaskFilter(5f * density, BlurMaskFilter.Blur.OUTER)
         }
         // Crisp core line on the border itself
         private val corePaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
