@@ -104,7 +104,7 @@ class GlowCardLayout @JvmOverloads constructor(
         private val path = Path()
         private val pm   = PathMeasure()
         private var progress = 0f
-        private val tailFraction = 0.75f
+        private val tailFraction = 0.975f
 
         // Outer neon bloom — wide, very blurred, spills outside the card
         private val outerGlowPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
