@@ -64,7 +64,7 @@ class GlowCardLayout @JvmOverloads constructor(
     override fun onFinishInflate() {
         super.onFinishInflate()
         removeView(pulseOverlay)
-        addView(pulseOverlay, LayoutParams(0, 0))
+        addView(pulseOverlay, 0, LayoutParams(0, 0))  // behind card fill so inner glow is blocked
     }
 
     fun setGlowColor(color: Int) {
