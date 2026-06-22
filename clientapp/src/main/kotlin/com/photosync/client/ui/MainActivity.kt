@@ -779,6 +779,11 @@ class MainActivity : AppCompatActivity() {
         refreshStatus()
     }
     private fun setupGlowCards() {
+        // Comet pulse runs on every card, always in sync via shared animator
+        listOf(R.id.glow_card_status, R.id.glow_card_upload, R.id.glow_card_compression,
+               R.id.glow_card_hub_files, R.id.glow_card_log).forEach { id ->
+            findViewById<GlowCardLayout>(id)?.startPulse()
+        }
         val cards = listOf(
             R.id.glow_card_status      to Color.argb(100, 0x22, 0xd3, 0xee),
             R.id.glow_card_upload      to Color.argb(100, 0xa9, 0x8b, 0xff),
