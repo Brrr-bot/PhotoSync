@@ -22,11 +22,9 @@ import android.view.animation.DecelerateInterpolator
 import android.widget.FrameLayout
 
 /**
- * FrameLayout with:
- *  1. Static GPU-blurred neon halo (RenderEffect API 31+, BlurMaskFilter fallback).
- *  2. Comet-tail pulse: a bright head sweeps around the border leaving a short fading
- *     tail (~38% of perimeter) that nearly reaches black before the next head arrives.
- *     All instances share one ValueAnimator so every card pulses identically in sync.
+ * FrameLayout with a comet-tail pulse on the card border.
+ * The comet head emits a neon glow bloom that spills OUTSIDE the card as it sweeps past.
+ * All instances share one ValueAnimator so every card pulses identically in sync.
  */
 class GlowCardLayout @JvmOverloads constructor(
     context: Context,
@@ -35,23 +33,22 @@ class GlowCardLayout @JvmOverloads constructor(
 ) : FrameLayout(context, attrs, defStyle) {
 
     companion object {
-        /** One animator drives every card — they are always perfectly in sync. */
         private val sharedPulse = ValueAnimator.ofFloat(0f, 1f).apply {
             duration     = 3000L
             repeatCount  = ValueAnimator.INFINITE
             repeatMode   = ValueAnimator.RESTART
-            interpolator = DecelerateInterpolator(2f)  // fast start → slows to crawl
+            interpolator = DecelerateInterpolator(2f)
             start()
         }
     }
 
-    private val density   = resources.displayMetrics.density
-    private val cornerPx  = 16f * density
-    private val blurSigma = 12f * density
+    private val density  = resources.displayMetrics.density
+    private val cornerPx = 16f * density
+    // Extra canvas space around card so outer glow can bleed outside without clipping
+    private val glowPad  = (20f * density).toInt()
 
     private var glowColor = Color.argb(100, 0x22, 0xd3, 0xee)
 
-    private val glowView     = View(context).also { addView(it, 0, LayoutParams(0, 0)) }
     private val pulseOverlay = PulseOverlay(context).also {
         it.visibility = GONE
         addView(it, LayoutParams(0, 0))
@@ -62,7 +59,6 @@ class GlowCardLayout @JvmOverloads constructor(
     init {
         clipChildren  = false
         clipToPadding = false
-        applyGlow()
     }
 
     override fun onFinishInflate() {
@@ -74,11 +70,10 @@ class GlowCardLayout @JvmOverloads constructor(
     fun setGlowColor(color: Int) {
         glowColor = color
         pulseOverlay.setAccent(color)
-        applyGlow()
     }
 
     fun startPulse() {
-        if (pulseListener != null) return          // already running
+        if (pulseListener != null) return
         pulseOverlay.visibility = VISIBLE
         val listener = ValueAnimator.AnimatorUpdateListener { anim ->
             pulseOverlay.setProgress(anim.animatedValue as Float)
@@ -93,50 +88,37 @@ class GlowCardLayout @JvmOverloads constructor(
         pulseOverlay.visibility = GONE
     }
 
-    private fun applyGlow() {
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
-            glowView.background = GradientDrawable().apply {
-                shape = GradientDrawable.RECTANGLE
-                cornerRadius = cornerPx
-                setColor(glowColor)
-            }
-            @Suppress("NewApi")
-            glowView.setRenderEffect(
-                RenderEffect.createBlurEffect(blurSigma, blurSigma, Shader.TileMode.DECAL)
-            )
-        } else {
-            glowView.setLayerType(LAYER_TYPE_SOFTWARE, null)
-            glowView.background = SoftwareBlurDrawable()
-        }
-    }
-
     override fun onLayout(changed: Boolean, l: Int, t: Int, r: Int, b: Int) {
         super.onLayout(changed, l, t, r, b)
         val w = r - l; val h = b - t
-        glowView.layout(0, 0, w, h)
-        pulseOverlay.layout(0, 0, w, h)
-        if (changed) pulseOverlay.buildPath(w, h)
+        // Overlay is larger than the card so the outer bloom has room to render
+        pulseOverlay.layout(-glowPad, -glowPad, w + glowPad, h + glowPad)
+        if (changed) pulseOverlay.buildPath(w, h, glowPad)
     }
 
-    // ── Comet-tail pulse overlay ───────────────────────────────────────────────
+    // ── Comet-tail overlay ─────────────────────────────────────────────────────
 
     private inner class PulseOverlay(ctx: Context) : View(ctx) {
         private val strokePx  = 1.5f * density
-        private val pathInset = strokePx / 2f
 
         private val path = Path()
         private val pm   = PathMeasure()
         private var progress = 0f
-
-        /** Fraction of the perimeter the comet tail covers.
-         *  At 0.38, the tail fades to near-black well before the next head arrives. */
         private val tailFraction = 0.38f
 
-        private val glowPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
+        // Outer neon bloom — wide, very blurred, spills outside the card
+        private val outerGlowPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
             style       = Paint.Style.STROKE
-            strokeWidth = strokePx * 3f
-            maskFilter  = BlurMaskFilter(4f * density, BlurMaskFilter.Blur.NORMAL)
+            strokeWidth = 18f * density
+            maskFilter  = BlurMaskFilter(14f * density, BlurMaskFilter.Blur.NORMAL)
         }
+        // Medium halo ring
+        private val haloPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
+            style       = Paint.Style.STROKE
+            strokeWidth = strokePx * 4f
+            maskFilter  = BlurMaskFilter(5f * density, BlurMaskFilter.Blur.NORMAL)
+        }
+        // Crisp core line on the border itself
         private val corePaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
             style       = Paint.Style.STROKE
             strokeWidth = strokePx
@@ -146,22 +128,26 @@ class GlowCardLayout @JvmOverloads constructor(
 
         fun setAccent(color: Int) {
             val r = Color.red(color); val g = Color.green(color); val b = Color.blue(color)
-            glowPaint.color  = Color.argb(255, r, g, b)
-            corePaint.color  = Color.argb(255, r, g, b)
+            outerGlowPaint.color = Color.argb(255, r, g, b)
+            haloPaint.color      = Color.argb(255, r, g, b)
+            corePaint.color      = Color.argb(255, r, g, b)
         }
 
         fun setProgress(p: Float) { progress = p; invalidate() }
 
-        fun buildPath(w: Int, h: Int) {
+        fun buildPath(cardW: Int, cardH: Int, pad: Int) {
             path.reset()
+            val off = pad.toFloat()
+            val inset = strokePx / 2f
             path.addRoundRect(
-                RectF(pathInset, pathInset, w - pathInset, h - pathInset),
+                RectF(off + inset, off + inset, cardW + off - inset, cardH + off - inset),
                 cornerPx, cornerPx, Path.Direction.CW
             )
             pm.setPath(path, false)
             val r = Color.red(glowColor); val g = Color.green(glowColor); val b = Color.blue(glowColor)
-            glowPaint.color  = Color.argb(255, r, g, b)
-            corePaint.color  = Color.argb(255, r, g, b)
+            outerGlowPaint.color = Color.argb(255, r, g, b)
+            haloPaint.color      = Color.argb(255, r, g, b)
+            corePaint.color      = Color.argb(255, r, g, b)
         }
 
         override fun onDraw(canvas: Canvas) {
@@ -169,14 +155,11 @@ class GlowCardLayout @JvmOverloads constructor(
             if (len == 0f) return
 
             val headPos = progress * len
-            val N = 64   // segments for smooth gradient
+            val N = 64
 
             for (i in 0 until N) {
-                // How far behind the head this segment is, as a fraction of the tail
                 val behind = i.toFloat() / N * tailFraction
-                // Normalised brightness: 1.0 at head, 0.0 at tail end
                 val t = 1f - (behind / tailFraction)
-                // Quartic fade — bright near head, drops to near-black quickly
                 val alpha = (t * t * t * t * 255f).toInt().coerceIn(0, 255)
                 if (alpha < 2) continue
 
@@ -193,27 +176,19 @@ class GlowCardLayout @JvmOverloads constructor(
                     seg.addPath(wrap)
                 }
 
-                glowPaint.alpha  = (alpha * 0.4f).toInt()
+                // Outer bloom: only near the head (first 40% of tail), drops off fast
+                val outerT = (t - 0.6f).coerceAtLeast(0f) / 0.4f
+                val outerAlpha = (outerT * outerT * 130f).toInt()
+                if (outerAlpha > 1) {
+                    outerGlowPaint.alpha = outerAlpha
+                    canvas.drawPath(seg, outerGlowPaint)
+                }
+
+                haloPaint.alpha  = (alpha * 0.45f).toInt()
                 corePaint.alpha  = alpha
-                canvas.drawPath(seg, glowPaint)
+                canvas.drawPath(seg, haloPaint)
                 canvas.drawPath(seg, corePaint)
             }
         }
-    }
-
-    // ── Soft-render halo fallback (API < 31) ──────────────────────────────────
-
-    private inner class SoftwareBlurDrawable : Drawable() {
-        private val paint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
-            maskFilter = BlurMaskFilter(blurSigma * 0.6f, BlurMaskFilter.Blur.NORMAL)
-        }
-        override fun draw(canvas: Canvas) {
-            paint.color = glowColor
-            canvas.drawRoundRect(RectF(bounds), cornerPx, cornerPx, paint)
-        }
-        override fun setAlpha(alpha: Int) {}
-        override fun setColorFilter(cf: ColorFilter?) {}
-        @Deprecated("Deprecated in Java")
-        override fun getOpacity() = PixelFormat.TRANSLUCENT
     }
 }
