@@ -19,10 +19,16 @@ import android.view.animation.DecelerateInterpolator
 import android.widget.FrameLayout
 
 /**
- * Card wrapper with two animation layers (both rendered BEHIND the card fill):
- *   1. Breathing — full-perimeter glow that pulses in/out (5s in, 5s out). Always on.
- *   2. Comet pulse — fast head + long tail sweeps the border. On when work is active.
- *      For the status card, call setAlertMode(true) to switch the comet to red.
+ * Card wrapper with two exclusive animation modes:
+ *   Breathing — full-perimeter glow that pulses in/out (5 s each way). Default state.
+ *   Comet     — fast head + tail sweeps the border. Active-work state.
+ *
+ * Rules:
+ *  - The two overlays are NEVER both visible at the same time.
+ *  - Transitions wait for a natural boundary:
+ *      Breath → Comet : waits until breath alpha is at its floor (glow nearly off).
+ *      Comet → Breath : waits until the comet head completes a full lap (progress wraps to ~0).
+ *  - Breathing never fades fully to black; a floor alpha keeps a faint ambient glow.
  */
 class GlowCardLayout @JvmOverloads constructor(
     context: Context,
@@ -31,7 +37,6 @@ class GlowCardLayout @JvmOverloads constructor(
 ) : FrameLayout(context, attrs, defStyle) {
 
     companion object {
-        /** Shared breath: 5 s fade-in then 5 s fade-out, forever. */
         private val sharedBreath = ValueAnimator.ofFloat(0f, 1f).apply {
             duration     = 5000L
             repeatCount  = ValueAnimator.INFINITE
@@ -39,7 +44,6 @@ class GlowCardLayout @JvmOverloads constructor(
             interpolator = AccelerateDecelerateInterpolator()
             start()
         }
-        /** Shared comet: all cards sweep in lockstep. */
         private val sharedPulse = ValueAnimator.ofFloat(0f, 1f).apply {
             duration     = 3000L
             repeatCount  = ValueAnimator.INFINITE
@@ -67,6 +71,12 @@ class GlowCardLayout @JvmOverloads constructor(
 
     private var breathListener: ValueAnimator.AnimatorUpdateListener? = null
     private var pulseListener:  ValueAnimator.AnimatorUpdateListener? = null
+
+    // State machine
+    private var isPulsing    = false
+    private var pulsePending = false   // want to start pulse — waiting for breath floor
+    private var breathPending = false  // want to return to breath — waiting for pulse wrap
+    private var lastPulseProgress = 0f
     private var alertMode = false
 
     init {
@@ -76,7 +86,6 @@ class GlowCardLayout @JvmOverloads constructor(
 
     override fun onFinishInflate() {
         super.onFinishInflate()
-        // Both overlays stay behind all card content
         removeView(pulseOverlay)
         removeView(breathingOverlay)
         addView(breathingOverlay, 0, LayoutParams(0, 0))
@@ -89,13 +98,20 @@ class GlowCardLayout @JvmOverloads constructor(
         if (!alertMode) pulseOverlay.setAccent(color)
     }
 
-    // ── Breathing (default, always on) ────────────────────────────────────────
+    // ── Public API ────────────────────────────────────────────────────────────
 
     fun startBreathing() {
         if (breathListener != null) return
         breathingOverlay.visibility = VISIBLE
         val l = ValueAnimator.AnimatorUpdateListener { anim ->
-            breathingOverlay.setBreath(anim.animatedValue as Float)
+            val b = anim.animatedValue as Float
+            breathingOverlay.setBreath(b)
+            // Transition to pulse when glow is near its minimum
+            if (pulsePending && b < 0.06f) {
+                pulsePending = false
+                isPulsing = true
+                breathingOverlay.visibility = GONE
+            }
         }
         breathListener = l
         sharedBreath.addUpdateListener(l)
@@ -107,25 +123,41 @@ class GlowCardLayout @JvmOverloads constructor(
         breathingOverlay.visibility = GONE
     }
 
-    // ── Comet pulse (active work) ──────────────────────────────────────────────
-
     fun startPulse() {
-        if (pulseListener != null) return
-        pulseOverlay.visibility = VISIBLE
-        val l = ValueAnimator.AnimatorUpdateListener { anim ->
-            pulseOverlay.setProgress(anim.animatedValue as Float)
+        if (isPulsing || pulsePending) return
+        if (!alertMode) pulseOverlay.setAccent(glowColor)
+        if (pulseListener == null) {
+            val l = ValueAnimator.AnimatorUpdateListener { anim ->
+                val p = anim.animatedValue as Float
+                // Detect wrap-around (new cycle start)
+                if (breathPending && p < 0.08f && lastPulseProgress > 0.85f) {
+                    breathPending = false
+                    isPulsing = false
+                    pulseOverlay.visibility = GONE
+                    breathingOverlay.visibility = VISIBLE
+                } else if (isPulsing) {
+                    pulseOverlay.setProgress(p)
+                }
+                lastPulseProgress = p
+            }
+            pulseListener = l
+            sharedPulse.addUpdateListener(l)
         }
-        pulseListener = l
-        sharedPulse.addUpdateListener(l)
+        // Request transition at next breath floor
+        pulsePending = true
+        pulseOverlay.visibility = GONE  // keep hidden until breath hands off
     }
 
     fun stopPulse() {
-        pulseListener?.let { sharedPulse.removeUpdateListener(it) }
-        pulseListener = null
-        if (!alertMode) pulseOverlay.visibility = GONE
+        if (!isPulsing && !pulsePending) return
+        pulsePending = false
+        if (isPulsing) {
+            breathPending = true  // wait for comet to complete its lap
+        } else {
+            // Never started; just reset
+            breathingOverlay.visibility = VISIBLE
+        }
     }
-
-    // ── Alert mode (status card: red comet when something needs attention) ─────
 
     fun setAlertMode(alert: Boolean) {
         alertMode = alert
@@ -152,9 +184,11 @@ class GlowCardLayout @JvmOverloads constructor(
     // ── Breathing overlay ──────────────────────────────────────────────────────
 
     private inner class BreathingOverlay(ctx: Context) : View(ctx) {
-        private val strokePx = 1.5f * density
-        private val path = Path()
-        private var breath = 0f
+        private val strokePx  = 1.5f * density
+        private val path      = Path()
+        private var breath    = 0f
+        private val alphaFloor = 18   // never fully dark
+        private val alphaCeil  = 75
 
         private val glowPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
             style       = Paint.Style.STROKE
@@ -164,11 +198,8 @@ class GlowCardLayout @JvmOverloads constructor(
 
         init { setLayerType(LAYER_TYPE_SOFTWARE, null) }
 
-        fun setAccent(color: Int) {
-            glowPaint.color = color or 0xFF000000.toInt()
-        }
-
-        fun setBreath(b: Float) { breath = b; invalidate() }
+        fun setAccent(color: Int) { glowPaint.color = color or 0xFF000000.toInt() }
+        fun setBreath(b: Float)   { breath = b; invalidate() }
 
         fun buildPath(cardW: Int, cardH: Int, pad: Int) {
             path.reset()
@@ -182,8 +213,7 @@ class GlowCardLayout @JvmOverloads constructor(
         }
 
         override fun onDraw(canvas: Canvas) {
-            // Max alpha 70 so it's subtle — just a gentle glow, not overpowering
-            glowPaint.alpha = (breath * 70f).toInt()
+            glowPaint.alpha = (alphaFloor + breath * (alphaCeil - alphaFloor)).toInt()
             canvas.drawPath(path, glowPaint)
         }
     }
