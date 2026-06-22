@@ -71,7 +71,7 @@
                     android:id="@+id/glow_card_hub"
                     android:layout_width="match_parent"
                     android:layout_height="wrap_content"
-                    android:layout_marginBottom="20dp">
+                    android:layout_marginBottom="28dp">
 
                     <FrameLayout
                         android:id="@+id/card_hub_files"
@@ -187,7 +187,7 @@
                     android:id="@+id/glow_card_upload"
                     android:layout_width="match_parent"
                     android:layout_height="wrap_content"
-                    android:layout_marginBottom="20dp">
+                    android:layout_marginBottom="28dp">
 
                     <FrameLayout
                         android:layout_width="match_parent"
@@ -279,7 +279,7 @@
                     android:id="@+id/glow_card_compression"
                     android:layout_width="match_parent"
                     android:layout_height="wrap_content"
-                    android:layout_marginBottom="20dp">
+                    android:layout_marginBottom="28dp">
 
                     <FrameLayout
                         android:layout_width="match_parent"
@@ -332,7 +332,7 @@
                     android:id="@+id/glow_card_log"
                     android:layout_width="match_parent"
                     android:layout_height="wrap_content"
-                    android:layout_marginBottom="20dp">
+                    android:layout_marginBottom="28dp">
 
                     <FrameLayout
                         android:layout_width="match_parent"
@@ -382,7 +382,7 @@
                     android:id="@+id/glow_card_status"
                     android:layout_width="match_parent"
                     android:layout_height="wrap_content"
-                    android:layout_marginBottom="20dp">
+                    android:layout_marginBottom="28dp">
 
                     <FrameLayout
                         android:layout_width="match_parent"
