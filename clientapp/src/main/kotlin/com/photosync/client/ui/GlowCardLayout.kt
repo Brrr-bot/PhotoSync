@@ -11,20 +11,18 @@ import android.graphics.Path
 import android.graphics.PathMeasure
 import android.graphics.PixelFormat
 import android.graphics.RectF
-import android.graphics.RenderEffect
-import android.graphics.Shader
 import android.graphics.drawable.Drawable
-import android.graphics.drawable.GradientDrawable
-import android.os.Build
 import android.util.AttributeSet
 import android.view.View
+import android.view.animation.AccelerateDecelerateInterpolator
 import android.view.animation.DecelerateInterpolator
 import android.widget.FrameLayout
 
 /**
- * FrameLayout with a comet-tail pulse on the card border.
- * The comet head emits a neon glow bloom that spills OUTSIDE the card as it sweeps past.
- * All instances share one ValueAnimator so every card pulses identically in sync.
+ * Card wrapper with two animation layers (both rendered BEHIND the card fill):
+ *   1. Breathing — full-perimeter glow that pulses in/out (5s in, 5s out). Always on.
+ *   2. Comet pulse — fast head + long tail sweeps the border. On when work is active.
+ *      For the status card, call setAlertMode(true) to switch the comet to red.
  */
 class GlowCardLayout @JvmOverloads constructor(
     context: Context,
@@ -33,6 +31,15 @@ class GlowCardLayout @JvmOverloads constructor(
 ) : FrameLayout(context, attrs, defStyle) {
 
     companion object {
+        /** Shared breath: 5 s fade-in then 5 s fade-out, forever. */
+        private val sharedBreath = ValueAnimator.ofFloat(0f, 1f).apply {
+            duration     = 5000L
+            repeatCount  = ValueAnimator.INFINITE
+            repeatMode   = ValueAnimator.REVERSE
+            interpolator = AccelerateDecelerateInterpolator()
+            start()
+        }
+        /** Shared comet: all cards sweep in lockstep. */
         private val sharedPulse = ValueAnimator.ofFloat(0f, 1f).apply {
             duration     = 3000L
             repeatCount  = ValueAnimator.INFINITE
@@ -44,17 +51,23 @@ class GlowCardLayout @JvmOverloads constructor(
 
     private val density  = resources.displayMetrics.density
     private val cornerPx = 16f * density
-    // Extra canvas space around card so outer glow can bleed outside without clipping
     private val glowPad  = (20f * density).toInt()
 
-    private var glowColor = Color.argb(100, 0x22, 0xd3, 0xee)
+    var glowColor: Int = Color.argb(100, 0x22, 0xd3, 0xee)
+        private set
 
+    private val breathingOverlay = BreathingOverlay(context).also {
+        it.visibility = GONE
+        addView(it, LayoutParams(0, 0))
+    }
     private val pulseOverlay = PulseOverlay(context).also {
         it.visibility = GONE
         addView(it, LayoutParams(0, 0))
     }
 
-    private var pulseListener: ValueAnimator.AnimatorUpdateListener? = null
+    private var breathListener: ValueAnimator.AnimatorUpdateListener? = null
+    private var pulseListener:  ValueAnimator.AnimatorUpdateListener? = null
+    private var alertMode = false
 
     init {
         clipChildren  = false
@@ -63,62 +76,137 @@ class GlowCardLayout @JvmOverloads constructor(
 
     override fun onFinishInflate() {
         super.onFinishInflate()
+        // Both overlays stay behind all card content
         removeView(pulseOverlay)
-        addView(pulseOverlay, 0, LayoutParams(0, 0))  // behind card fill so inner glow is blocked
+        removeView(breathingOverlay)
+        addView(breathingOverlay, 0, LayoutParams(0, 0))
+        addView(pulseOverlay,     1, LayoutParams(0, 0))
     }
 
     fun setGlowColor(color: Int) {
         glowColor = color
-        pulseOverlay.setAccent(color)
+        breathingOverlay.setAccent(color)
+        if (!alertMode) pulseOverlay.setAccent(color)
     }
+
+    // ── Breathing (default, always on) ────────────────────────────────────────
+
+    fun startBreathing() {
+        if (breathListener != null) return
+        breathingOverlay.visibility = VISIBLE
+        val l = ValueAnimator.AnimatorUpdateListener { anim ->
+            breathingOverlay.setBreath(anim.animatedValue as Float)
+        }
+        breathListener = l
+        sharedBreath.addUpdateListener(l)
+    }
+
+    fun stopBreathing() {
+        breathListener?.let { sharedBreath.removeUpdateListener(it) }
+        breathListener = null
+        breathingOverlay.visibility = GONE
+    }
+
+    // ── Comet pulse (active work) ──────────────────────────────────────────────
 
     fun startPulse() {
         if (pulseListener != null) return
         pulseOverlay.visibility = VISIBLE
-        val listener = ValueAnimator.AnimatorUpdateListener { anim ->
+        val l = ValueAnimator.AnimatorUpdateListener { anim ->
             pulseOverlay.setProgress(anim.animatedValue as Float)
         }
-        pulseListener = listener
-        sharedPulse.addUpdateListener(listener)
+        pulseListener = l
+        sharedPulse.addUpdateListener(l)
     }
 
     fun stopPulse() {
         pulseListener?.let { sharedPulse.removeUpdateListener(it) }
         pulseListener = null
-        pulseOverlay.visibility = GONE
+        if (!alertMode) pulseOverlay.visibility = GONE
+    }
+
+    // ── Alert mode (status card: red comet when something needs attention) ─────
+
+    fun setAlertMode(alert: Boolean) {
+        alertMode = alert
+        if (alert) {
+            pulseOverlay.setAccent(0xFFFF3B3B.toInt())
+            startPulse()
+        } else {
+            pulseOverlay.setAccent(glowColor)
+            stopPulse()
+        }
     }
 
     override fun onLayout(changed: Boolean, l: Int, t: Int, r: Int, b: Int) {
         super.onLayout(changed, l, t, r, b)
         val w = r - l; val h = b - t
-        // Overlay is larger than the card so the outer bloom has room to render
+        breathingOverlay.layout(-glowPad, -glowPad, w + glowPad, h + glowPad)
         pulseOverlay.layout(-glowPad, -glowPad, w + glowPad, h + glowPad)
-        if (changed) pulseOverlay.buildPath(w, h, glowPad)
+        if (changed) {
+            breathingOverlay.buildPath(w, h, glowPad)
+            pulseOverlay.buildPath(w, h, glowPad)
+        }
     }
 
-    // ── Comet-tail overlay ─────────────────────────────────────────────────────
+    // ── Breathing overlay ──────────────────────────────────────────────────────
+
+    private inner class BreathingOverlay(ctx: Context) : View(ctx) {
+        private val strokePx = 1.5f * density
+        private val path = Path()
+        private var breath = 0f
+
+        private val glowPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
+            style       = Paint.Style.STROKE
+            strokeWidth = 16f * density
+            maskFilter  = BlurMaskFilter(12f * density, BlurMaskFilter.Blur.NORMAL)
+        }
+
+        init { setLayerType(LAYER_TYPE_SOFTWARE, null) }
+
+        fun setAccent(color: Int) {
+            glowPaint.color = color or 0xFF000000.toInt()
+        }
+
+        fun setBreath(b: Float) { breath = b; invalidate() }
+
+        fun buildPath(cardW: Int, cardH: Int, pad: Int) {
+            path.reset()
+            val off = pad.toFloat(); val inset = strokePx / 2f
+            path.addRoundRect(
+                RectF(off + inset, off + inset, cardW + off - inset, cardH + off - inset),
+                cornerPx, cornerPx, Path.Direction.CW
+            )
+            val r = Color.red(glowColor); val g = Color.green(glowColor); val b = Color.blue(glowColor)
+            glowPaint.color = Color.argb(255, r, g, b)
+        }
+
+        override fun onDraw(canvas: Canvas) {
+            // Max alpha 70 so it's subtle — just a gentle glow, not overpowering
+            glowPaint.alpha = (breath * 70f).toInt()
+            canvas.drawPath(path, glowPaint)
+        }
+    }
+
+    // ── Comet pulse overlay ────────────────────────────────────────────────────
 
     private inner class PulseOverlay(ctx: Context) : View(ctx) {
-        private val strokePx  = 1.5f * density
-
-        private val path = Path()
-        private val pm   = PathMeasure()
-        private var progress = 0f
+        private val strokePx     = 1.5f * density
+        private val path         = Path()
+        private val pm           = PathMeasure()
+        private var progress     = 0f
         private val tailFraction = 0.975f
 
-        // Outer neon bloom — wide, very blurred, spills outside the card
         private val outerGlowPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
             style       = Paint.Style.STROKE
             strokeWidth = 18f * density
             maskFilter  = BlurMaskFilter(14f * density, BlurMaskFilter.Blur.NORMAL)
         }
-        // Medium halo ring
         private val haloPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
             style       = Paint.Style.STROKE
             strokeWidth = strokePx * 4f
             maskFilter  = BlurMaskFilter(5f * density, BlurMaskFilter.Blur.NORMAL)
         }
-        // Crisp core line on the border itself
         private val corePaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
             style       = Paint.Style.STROKE
             strokeWidth = strokePx
@@ -127,18 +215,16 @@ class GlowCardLayout @JvmOverloads constructor(
         init { setLayerType(LAYER_TYPE_SOFTWARE, null) }
 
         fun setAccent(color: Int) {
-            val r = Color.red(color); val g = Color.green(color); val b = Color.blue(color)
-            outerGlowPaint.color = Color.argb(255, r, g, b)
-            haloPaint.color      = Color.argb(255, r, g, b)
-            corePaint.color      = Color.argb(255, r, g, b)
+            outerGlowPaint.color = color
+            haloPaint.color      = color
+            corePaint.color      = color
         }
 
         fun setProgress(p: Float) { progress = p; invalidate() }
 
         fun buildPath(cardW: Int, cardH: Int, pad: Int) {
             path.reset()
-            val off = pad.toFloat()
-            val inset = strokePx / 2f
+            val off = pad.toFloat(); val inset = strokePx / 2f
             path.addRoundRect(
                 RectF(off + inset, off + inset, cardW + off - inset, cardH + off - inset),
                 cornerPx, cornerPx, Path.Direction.CW
@@ -153,20 +239,16 @@ class GlowCardLayout @JvmOverloads constructor(
         override fun onDraw(canvas: Canvas) {
             val len = pm.length
             if (len == 0f) return
-
             val headPos = progress * len
             val N = 64
-
             for (i in 0 until N) {
                 val behind = i.toFloat() / N * tailFraction
                 val t = 1f - (behind / tailFraction)
                 val alpha = (t * t * t * t * 255f).toInt().coerceIn(0, 255)
                 if (alpha < 2) continue
-
                 val segLen = len * tailFraction / N
                 val sEnd   = ((headPos - len * behind) + len * 10f) % len
                 val sStart = ((sEnd - segLen) + len) % len
-
                 val seg = Path()
                 if (sStart < sEnd) {
                     pm.getSegment(sStart, sEnd, seg, true)
@@ -175,15 +257,9 @@ class GlowCardLayout @JvmOverloads constructor(
                     val wrap = Path(); pm.getSegment(0f, sEnd, wrap, true)
                     seg.addPath(wrap)
                 }
-
-                // Outer bloom: only near the head (first 40% of tail), drops off fast
                 val outerT = (t - 0.6f).coerceAtLeast(0f) / 0.4f
                 val outerAlpha = (outerT * outerT * 130f).toInt()
-                if (outerAlpha > 1) {
-                    outerGlowPaint.alpha = outerAlpha
-                    canvas.drawPath(seg, outerGlowPaint)
-                }
-
+                if (outerAlpha > 1) { outerGlowPaint.alpha = outerAlpha; canvas.drawPath(seg, outerGlowPaint) }
                 haloPaint.alpha  = (alpha * 0.45f).toInt()
                 corePaint.alpha  = alpha
                 canvas.drawPath(seg, haloPaint)
