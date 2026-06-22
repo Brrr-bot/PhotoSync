@@ -220,7 +220,7 @@
                                 android:text="Idle"
                                 android:layout_marginBottom="6dp"/>
 
-                            <ProgressBar
+                            <com.photosync.client.ui.PulseProgressBar
                                 android:id="@+id/pb_sync"
                                 style="?android:attr/progressBarStyleHorizontal"
                                 android:layout_width="match_parent"
@@ -312,7 +312,7 @@
                                 android:text="Idle"
                                 android:layout_marginBottom="8dp"/>
 
-                            <ProgressBar
+                            <com.photosync.client.ui.PulseProgressBar
                                 android:id="@+id/pb_compression"
                                 style="?android:attr/progressBarStyleHorizontal"
                                 android:layout_width="match_parent"
