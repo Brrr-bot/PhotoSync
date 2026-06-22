@@ -67,7 +67,6 @@ class MainActivity : AppCompatActivity() {
 
     private val logLines = ArrayDeque<String>(100)
     private val logPulseStop = Runnable {
-        findViewById<GlowCardLayout>(R.id.glow_card_log)?.stopPulse()
     }
     // Track last hub IP for which we loaded thumbnails so we don't re-fetch on every poll tick
     private var thumbsLoadedForIp: String? = null
@@ -145,7 +144,6 @@ class MainActivity : AppCompatActivity() {
         val compLifetime  = srv.stateCompressionLifetime
         if (compTotal > 0 || compLifetime > 0) {
             if (compTotal > 0) findViewById<GlowCardLayout>(R.id.glow_card_compression)?.startPulse()
-            else               findViewById<GlowCardLayout>(R.id.glow_card_compression)?.stopPulse()
             pbCompression.visibility = View.VISIBLE
             pbCompression.max = if (compTotal > 0) compTotal else 1
             pbCompression.progress = compDone
