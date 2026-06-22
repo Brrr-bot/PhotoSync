@@ -331,7 +331,8 @@
                 <com.photosync.client.ui.GlowCardLayout
                     android:id="@+id/glow_card_log"
                     android:layout_width="match_parent"
-                    android:layout_height="wrap_content">
+                    android:layout_height="wrap_content"
+                    android:layout_marginBottom="20dp">
 
                     <FrameLayout
                         android:layout_width="match_parent"
@@ -375,7 +376,8 @@
                         </ScrollView>
                         </LinearLayout>
                     </FrameLayout>
-                </com.photosync.client.ui.GlowCardLayout><!-- ════ Card 5: STATUS (cyan) ════════════════════════════ -->
+                </com.photosync.client.ui.GlowCardLayout>
+                <!-- ════ Card 5: STATUS (cyan) ════════════════════════════ -->
                 <com.photosync.client.ui.GlowCardLayout
                     android:id="@+id/glow_card_status"
                     android:layout_width="match_parent"
