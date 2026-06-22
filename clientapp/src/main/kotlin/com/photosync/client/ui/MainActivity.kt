@@ -403,6 +403,8 @@ class MainActivity : AppCompatActivity() {
             "◉  http://$tsIp:${Constants.CLIENT_PORT}/"
         else
             "○  Tailscale not connected — install for remote status"
+        val hasIssue = tsIp == null || ClientForegroundService.liveHubTailscaleIp == null
+        findViewById<GlowCardLayout>(R.id.glow_card_status)?.setAlertMode(hasIssue)
     }
 
     // ── Permissions ───────────────────────────────────────────────────────────
