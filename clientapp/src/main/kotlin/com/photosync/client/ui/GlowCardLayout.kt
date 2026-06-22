@@ -114,10 +114,11 @@ class GlowCardLayout @JvmOverloads constructor(
             }
             breathingOverlay.setBreath(b)
             // Transition to pulse when glow is near its minimum (bottom of fade-out)
-            if (pulsePending && frac in 0.78f..0.82f && b < 0.06f) {
+            if (pulsePending && b < 0.2f) {
                 pulsePending = false
                 isPulsing = true
                 breathingOverlay.visibility = GONE
+                pulseOverlay.visibility = VISIBLE
             }
         }
         breathListener = l
