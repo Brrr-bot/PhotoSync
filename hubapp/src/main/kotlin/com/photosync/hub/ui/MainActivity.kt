@@ -212,6 +212,7 @@ class MainActivity : AppCompatActivity() {
             IntentFilter(HubForegroundService.ACTION_FILE_BYTES), RECEIVER_NOT_EXPORTED)
 
         refreshStatus()
+        updateCardAlerts()
     }
 
     override fun onPause() {
@@ -346,8 +347,16 @@ class MainActivity : AppCompatActivity() {
             R.id.glow_card_log         to Color.argb(100, 0xff, 0xc4, 0x4d),
         )
         cards.forEach { (id, color) ->
-            findViewById<GlowCardLayout>(id)?.setGlowColor(color)
+            findViewById<GlowCardLayout>(id)?.apply { setGlowColor(color); startBreathing() }
         }
     }
 
+    private fun updateCardAlerts() {
+        val statusOk = tvUsbStatus.text.startsWith("✓") &&
+                       tvBatteryStatus.text.startsWith("✓") &&
+                       tvAccessibilityStatus.text.startsWith("✓")
+        findViewById<GlowCardLayout>(R.id.glow_card_status)?.setAlertMode(!statusOk)
+    }
+
 }
+
