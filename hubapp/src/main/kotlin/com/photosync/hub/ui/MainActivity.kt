@@ -72,11 +72,13 @@ class MainActivity : AppCompatActivity() {
                 pbCompression.max = total
                 pbCompression.progress = current
                 tvSyncStatus.text = "$current / $total  ·  $filename"
+                findViewById<GlowCardLayout>(R.id.glow_card_compression)?.startPulse()
                 if (current >= total) {
                     pbCompression.postDelayed({
                         pbCompression.progress = 0
                         tvSyncStatus.text = "Idle"
                         pbCompression.visibility = View.INVISIBLE
+                        findViewById<GlowCardLayout>(R.id.glow_card_compression)?.stopPulse()
                     }, 3000)
                 }
             } else {
@@ -86,12 +88,14 @@ class MainActivity : AppCompatActivity() {
                 tvProgressLabel.text = "$current / $total  ·  $filename"
                 tvCurrentFile.text = filename
                 tvMbRemaining.text = if (sessionRemaining > 0) "${formatBytes(sessionRemaining)} remaining" else ""
+                findViewById<GlowCardLayout>(R.id.glow_card_transfer)?.startPulse()
                 if (current >= total) {
                     pbSync.postDelayed({
                         pbSync.progress = 0
                         tvProgressLabel.text = "Idle"
                         tvCurrentFile.text = "—"
                         tvMbRemaining.text = ""
+                        findViewById<GlowCardLayout>(R.id.glow_card_transfer)?.stopPulse()
                     }, 3000)
                 }
             }
@@ -212,7 +216,6 @@ class MainActivity : AppCompatActivity() {
             IntentFilter(HubForegroundService.ACTION_FILE_BYTES), RECEIVER_NOT_EXPORTED)
 
         refreshStatus()
-        updateCardAlerts()
     }
 
     override fun onPause() {
@@ -347,16 +350,8 @@ class MainActivity : AppCompatActivity() {
             R.id.glow_card_log         to Color.argb(100, 0xff, 0xc4, 0x4d),
         )
         cards.forEach { (id, color) ->
-            findViewById<GlowCardLayout>(id)?.apply { setGlowColor(color); startBreathing() }
+            findViewById<GlowCardLayout>(id)?.setGlowColor(color)
         }
     }
 
-    private fun updateCardAlerts() {
-        val statusOk = tvUsbStatus.text.startsWith("✓") &&
-                       tvBatteryStatus.text.startsWith("✓") &&
-                       tvAccessibilityStatus.text.startsWith("✓")
-        findViewById<GlowCardLayout>(R.id.glow_card_status)?.setAlertMode(!statusOk)
-    }
-
 }
-
