@@ -342,6 +342,8 @@ class MainActivity : AppCompatActivity() {
             tvUsbStatus.text = tvUsbStatus.text.toString() + "\n\n" + syncLines
         }
     }
+    private fun glowCard(id: Int) = findViewById<GlowCardLayout>(id)
+
     private fun setupGlowCards() {
         val cards = listOf(
             R.id.glow_card_status      to Color.argb(100, 0x22, 0xd3, 0xee),
@@ -350,8 +352,15 @@ class MainActivity : AppCompatActivity() {
             R.id.glow_card_log         to Color.argb(100, 0xff, 0xc4, 0x4d),
         )
         cards.forEach { (id, color) ->
-            findViewById<GlowCardLayout>(id)?.setGlowColor(color)
+            findViewById<GlowCardLayout>(id)?.apply { setGlowColor(color); startBreathing() }
         }
+    }
+
+    private fun updateCardAlerts() {
+        val statusOk = tvUsbStatus.text.startsWith("✓") &&
+                       tvBatteryStatus.text.startsWith("✓") &&
+                       tvAccessibilityStatus.text.startsWith("✓")
+        glowCard(R.id.glow_card_status)?.setAlertMode(!statusOk)
     }
 
 }
