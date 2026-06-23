@@ -713,34 +713,83 @@ class MainActivity : AppCompatActivity() {
     }
 
     private fun loadHubThumbnails() {
+        val prefs = getSharedPreferences("hub_thumb_cache", Context.MODE_PRIVATE)
+        val savedKeys = (prefs.getStringSet("last_thumb_keys", emptySet()) ?: emptySet())
+            .sortedBy { prefs.getInt("key_order_${it.hashCode()}", 99) }
+        if (savedKeys.isNotEmpty()) {
+            savedKeys.take(5).forEachIndexed { i, key ->
+                ThumbnailCache.get(this, key)?.let { hubThumbViews.getOrNull(i)?.setImageBitmap(it) }
+            }
+            tvHubFilesStatus.visibility = View.GONE
+        }
         val ip   = effectiveHubIp()
         val port = ClientForegroundService.liveHubPort
         if (ip == null) {
-            tvHubFilesStatus.text = "Connect to hub to see recent files"
-            tvHubFilesStatus.visibility = View.VISIBLE
+            if (savedKeys.isEmpty()) {
+                tvHubFilesStatus.text = "Connect to hub to see recent files"
+                tvHubFilesStatus.visibility = View.VISIBLE
+            }
             return
         }
-        if (ip == thumbsLoadedForIp) return   // already loaded for this hub
-        tvHubFilesStatus.text = "Loading…"
-        tvHubFilesStatus.visibility = View.VISIBLE
+        if (ip == thumbsLoadedForIp) return
         Thread {
             val files = HubFilesClient.fetchFiles(ip, port, limit = 5)
             runOnUiThread {
                 if (files.isEmpty()) {
-                    tvHubFilesStatus.text = "No files on hub yet"
-                    // Retry after 15s — hub cache may still be warming after a restart
+                    if (savedKeys.isEmpty()) { tvHubFilesStatus.text = "No files on hub yet"; tvHubFilesStatus.visibility = View.VISIBLE }
                     pollHandler.postDelayed({ loadHubThumbnails() }, 15_000L)
+                    return@runOnUiThread
+                }
+                thumbsLoadedForIp = ip
+                tvHubFilesStatus.visibility = View.GONE
+            }
+            val newKeys = mutableListOf<String>()
+            files.take(5).forEachIndexed { i, entry ->
+                val key = "${entry.deviceName}/${entry.displayName}"
+                newKeys.add(key)
+                val cached = ThumbnailCache.get(this, key)
+                if (cached != null) { runOnUiThread { hubThumbViews.getOrNull(i)?.setImageBitmap(cached) }; return@forEachIndexed }
+                val localBmp = loadLocalThumb(entry.displayName)
+                if (localBmp != null) {
+                    ThumbnailCache.put(this, key, bitmapToBytes(localBmp))
+                    runOnUiThread { hubThumbViews.getOrNull(i)?.setImageBitmap(localBmp) }
+                    return@forEachIndexed
+                }
+                val bytes = HubFilesClient.fetchThumbnail(ip, port, entry.deviceName, entry.displayName)
+                val bmp = bytes?.let { ThumbnailCache.put(this, key, it) }
+                runOnUiThread { if (bmp != null) hubThumbViews.getOrNull(i)?.setImageBitmap(bmp) }
+            }
+            val edit = prefs.edit().putStringSet("last_thumb_keys", newKeys.toSet())
+            newKeys.forEachIndexed { i, k -> edit.putInt("key_order_${k.hashCode()}", i) }
+            edit.apply()
+        }.start()
+    }
+
+    private fun loadLocalThumb(displayName: String): android.graphics.Bitmap? {
+        return try {
+            val uri = android.provider.MediaStore.Images.Media.EXTERNAL_CONTENT_URI
+            contentResolver.query(uri,
+                arrayOf(android.provider.MediaStore.Images.Media._ID),
+                "${android.provider.MediaStore.Images.Media.DISPLAY_NAME} = ?",
+                arrayOf(displayName), null)?.use { c ->
+                if (!c.moveToFirst()) return null
+                val id = c.getLong(0)
+                val imgUri = android.content.ContentUris.withAppendedId(uri, id)
+                if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
+                    contentResolver.loadThumbnail(imgUri, android.util.Size(400, 400), null)
                 } else {
-                    thumbsLoadedForIp = ip
-                    tvHubFilesStatus.visibility = View.GONE
+                    @Suppress("DEPRECATION")
+                    android.provider.MediaStore.Images.Thumbnails.getThumbnail(contentResolver, id,
+                        android.provider.MediaStore.Images.Thumbnails.MINI_KIND, null)
                 }
             }
-            files.take(5).forEachIndexed { i, entry ->
-                val bytes = HubFilesClient.fetchThumbnail(ip, port, entry.deviceName, entry.displayName)
-                val bmp = bytes?.let { BitmapFactory.decodeByteArray(it, 0, it.size) }
-                runOnUiThread { if (bmp != null) hubThumbViews[i]?.setImageBitmap(bmp) }
-            }
-        }.start()
+        } catch (_: Exception) { null }
+    }
+
+    private fun bitmapToBytes(bmp: android.graphics.Bitmap): ByteArray {
+        val out = java.io.ByteArrayOutputStream()
+        bmp.compress(android.graphics.Bitmap.CompressFormat.JPEG, 85, out)
+        return out.toByteArray()
     }
 
     // ── Update check ─────────────────────────────────────────────────────────
