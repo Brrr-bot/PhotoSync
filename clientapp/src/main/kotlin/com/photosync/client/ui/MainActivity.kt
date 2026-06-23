@@ -721,14 +721,32 @@ class MainActivity : AppCompatActivity() {
                 ThumbnailCache.get(this, key)?.let { hubThumbViews.getOrNull(i)?.setImageBitmap(it) }
             }
             tvHubFilesStatus.visibility = View.GONE
+        } else {
+            // SharedPreferences lost (fresh install) — try disk cache directly ordered by recency
+            val cacheFiles = java.io.File(cacheDir, "hub_thumbs").listFiles()
+                ?.filter { it.extension == "jpg" }
+                ?.sortedByDescending { it.lastModified() }
+                ?.take(5) ?: emptyList()
+            if (cacheFiles.isNotEmpty()) {
+                cacheFiles.forEachIndexed { i, file ->
+                    try {
+                        android.graphics.BitmapFactory.decodeFile(file.absolutePath)
+                            ?.let { hubThumbViews.getOrNull(i)?.setImageBitmap(it) }
+                    } catch (_: Exception) {}
+                }
+                tvHubFilesStatus.visibility = View.GONE
+            }
         }
         val ip   = effectiveHubIp()
         val port = ClientForegroundService.liveHubPort
         if (ip == null) {
-            if (savedKeys.isEmpty()) {
+            // Retry once after 5 s in case service is still starting up
+            val hasDiskCache = java.io.File(cacheDir, "hub_thumbs").listFiles()?.any { it.extension == "jpg" } == true
+            if (!hasDiskCache) {
                 tvHubFilesStatus.text = "Connect to hub to see recent files"
                 tvHubFilesStatus.visibility = View.VISIBLE
             }
+            if (thumbsLoadedForIp == null) pollHandler.postDelayed({ loadHubThumbnails() }, 5_000L)
             return
         }
         if (ip == thumbsLoadedForIp) return
