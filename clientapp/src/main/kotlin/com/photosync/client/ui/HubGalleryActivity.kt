@@ -100,13 +100,43 @@ class HubGalleryActivity : AppCompatActivity() {
         ThumbnailCache.get(this, key)?.let { iv.setImageBitmap(it); overlay.visibility = View.GONE; return }
         val ip = hubIp ?: return
         Thread {
+            val localBmp = loadLocalThumb(entry.displayName)
+            if (localBmp != null) {
+                ThumbnailCache.put(this, key, bitmapToBytes(localBmp))
+                runOnUiThread { iv.setImageBitmap(localBmp); overlay.visibility = View.GONE }
+                return@Thread
+            }
             val bytes = HubFilesClient.fetchThumbnail(ip, hubPort, entry.deviceName, entry.displayName)
             val bmp = bytes?.let { ThumbnailCache.put(this, key, it) }
-            runOnUiThread {
-                if (bmp != null) iv.setImageBitmap(bmp)
-                overlay.visibility = View.GONE
-            }
+            runOnUiThread { if (bmp != null) iv.setImageBitmap(bmp); overlay.visibility = View.GONE }
         }.start()
+    }
+
+    private fun loadLocalThumb(displayName: String): android.graphics.Bitmap? {
+        return try {
+            val uri = android.provider.MediaStore.Images.Media.EXTERNAL_CONTENT_URI
+            contentResolver.query(uri,
+                arrayOf(android.provider.MediaStore.Images.Media._ID),
+                "${android.provider.MediaStore.Images.Media.DISPLAY_NAME} = ?",
+                arrayOf(displayName), null)?.use { c ->
+                if (!c.moveToFirst()) return null
+                val id = c.getLong(0)
+                val imgUri = android.content.ContentUris.withAppendedId(uri, id)
+                if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.Q) {
+                    contentResolver.loadThumbnail(imgUri, android.util.Size(400, 400), null)
+                } else {
+                    @Suppress("DEPRECATION")
+                    android.provider.MediaStore.Images.Thumbnails.getThumbnail(contentResolver, id,
+                        android.provider.MediaStore.Images.Thumbnails.MINI_KIND, null)
+                }
+            }
+        } catch (_: Exception) { null }
+    }
+
+    private fun bitmapToBytes(bmp: android.graphics.Bitmap): ByteArray {
+        val out = java.io.ByteArrayOutputStream()
+        bmp.compress(android.graphics.Bitmap.CompressFormat.JPEG, 85, out)
+        return out.toByteArray()
     }
 
     // ── Selection ─────────────────────────────────────────────────────────────
@@ -146,30 +176,25 @@ class HubGalleryActivity : AppCompatActivity() {
     private fun deleteSelected() {
         val toDelete = selectedItems.toList()
         val ip = hubIp ?: return
+        // Optimistic: remove from UI immediately so user sees instant feedback
+        selectedItems.clear()
+        updateSelectionBar()
+        for (entry in toDelete.sortedByDescending { entries.indexOf(it) }) {
+            val idx = entries.indexOf(entry)
+            if (idx >= 0) { entries.removeAt(idx); rvGallery.adapter?.notifyItemRemoved(idx) }
+        }
+        tvFileCount.text = "${entries.size} files"
         Thread {
-            var deleted = 0
+            var failed = 0
             for (entry in toDelete) {
-                val ok = HubFilesClient.deleteFile(ip, hubPort, entry.deviceName, entry.displayName)
-                if (ok) {
-                    deleted++
-                    runOnUiThread {
-                        val idx = entries.indexOf(entry)
-                        if (idx >= 0) {
-                            entries.removeAt(idx)
-                            rvGallery.adapter?.notifyItemRemoved(idx)
-                        }
-                    }
-                }
+                if (!HubFilesClient.deleteFile(ip, hubPort, entry.deviceName, entry.displayName)) failed++
             }
-            val d = deleted
-            val total = toDelete.size
+            val f = failed; val total = toDelete.size
             runOnUiThread {
-                selectedItems.clear()
-                updateSelectionBar()
-                tvFileCount.text = "${entries.size} files"
-                val msg = if (d == total) "Deleted $d file${if (d > 1) "s" else ""}"
-                          else "Deleted $d / $total (some failed)"
+                val msg = if (f == 0) "Deleted $total file${if (total > 1) "s" else ""}"
+                          else "Deleted ${total - f}/$total ($f failed)"
                 Toast.makeText(this, msg, Toast.LENGTH_SHORT).show()
+                if (f > 0) loadFiles()
             }
         }.start()
     }
