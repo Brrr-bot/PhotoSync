@@ -1,4 +1,4 @@
-package com.photosync.client.ui
+﻿package com.photosync.client.ui
 
 import android.Manifest
 import android.app.Activity
@@ -63,7 +63,7 @@ class MainActivity : AppCompatActivity() {
     private lateinit var swMobileData: SwitchCompat
     private lateinit var tvHubFilesStatus: TextView
     private lateinit var btnHubFilesMore: TextView
-    private val hubThumbViews = arrayOfNulls<ImageView>(5)
+    private val hubThumbViews = arrayOfNulls<ImageView>(10)
 
     private val logLines = ArrayDeque<String>(100)
     private val logPulseStop = Runnable {
@@ -233,7 +233,7 @@ class MainActivity : AppCompatActivity() {
         // Hub files card
         tvHubFilesStatus = findViewById(R.id.tv_hub_files_status)
         btnHubFilesMore  = findViewById(R.id.btn_hub_files_more)
-        for (i in 0..4) {
+        for (i in 0..9) {
             val id = resources.getIdentifier("iv_hub_thumb_$i", "id", packageName)
             hubThumbViews[i] = findViewById(id)
         }
@@ -717,7 +717,7 @@ class MainActivity : AppCompatActivity() {
         val savedKeys = (prefs.getStringSet("last_thumb_keys", emptySet()) ?: emptySet())
             .sortedBy { prefs.getInt("key_order_${it.hashCode()}", 99) }
         if (savedKeys.isNotEmpty()) {
-            savedKeys.take(5).forEachIndexed { i, key ->
+            savedKeys.take(10).forEachIndexed { i, key ->
                 ThumbnailCache.get(this, key)?.let { hubThumbViews.getOrNull(i)?.setImageBitmap(it) }
             }
             tvHubFilesStatus.visibility = View.GONE
@@ -726,7 +726,7 @@ class MainActivity : AppCompatActivity() {
             val cacheFiles = java.io.File(cacheDir, "hub_thumbs").listFiles()
                 ?.filter { it.extension == "jpg" }
                 ?.sortedByDescending { it.lastModified() }
-                ?.take(5) ?: emptyList()
+                ?.take(10) ?: emptyList()
             if (cacheFiles.isNotEmpty()) {
                 cacheFiles.forEachIndexed { i, file ->
                     try {
@@ -740,7 +740,6 @@ class MainActivity : AppCompatActivity() {
         val ip   = effectiveHubIp()
         val port = ClientForegroundService.liveHubPort
         if (ip == null) {
-            // Retry once after 5 s in case service is still starting up
             val hasDiskCache = java.io.File(cacheDir, "hub_thumbs").listFiles()?.any { it.extension == "jpg" } == true
             if (!hasDiskCache) {
                 tvHubFilesStatus.text = "Connect to hub to see recent files"
@@ -751,28 +750,42 @@ class MainActivity : AppCompatActivity() {
         }
         if (ip == thumbsLoadedForIp) return
         Thread {
-            val files = HubFilesClient.fetchFiles(ip, port, limit = 5)
-            runOnUiThread {
-                if (files.isEmpty()) {
+            val files = HubFilesClient.fetchFiles(ip, port, limit = 10)
+            if (files.isEmpty()) {
+                runOnUiThread {
                     if (savedKeys.isEmpty()) { tvHubFilesStatus.text = "No files on hub yet"; tvHubFilesStatus.visibility = View.VISIBLE }
                     pollHandler.postDelayed({ loadHubThumbnails() }, 15_000L)
-                    return@runOnUiThread
                 }
-                thumbsLoadedForIp = ip
-                tvHubFilesStatus.visibility = View.GONE
+                return@Thread
             }
-            val newKeys = mutableListOf<String>()
-            files.take(5).forEachIndexed { i, entry ->
-                val key = "${entry.deviceName}/${entry.displayName}"
-                newKeys.add(key)
-                val cached = ThumbnailCache.get(this, key)
-                if (cached != null) { runOnUiThread { hubThumbViews.getOrNull(i)?.setImageBitmap(cached) }; return@forEachIndexed }
+            runOnUiThread { thumbsLoadedForIp = ip; tvHubFilesStatus.visibility = View.GONE }
+
+            val newKeys = files.take(10).map { "${it.deviceName}/${it.displayName}" }
+
+            // Nothing new and everything is already cached — skip all thumbnail work.
+            if (newKeys == savedKeys.take(10) && newKeys.all { ThumbnailCache.has(this, it) }) {
+                val edit = prefs.edit().putStringSet("last_thumb_keys", newKeys.toSet())
+                newKeys.forEachIndexed { i, k -> edit.putInt("key_order_${k.hashCode()}", i) }
+                edit.apply()
+                return@Thread
+            }
+
+            files.take(10).forEachIndexed { i, entry ->
+                val key = newKeys[i]
+                // Phone gallery first — highest quality, already cached locally by the OS.
                 val localBmp = loadLocalThumb(entry.displayName)
                 if (localBmp != null) {
                     ThumbnailCache.put(this, key, bitmapToBytes(localBmp))
                     runOnUiThread { hubThumbViews.getOrNull(i)?.setImageBitmap(localBmp) }
                     return@forEachIndexed
                 }
+                // Disk/memory cache (may be a previously fetched hub thumb).
+                val cached = ThumbnailCache.get(this, key)
+                if (cached != null) {
+                    runOnUiThread { hubThumbViews.getOrNull(i)?.setImageBitmap(cached) }
+                    return@forEachIndexed
+                }
+                // Network fallback — only for files not on the phone and not yet cached.
                 val bytes = HubFilesClient.fetchThumbnail(ip, port, entry.deviceName, entry.displayName)
                 val bmp = bytes?.let { ThumbnailCache.put(this, key, it) }
                 runOnUiThread { if (bmp != null) hubThumbViews.getOrNull(i)?.setImageBitmap(bmp) }
@@ -861,3 +874,4 @@ class MainActivity : AppCompatActivity() {
     }
 
 }
+
