@@ -1,4 +1,4 @@
-<?xml version="1.0" encoding="utf-8"?>
+﻿<?xml version="1.0" encoding="utf-8"?>
 <FrameLayout
     xmlns:android="http://schemas.android.com/apk/res/android"
     android:layout_width="match_parent"
@@ -118,7 +118,7 @@
 
                             <LinearLayout
                                 android:layout_width="match_parent"
-                                android:layout_height="70dp"
+                                android:layout_height="120dp"
                                 android:orientation="horizontal"
                                 android:weightSum="5">
 
@@ -160,6 +160,59 @@
 
                                 <ImageView
                                     android:id="@+id/iv_hub_thumb_4"
+                                    android:layout_width="0dp"
+                                    android:layout_height="match_parent"
+                                    android:layout_weight="1"
+                                    android:scaleType="centerCrop"
+                                    android:background="@color/card_bg"/>
+
+                            </LinearLayout>
+
+                            <LinearLayout
+                                android:layout_width="match_parent"
+                                android:layout_height="120dp"
+                                android:orientation="horizontal"
+                                android:layout_marginTop="3dp"
+                                android:weightSum="5">
+
+                                <ImageView
+                                    android:id="@+id/iv_hub_thumb_5"
+                                    android:layout_width="0dp"
+                                    android:layout_height="match_parent"
+                                    android:layout_weight="1"
+                                    android:layout_marginEnd="3dp"
+                                    android:scaleType="centerCrop"
+                                    android:background="@color/card_bg"/>
+
+                                <ImageView
+                                    android:id="@+id/iv_hub_thumb_6"
+                                    android:layout_width="0dp"
+                                    android:layout_height="match_parent"
+                                    android:layout_weight="1"
+                                    android:layout_marginEnd="3dp"
+                                    android:scaleType="centerCrop"
+                                    android:background="@color/card_bg"/>
+
+                                <ImageView
+                                    android:id="@+id/iv_hub_thumb_7"
+                                    android:layout_width="0dp"
+                                    android:layout_height="match_parent"
+                                    android:layout_weight="1"
+                                    android:layout_marginEnd="3dp"
+                                    android:scaleType="centerCrop"
+                                    android:background="@color/card_bg"/>
+
+                                <ImageView
+                                    android:id="@+id/iv_hub_thumb_8"
+                                    android:layout_width="0dp"
+                                    android:layout_height="match_parent"
+                                    android:layout_weight="1"
+                                    android:layout_marginEnd="3dp"
+                                    android:scaleType="centerCrop"
+                                    android:background="@color/card_bg"/>
+
+                                <ImageView
+                                    android:id="@+id/iv_hub_thumb_9"
                                     android:layout_width="0dp"
                                     android:layout_height="match_parent"
                                     android:layout_weight="1"
@@ -477,3 +530,4 @@
     </LinearLayout>
 
 </FrameLayout>
+
